@@ -2963,6 +2963,98 @@ describe('WebSocket handler workflow runtime gating', () => {
     )
   })
 
+  it('reuses a configured provider-backed active model when a workflow phase has no default', async () => {
+    const sessionId = `workflow-provider-resume-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const stateService = new WorkflowSessionStateService()
+    const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const tempConfigDir = path.join(os.tmpdir(), `cc-jiangxia-workflow-provider-resume-${crypto.randomUUID()}`)
+    process.env.CLAUDE_CONFIG_DIR = tempConfigDir
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const startSession = spyOn(conversationService, 'startSession').mockResolvedValue()
+    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
+    spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue(process.cwd())
+    spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
+
+    try {
+      await fs.mkdir(path.join(tempConfigDir, 'cc-jiangxia'), { recursive: true })
+      await fs.writeFile(
+        path.join(tempConfigDir, 'cc-jiangxia', 'providers.json'),
+        JSON.stringify({
+          activeId: null,
+          providers: [{
+            id: 'provider-1',
+            name: 'Resume provider',
+            presetId: 'custom',
+            apiKey: 'test-key',
+            baseUrl: 'https://api.example.com',
+            models: {
+              main: 'active-provider-model',
+              haiku: 'active-provider-model',
+              sonnet: 'active-provider-model',
+              opus: 'active-provider-model',
+            },
+          }],
+        }),
+        'utf-8',
+      )
+
+      const state = makeWorkflowState(sessionId)
+      state.templateSnapshot.phases[0]!.transitionAuthority = 'auto'
+      state.activeModelResolution = {
+        requestedModel: null,
+        actualModel: 'active-provider-model',
+        providerId: 'provider-1',
+        source: 'main-session-default',
+        fallbackApplied: false,
+        fallbackReason: null,
+        resolvedAt: '2026-05-20T00:00:00.000Z',
+      }
+      await stateService.writeState(sessionId, state)
+
+      handleWebSocket.open(ws)
+      handleWebSocket.message(ws, JSON.stringify({
+        type: 'workflow_transition',
+        phaseId: 'requirements-clarification',
+        action: 'completed',
+        stateVersion: state.stateVersion,
+        handoff: { summary: 'Requirements complete.' },
+        rationale: 'All requirements evidence is recorded.',
+        evidence: [],
+      }))
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('Active phase: technical-design')
+      ))
+      expect(startSession).toHaveBeenCalledWith(
+        sessionId,
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ model: 'active-provider-model' }),
+      )
+      const persisted = await stateService.readState(sessionId)
+      expect(persisted.state?.activeModelResolution).toMatchObject({
+        actualModel: 'active-provider-model',
+        providerId: 'provider-1',
+        source: 'active-session',
+        fallbackApplied: true,
+      })
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+      }
+      await fs.rm(tempConfigDir, { recursive: true, force: true })
+    }
+  })
+
   it('automatically starts the next workflow phase after user-confirmed advancement', async () => {
     const sessionId = `workflow-auto-confirm-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
