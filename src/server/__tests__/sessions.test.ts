@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { SessionService, sessionService } from '../services/sessionService.js'
+import { getAllowedSettingSources, setAllowedSettingSources } from '../../bootstrap/state.js'
 import {
   getRepositoryContext,
   prepareSessionWorkspace,
@@ -57,6 +58,8 @@ const WORKFLOW_ERROR_CODES = [
 let tmpDir: string
 let service: SessionService
 let originalGitCeilingDirectories: string | undefined
+let originalClaudeCodeSimple: string | undefined
+let originalAllowedSettingSources: ReturnType<typeof getAllowedSettingSources> = []
 let homeScopedWorkspaceRoots: string[] = []
 
 /** Create a temporary config dir and configure the service to use it. */
@@ -65,8 +68,13 @@ async function setupTmpConfigDir(): Promise<string> {
   homeScopedWorkspaceRoots = []
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
   originalGitCeilingDirectories = process.env.GIT_CEILING_DIRECTORIES
+  originalClaudeCodeSimple = process.env.CLAUDE_CODE_SIMPLE
+  originalAllowedSettingSources = getAllowedSettingSources()
+  setAllowedSettingSources(['userSettings', 'projectSettings', 'localSettings', 'flagSettings', 'policySettings'])
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.GIT_CEILING_DIRECTORIES = tmpDir
+  delete process.env.CLAUDE_CODE_SIMPLE
+  clearCommandsCache()
   return tmpDir
 }
 
@@ -91,6 +99,12 @@ async function cleanupTmpDir(): Promise<void> {
     fs.rm(workspaceRoot, { recursive: true, force: true }),
   ))
   homeScopedWorkspaceRoots = []
+  setAllowedSettingSources(originalAllowedSettingSources)
+  if (originalClaudeCodeSimple === undefined) {
+    delete process.env.CLAUDE_CODE_SIMPLE
+  } else {
+    process.env.CLAUDE_CODE_SIMPLE = originalClaudeCodeSimple
+  }
   delete process.env.CLAUDE_CONFIG_DIR
   if (originalGitCeilingDirectories !== undefined) {
     process.env.GIT_CEILING_DIRECTORIES = originalGitCeilingDirectories
