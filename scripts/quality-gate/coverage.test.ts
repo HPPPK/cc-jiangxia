@@ -4,7 +4,6 @@ import {
   evaluateChangedLineCoverage,
   evaluateThresholds,
   findMissingLcovOutputs,
-  ROOT_COVERAGE_ISOLATION_ARGS,
   ROOT_COVERAGE_SEPARATE_FILES,
   ROOT_COVERAGE_TIMEOUT_MS,
   parseChangedLinesFromDiff,
@@ -14,8 +13,7 @@ import {
 } from './coverage'
 
 describe('coverage gate helpers', () => {
-  test('uses isolated serial coverage for environment-sensitive filesystem and workflow runtime suites', () => {
-    expect(ROOT_COVERAGE_ISOLATION_ARGS).toEqual(['--isolate', '--max-concurrency=1'])
+  test('keeps environment-sensitive filesystem and workflow runtime suites separate', () => {
     expect([...ROOT_COVERAGE_SEPARATE_FILES]).toEqual(expect.arrayContaining([
       'src/server/__tests__/filesystem.test.ts',
       'src/server/__tests__/filesystem-config-fallback.test.ts',

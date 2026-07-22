@@ -514,11 +514,6 @@ export function mergeLcovFiles(paths: string[], rootDir: string) {
  */
 export const ROOT_COVERAGE_TIMEOUT_MS = 60_000
 
-// Keep every root coverage invocation in the same isolated, serial execution mode
-// used by the stable main batch. The gate must merge authoritative LCOV from every
-// suite instead of silently treating a missing report as uncovered code.
-export const ROOT_COVERAGE_ISOLATION_ARGS = ['--isolate', '--max-concurrency=1'] as const
-
 export const ROOT_COVERAGE_SEPARATE_FILES = new Set([
   'src/server/__tests__/h5-access-auth.test.ts',
   'src/server/__tests__/filesystem.test.ts',
@@ -545,7 +540,7 @@ async function runRootCoverage(testFiles: string[], rootDir: string, outputDir: 
   const logParts: string[] = []
   let exitCode = 0
 
-  const mainCommand = ['bun', 'test', ...ROOT_COVERAGE_ISOLATION_ARGS, `--timeout=${ROOT_COVERAGE_TIMEOUT_MS}`, '--coverage', '--coverage-reporter=lcov', '--coverage-reporter=text', '--coverage-dir', join(rootDirPath, 'main'), ...mainFiles]
+  const mainCommand = ['bun', 'test', '--isolate', '--max-concurrency=1', `--timeout=${ROOT_COVERAGE_TIMEOUT_MS}`, '--coverage', '--coverage-reporter=lcov', '--coverage-reporter=text', '--coverage-dir', join(rootDirPath, 'main'), ...mainFiles]
   const mainLogPath = join(rootDirPath, 'main', 'coverage.log')
   const mainResult = await runCommand(mainCommand, rootDir, mainLogPath)
   logParts.push(existsSync(mainLogPath) ? readFileSync(mainLogPath, 'utf8') : `$ ${mainCommand.join(' ')}\n`)
@@ -556,7 +551,12 @@ async function runRootCoverage(testFiles: string[], rootDir: string, outputDir: 
 
   for (const [index, testFile] of separateFiles.entries()) {
     const fileCoverageDir = join(perFileDir, String(index).padStart(3, '0'))
-    const command = ['bun', 'test', ...ROOT_COVERAGE_ISOLATION_ARGS, `--timeout=${ROOT_COVERAGE_TIMEOUT_MS}`, '--coverage', '--coverage-reporter=lcov', '--coverage-reporter=text', '--coverage-dir', fileCoverageDir, testFile]
+    // The merged gate consumes LCOV only. Keep standalone-suite reporter output
+    // minimal while preserving the test process output in coverage.log.
+    const command = [
+      'bun', 'test', `--timeout=${ROOT_COVERAGE_TIMEOUT_MS}`, '--coverage',
+      '--coverage-reporter=lcov', '--coverage-dir', fileCoverageDir, testFile,
+    ]
     const fileLogPath = join(fileCoverageDir, 'coverage.log')
     const result = await runCommand(command, rootDir, fileLogPath)
     lcovPaths.push(join(fileCoverageDir, 'lcov.info'))
