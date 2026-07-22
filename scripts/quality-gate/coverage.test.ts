@@ -3,6 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import {
   evaluateChangedLineCoverage,
   evaluateThresholds,
+  findMissingLcovOutputs,
+  ROOT_COVERAGE_ISOLATION_ARGS,
   ROOT_COVERAGE_SEPARATE_FILES,
   ROOT_COVERAGE_TIMEOUT_MS,
   parseChangedLinesFromDiff,
@@ -12,7 +14,8 @@ import {
 } from './coverage'
 
 describe('coverage gate helpers', () => {
-  test('runs isolated coverage for environment-sensitive filesystem and workflow runtime suites', () => {
+  test('uses isolated serial coverage for environment-sensitive filesystem and workflow runtime suites', () => {
+    expect(ROOT_COVERAGE_ISOLATION_ARGS).toEqual(['--isolate', '--max-concurrency=1'])
     expect([...ROOT_COVERAGE_SEPARATE_FILES]).toEqual(expect.arrayContaining([
       'src/server/__tests__/filesystem.test.ts',
       'src/server/__tests__/filesystem-config-fallback.test.ts',
@@ -128,6 +131,19 @@ describe('coverage gate helpers', () => {
       expect((merged.match(/^SF:/gm) ?? [])).toHaveLength(1)
       expect(parseLcov(merged, { rootDir: root }).lines).toEqual({ total: 2, covered: 1, pct: 50 })
       expect(parseLcov(merged, { rootDir: root }).functions).toEqual({ total: 1, covered: 1, pct: 100 })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('reports every missing LCOV output before merge', () => {
+    const root = `/tmp/coverage-lcov-output-${crypto.randomUUID()}`
+    const emitted = `${root}/emitted.lcov`
+    const missing = `${root}/missing.lcov`
+    mkdirSync(root, { recursive: true })
+    try {
+      writeFileSync(emitted, 'TN:\nend_of_record\n')
+      expect(findMissingLcovOutputs([emitted, missing])).toEqual([missing])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
