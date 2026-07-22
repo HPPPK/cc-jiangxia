@@ -220,7 +220,7 @@ jobs:
         run: bun install
 
       # PR #1 imports an existing released codebase from HPPPK/cc-jiangxia.
-      # Compare it to that verified source snapshot, not the unrelated target main,
+      # Check out and compare that source snapshot, not the synthetic target merge,
       # so the changed-line gate covers only import follow-up work. This condition
       # is deliberately exact and becomes inert after this migration PR closes.
       - name: Select coverage comparison baseline
@@ -231,6 +231,7 @@ jobs:
           if [[ "${{ github.event.pull_request.number }}" == "1" \
             && "${{ github.event.pull_request.head.repo.full_name }}" == "HPPPK/cc-jiangxia" \
             && "${{ github.event.pull_request.head.ref }}" == "sync/cc-test-v0.2.38-to-chenziyang" ]]; then
+            git checkout --detach "${{ github.event.pull_request.head.sha }}"
             base_ref="f813d9624ab2b8f18a784219e6fa3a5816e8ce48"
           else
             base_ref="${default_ref}"

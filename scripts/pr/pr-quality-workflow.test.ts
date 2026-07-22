@@ -42,6 +42,7 @@ describe('PR quality workflow', () => {
     expect(workflow).toContain('id: coverage-base')
     expect(workflow).toContain('default_ref="origin/${{ github.base_ref }}"')
     expect(workflow).toContain('HPPPK/cc-jiangxia')
+    expect(workflow).toContain('git checkout --detach "${{ github.event.pull_request.head.sha }}"')
     expect(workflow).toContain('sync/cc-test-v0.2.38-to-chenziyang')
     expect(workflow).toContain('COVERAGE_BASE_REF: ${{ steps.coverage-base.outputs.ref }}')
     expect(workflow).toContain('cat "$latest_report" >> "$GITHUB_STEP_SUMMARY"')
