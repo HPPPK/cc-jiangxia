@@ -59,6 +59,7 @@ let tmpDir: string
 let service: SessionService
 let originalGitCeilingDirectories: string | undefined
 let originalClaudeCodeSimple: string | undefined
+let originalNativeFileSearch: string | undefined
 let originalAllowedSettingSources: ReturnType<typeof getAllowedSettingSources> = []
 let homeScopedWorkspaceRoots: string[] = []
 
@@ -69,11 +70,16 @@ async function setupTmpConfigDir(): Promise<string> {
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
   originalGitCeilingDirectories = process.env.GIT_CEILING_DIRECTORIES
   originalClaudeCodeSimple = process.env.CLAUDE_CODE_SIMPLE
+  originalNativeFileSearch = process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
   originalAllowedSettingSources = getAllowedSettingSources()
   setAllowedSettingSources(['userSettings', 'projectSettings', 'localSettings', 'flagSettings', 'policySettings'])
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.GIT_CEILING_DIRECTORIES = tmpDir
   delete process.env.CLAUDE_CODE_SIMPLE
+  // The endpoint contract is discovery, not ripgrep integration. Use the built-in
+  // filesystem scanner so this fixture does not depend on runner-provided rg behavior.
+  process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = '1'
+  resetSettingsCache()
   clearCommandsCache()
   return tmpDir
 }
@@ -105,7 +111,13 @@ async function cleanupTmpDir(): Promise<void> {
   } else {
     process.env.CLAUDE_CODE_SIMPLE = originalClaudeCodeSimple
   }
+  if (originalNativeFileSearch === undefined) {
+    delete process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
+  } else {
+    process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = originalNativeFileSearch
+  }
   delete process.env.CLAUDE_CONFIG_DIR
+  resetSettingsCache()
   if (originalGitCeilingDirectories !== undefined) {
     process.env.GIT_CEILING_DIRECTORIES = originalGitCeilingDirectories
   } else {
