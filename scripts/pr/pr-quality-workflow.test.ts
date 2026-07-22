@@ -39,7 +39,11 @@ describe('PR quality workflow', () => {
   test('keeps coverage artifacts observable in CI', () => {
     const workflow = readFileSync('.github/workflows/pr-quality.yml', 'utf8')
 
-    expect(workflow).toContain('COVERAGE_BASE_REF: origin/${{ github.base_ref }}')
+    expect(workflow).toContain('id: coverage-base')
+    expect(workflow).toContain('default_ref="origin/${{ github.base_ref }}"')
+    expect(workflow).toContain('HPPPK/cc-jiangxia')
+    expect(workflow).toContain('sync/cc-test-v0.2.38-to-chenziyang')
+    expect(workflow).toContain('COVERAGE_BASE_REF: ${{ steps.coverage-base.outputs.ref }}')
     expect(workflow).toContain('cat "$latest_report" >> "$GITHUB_STEP_SUMMARY"')
     expect(workflow).toContain('uses: actions/upload-artifact@v4')
     expect(workflow).toContain('path: artifacts/coverage/')
