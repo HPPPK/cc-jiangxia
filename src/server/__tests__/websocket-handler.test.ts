@@ -2686,6 +2686,16 @@ describe('WebSocket handler workflow runtime gating', () => {
     const sessionId = `workflow-${action}-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
     const stateService = new WorkflowSessionStateService()
+    // This contract test only verifies transition notifications. Keep the CLI
+    // boundary mocked so an auto-resume side effect cannot spawn the repository
+    // executable on a Linux CI runner.
+    spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    spyOn(conversationService, 'startSession').mockResolvedValue()
+    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
     spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue(process.cwd())
     spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
     await stateService.writeState(sessionId, makePendingWorkflowState(sessionId))
@@ -2916,6 +2926,17 @@ describe('WebSocket handler workflow runtime gating', () => {
 
     const state = makeWorkflowState(sessionId)
     state.templateSnapshot.phases[0]!.transitionAuthority = 'auto'
+    // This resume fixture must not depend on a developer machine's configured
+    // default model. The workflow itself already has a resolved active model.
+    state.activeModelResolution = {
+      requestedModel: null,
+      actualModel: 'main-session-sonnet',
+      providerId: null,
+      source: 'main-session-default',
+      fallbackApplied: false,
+      fallbackReason: null,
+      resolvedAt: '2026-05-20T00:00:00.000Z',
+    }
     await stateService.writeState(sessionId, state)
 
     handleWebSocket.open(ws)

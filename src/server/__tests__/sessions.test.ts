@@ -57,10 +57,12 @@ const WORKFLOW_ERROR_CODES = [
 let tmpDir: string
 let service: SessionService
 let originalGitCeilingDirectories: string | undefined
+let homeScopedWorkspaceRoots: string[] = []
 
 /** Create a temporary config dir and configure the service to use it. */
 async function setupTmpConfigDir(): Promise<string> {
   tmpDir = path.join(os.tmpdir(), `claude-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  homeScopedWorkspaceRoots = []
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
   originalGitCeilingDirectories = process.env.GIT_CEILING_DIRECTORIES
   process.env.CLAUDE_CONFIG_DIR = tmpDir
@@ -85,6 +87,10 @@ async function cleanupTmpDir(): Promise<void> {
       throw lastError
     }
   }
+  await Promise.all(homeScopedWorkspaceRoots.map((workspaceRoot) =>
+    fs.rm(workspaceRoot, { recursive: true, force: true }),
+  ))
+  homeScopedWorkspaceRoots = []
   delete process.env.CLAUDE_CONFIG_DIR
   if (originalGitCeilingDirectories !== undefined) {
     process.env.GIT_CEILING_DIRECTORIES = originalGitCeilingDirectories
@@ -177,6 +183,12 @@ async function writeLegacySlashCommand(
     ['---', `description: ${description}`, 'argument-hint: <topic>', '---', '', `Run ${commandName}.`].join('\n'),
     'utf-8',
   )
+}
+
+async function createHomeScopedWorkspace(): Promise<string> {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.homedir(), 'cc-jiangxia-session-api-'))
+  homeScopedWorkspaceRoots.push(workspaceRoot)
+  return path.join(workspaceRoot, 'workspace', 'app')
 }
 
 function git(cwd: string, ...args: string[]): string {
@@ -5764,7 +5776,7 @@ describe('Sessions API', () => {
 
   it('GET /api/sessions/:id/slash-commands should include legacy custom commands before CLI init', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef'
-    const workDir = path.join(tmpDir, 'workspace', 'app')
+    const workDir = await createHomeScopedWorkspace()
 
     await writeLegacySlashCommand(
       path.join(tmpDir, 'commands'),
@@ -5809,7 +5821,7 @@ describe('Sessions API', () => {
 
   it('GET /api/sessions/:id/slash-commands should preserve cached command argument hints when merging custom commands', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeef001'
-    const workDir = path.join(tmpDir, 'workspace', 'app')
+    const workDir = await createHomeScopedWorkspace()
 
     await writeLegacySlashCommand(
       path.join(workDir, '.claude', 'commands'),
