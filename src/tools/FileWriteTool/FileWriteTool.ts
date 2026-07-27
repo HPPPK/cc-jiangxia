@@ -34,7 +34,6 @@ import {
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
-import { validateExpertOutputTemplateWrite } from '../../utils/expertOutputTemplateGuard.js'
 import {
   checkWritePermissionForTool,
   matchingRuleForInput,
@@ -158,11 +157,6 @@ export const FileWriteTool = buildTool({
     const secretError = checkTeamMemSecrets(fullFilePath, content)
     if (secretError) {
       return { result: false, message: secretError, errorCode: 0 }
-    }
-
-    const expertTemplateValidation = validateExpertOutputTemplateWrite(fullFilePath, content)
-    if (!expertTemplateValidation.valid) {
-      return { result: false, message: expertTemplateValidation.message, errorCode: 0 }
     }
 
     // Check if path should be ignored based on permission settings

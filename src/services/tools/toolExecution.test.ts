@@ -10,6 +10,11 @@ import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from '../../tools/FileWriteTool/FileWriteTool.js'
 import { SubmitPhaseCompletionTool } from '../../tools/SubmitPhaseCompletionTool/SubmitPhaseCompletionTool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import {
+  createExpertOutputTemplateWriteGuard,
+  encodeExpertOutputTemplateWriteGuard,
+  EXPERT_OUTPUT_TEMPLATE_GUARD_ENV,
+} from '../../utils/expertOutputTemplateGuard.js'
 import { createAssistantMessage } from '../../utils/messages.js'
 import { runToolUse } from './toolExecution.js'
 
@@ -43,6 +48,32 @@ describe('runToolUse file edit recovery', () => {
     expect(context.readFileState.get(filePath)).toBeTruthy()
     expect(JSON.stringify(messages)).not.toContain('File has not been read yet')
     expect(JSON.stringify(messages)).not.toContain('<tool_use_error>')
+  })
+
+  test('rejects an Expert HTML template violation before dispatching the shared Write tool', async () => {
+    const filePath = path.join(tmpDir, 'commercial-report.html')
+    const template = '<html data-template-id="classic"><head><style>body{color:#111}</style></head><body><h2 id="section1">一、产品</h2><table><thead><tr><th>字段</th></tr></thead></table><h2 id="sources">来源</h2></body></html>'
+    const driftingReport = template.replace('color:#111', 'color:#222')
+    const guard = createExpertOutputTemplateWriteGuard('commercialization-research-report', 'templates/report.html', template)
+    if (!guard) throw new Error('test template should create a guard')
+    const previousGuard = process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV]
+    process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV] = encodeExpertOutputTemplateWriteGuard(guard)
+
+    try {
+      const messages = await runSingleToolUse({
+        type: 'tool_use',
+        id: 'toolu_expert_template_denied',
+        name: FileWriteTool.name,
+        input: { file_path: filePath, content: driftingReport },
+      } as ToolUseBlock)
+
+      expect(await fs.stat(filePath).catch(() => null)).toBeNull()
+      expect(JSON.stringify(messages)).toContain('EXPERT_OUTPUT_TEMPLATE_REJECTED')
+      expect(JSON.stringify(messages)).toContain('CSS 与固定 HTML 母版不一致')
+    } finally {
+      if (previousGuard === undefined) delete process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV]
+      else process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV] = previousGuard
+    }
   })
 
   test('returns a structured workflow violation instead of executing a write tool before implementation', async () => {

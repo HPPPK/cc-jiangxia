@@ -51,6 +51,7 @@ import {
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
 import { getAllBaseTools } from '../../tools.js'
+import { getExpertOutputTemplateToolPolicyViolation } from '../../server/services/expertOutputTemplateToolPolicy.js'
 import { isWorkflowPhaseToolDenied } from '../../server/services/workflowToolPolicy.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
@@ -758,6 +759,32 @@ async function checkPermissionsAndCallTool(
             },
           ],
           toolUseResult: `Error: ${workflowErrorContent}`,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      },
+    ]
+  }
+
+  // Expert output rules are session-scoped runtime policy, not part of the shared Write tool.
+  // They run after the tool schema is parsed and before the tool can validate or touch the filesystem.
+  const expertOutputTemplateViolation = getExpertOutputTemplateToolPolicyViolation(
+    tool.name,
+    parsedInput.data,
+  )
+  if (expertOutputTemplateViolation) {
+    logForDebugging(expertOutputTemplateViolation)
+    return [
+      {
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: `<tool_use_error>${expertOutputTemplateViolation}</tool_use_error>`,
+              is_error: true,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: `Error: ${expertOutputTemplateViolation}`,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },
