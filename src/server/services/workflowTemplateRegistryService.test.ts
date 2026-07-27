@@ -236,7 +236,7 @@ describe('workflow template registry service', () => {
       id: 'efficient-constrained-dev-debug-workflow-v5',
       source: 'user',
       schemaVersion: 2,
-      version: '8',
+      version: '10',
       name: expect.any(String),
       labels: expect.arrayContaining(['new-product', 'enhancement', 'ux-copy', 'error-handling']),
       phases: expect.arrayContaining([
@@ -286,8 +286,8 @@ describe('workflow template registry service', () => {
     for (const phase of developmentTemplate?.phases ?? []) {
       expect(phase.appliesTo ?? []).not.toContain('bug')
     }
-    const stagePlanningTools = ['Read', 'Glob', 'Grep', 'LS', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']
-    const stagePlanningDisallowedTools = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']
+    const stageArtifactWriteTools = ['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']
+    const stageArtifactWriteDisallowedTools = ['NotebookEdit', 'Bash', 'PowerShell', 'Agent']
     expect(developmentRouteContext).toMatchObject({
       name: expect.any(String),
       objective: expect.stringContaining('Confirm the general application framing'),
@@ -305,28 +305,27 @@ describe('workflow template registry service', () => {
         allowedActions: ['read', 'artifact', 'question', 'workspace-validation', 'source-material-identification', 'app-framing'],
         forbiddenActions: ['production edits', 'source file creation', 'dependency installs', 'database init', 'migrations', 'seed overwrite', 'deletes', 'deploy', 'detailed feature design', 'ui detail design', 'implementation planning', 'subagent coding'],
         toolAccess: expect.objectContaining({
-          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']),
-          forbidden: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
+          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']),
+          forbidden: expect.arrayContaining(['NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
           requiresExplicitUserConfirmation: expect.arrayContaining(['installDependencies', 'databaseInit', 'migrations', 'seedOverwrite', 'delete', 'network', 'deploy']),
         }),
       }),
     })
-    expectExactTools(developmentRouteContext?.toolPolicy?.allowedTools, stagePlanningTools)
-    expectExactTools(developmentRouteContext?.toolPolicy?.disallowedTools, stagePlanningDisallowedTools)
-    expect(developmentRouteContext?.instructions).toContain('general application framing')
+    expectExactTools(developmentRouteContext?.toolPolicy?.allowedTools, stageArtifactWriteTools)
+    expectExactTools(developmentRouteContext?.toolPolicy?.disallowedTools, stageArtifactWriteDisallowedTools)
+    expect(developmentRouteContext?.instructions).toContain('application framing')
     expect(developmentRouteContext?.instructions).toContain('sourceMaterialType')
     expect(developmentRouteContext?.instructions).toContain('sourceMaterialAccessStatus')
     expect(developmentRouteContext?.instructions).toContain('sourceMaterialHandlingHint')
     expect(developmentRouteContext?.instructions).toContain('uiDirectionNeeded')
-    expect(developmentRouteContext?.instructions).toContain('fixed low-randomness app-framing checklist')
-    expect(developmentRouteContext?.instructions).toContain('appFormat -> usageMode -> runtimeExpectation -> dataPersistence -> authAndRoles -> projectMode -> allowedOperations -> techStackStrategy')
-    expect(developmentRouteContext?.instructions).toContain('Recommended app setup:')
-    expect(developmentRouteContext?.instructions).toContain('fieldKey, recommendedValue, plainLanguageMeaning, whyRecommended, and adjustable')
-    expect(developmentRouteContext?.instructions).toContain('Recommended')
-    expect(developmentRouteContext?.instructions).toContain('When adjusting appFormat')
-    expect(developmentRouteContext?.instructions).toContain('When adjusting techStackStrategy')
-    expect(developmentRouteContext?.instructions).toContain('Never ask open-ended technical questions in Stage 1')
-    expect(developmentRouteContext?.instructions).not.toContain('Route the request')
+    expect(developmentRouteContext?.instructions).toContain("Work dynamically from the user's request")
+    expect(developmentRouteContext?.instructions).toContain('Do not use a fixed question sequence')
+    expect(developmentRouteContext?.instructions).toContain('Each question is part of the current stage work')
+    expect(developmentRouteContext?.instructions).toContain('Do not begin detailed product discovery or UI/UX work')
+    expect(developmentRouteContext?.instructions).toContain("Update the current stage's progress/artifact")
+    expect(developmentRouteContext?.instructions).toContain('all blocking stage issues are explicitly processed')
+    expect(developmentRouteContext?.instructions).not.toContain('微信定时发送任务小程序')
+    expect(developmentRouteContext?.instructions).not.toContain('fixed low-randomness app-framing checklist')
     expect(developmentRouteContext?.executionRules.join('\n')).toContain('Do not discuss detailed product feature modules')
     expect(developmentRouteContext?.executionRules.join('\n')).toContain('while still allowing the user to adjust fields one by one')
     expect(developmentRouteContext?.handoffRules.join('\n')).toContain('Do not proceed to detailed feature brainstorming until appFraming is confirmed')
@@ -349,14 +348,14 @@ describe('workflow template registry service', () => {
         allowedActions: ['read', 'artifact', 'question', 'product-discovery', 'scope-lock', 'source-material-analysis', 'ui-ux-direction'],
         forbiddenActions: ['production edits', 'source file creation', 'dependency installs', 'database init', 'migrations', 'seed overwrite', 'deletes', 'deploy', 'implementation planning', 'target file planning', 'database schema design', 'api route design', 'component structure design', 'css implementation planning', 'subagent coding'],
         toolAccess: expect.objectContaining({
-          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']),
-          forbidden: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
+          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']),
+          forbidden: expect.arrayContaining(['NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
           requiresExplicitUserConfirmation: expect.arrayContaining(['installDependencies', 'databaseInit', 'migrations', 'seedOverwrite', 'delete', 'network', 'deploy']),
         }),
       }),
     })
-    expectExactTools(developmentScopePlan?.toolPolicy?.allowedTools, stagePlanningTools)
-    expectExactTools(developmentScopePlan?.toolPolicy?.disallowedTools, stagePlanningDisallowedTools)
+    expectExactTools(developmentScopePlan?.toolPolicy?.allowedTools, stageArtifactWriteTools)
+    expectExactTools(developmentScopePlan?.toolPolicy?.disallowedTools, stageArtifactWriteDisallowedTools)
     expect(developmentScopePlan?.requiredIntake).toEqual(expect.arrayContaining([
       '.workflow/project-context.md',
       '.workflow/work-order.md',
@@ -399,14 +398,14 @@ describe('workflow template registry service', () => {
         allowedActions: ['read', 'artifact', 'question', 'technical-approach', 'delivery-planning', 'subagent-task-design', 'ui-implementation-planning', 'visual-validation-planning'],
         forbiddenActions: ['production edits', 'source file creation', 'dependency installs', 'database init', 'migrations', 'seed overwrite', 'deletes', 'deploy', 'implementation execution', 'subagent coding', 'changing confirmed product scope', 'adding non-goals back to MVP'],
         toolAccess: expect.objectContaining({
-          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']),
-          forbidden: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
+          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']),
+          forbidden: expect.arrayContaining(['NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
           requiresExplicitUserConfirmation: expect.arrayContaining(['installDependencies', 'databaseInit', 'migrations', 'seedOverwrite', 'delete', 'network', 'deploy']),
         }),
       }),
     })
-    expectExactTools(developmentDeliveryPlan?.toolPolicy?.allowedTools, stagePlanningTools)
-    expectExactTools(developmentDeliveryPlan?.toolPolicy?.disallowedTools, stagePlanningDisallowedTools)
+    expectExactTools(developmentDeliveryPlan?.toolPolicy?.allowedTools, stageArtifactWriteTools)
+    expectExactTools(developmentDeliveryPlan?.toolPolicy?.disallowedTools, stageArtifactWriteDisallowedTools)
     expect(developmentDeliveryPlan?.requiredIntake).toEqual(expect.arrayContaining([
       '.workflow/project-context.md',
       '.workflow/work-order.md',
@@ -488,12 +487,12 @@ describe('workflow template registry service', () => {
         allowedActions: expect.arrayContaining(['bounded-test', 'subagent-qa', 'subagent-acceptance-reviewer']),
         forbiddenActions: expect.arrayContaining(['production edits', 'Coder Subagent repair', 'skipping QA', 'skipping Acceptance Reviewer']),
         toolAccess: expect.objectContaining({
-          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'Bash', 'PowerShell', 'Agent', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']),
+          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'Bash', 'PowerShell', 'Agent', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']),
           requiresExplicitUserConfirmation: expect.arrayContaining(['installDependencies', 'databaseInit', 'migrations', 'seedOverwrite', 'delete', 'network', 'deploy']),
         }),
       }),
       toolPolicy: expect.objectContaining({
-        disallowedTools: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']),
+        disallowedTools: expect.arrayContaining(['NotebookEdit']),
       }),
       subagentPolicy: expect.objectContaining({
         allowedRoles: expect.arrayContaining(['qa', 'acceptance-reviewer']),
@@ -520,12 +519,12 @@ describe('workflow template registry service', () => {
         allowedActions: expect.arrayContaining(['read', 'artifact', 'question', 'preview-start', 'preview-stop', 'bounded-log-read']),
         forbiddenActions: expect.arrayContaining(['production edits', 'Coder Subagent repair', 'auto-fixing preview failures', 'finish without preview confirmation']),
         toolAccess: expect.objectContaining({
-          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'Bash', 'PowerShell', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']),
+          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'Bash', 'PowerShell', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']),
           requiresExplicitUserConfirmation: expect.arrayContaining(['installDependencies', 'databaseInit', 'migrations', 'seedOverwrite', 'delete', 'network', 'deploy']),
         }),
       }),
       toolPolicy: expect.objectContaining({
-        disallowedTools: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']),
+        disallowedTools: expect.arrayContaining(['NotebookEdit']),
       }),
     })
     expect(developmentPreview?.instructions).toContain('Stage 6 is local preview and user acceptance only')
@@ -544,12 +543,12 @@ describe('workflow template registry service', () => {
         allowedActions: expect.arrayContaining(['read', 'artifact', 'handoff', 'memory-update', 'question']),
         forbiddenActions: expect.arrayContaining(['production edits', 'running tests', 'starting preview server', 'auto-start follow-up workflow']),
         toolAccess: expect.objectContaining({
-          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion']),
-          forbidden: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
+          allowed: expect.arrayContaining(['Read', 'Glob', 'Grep', 'LS', 'workflow_artifact_write', 'AskUserQuestion', 'workflow_template_authoring', 'submit_phase_completion', 'request_workflow_route']),
+          forbidden: expect.arrayContaining(['NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
         }),
       }),
       toolPolicy: expect.objectContaining({
-        disallowedTools: expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']),
+        disallowedTools: expect.arrayContaining(['NotebookEdit']),
       }),
       skillBindings: expect.arrayContaining(['superpowers:finishing-a-development-branch', 'workflow:memory-update']),
     })

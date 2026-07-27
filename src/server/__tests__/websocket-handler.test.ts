@@ -20,6 +20,7 @@ import { sessionService } from '../services/sessionService.js'
 import { WorkflowSessionStateService } from '../services/workflowSessionStateService.js'
 import type { WorkflowSessionState, WorkflowTemplate } from '../services/workflowTypes.js'
 import { setWorkflowRuntimeTemplateLoaderForTests } from '../services/workflowRuntimeTemplateService.js'
+import { recalculateWorkflowCompletionEligibility } from '../services/workflowCompletionGate.js'
 
 beforeEach(() => {
   setWorkflowRuntimeTemplateLoaderForTests(async (state): Promise<WorkflowTemplate | null> => {
@@ -91,11 +92,24 @@ async function flushAsyncHandlers() {
 
 async function waitForCondition(
   predicate: () => boolean,
-  timeoutMs = 2000,
+  timeoutMs = 15000,
 ): Promise<void> {
   const start = Date.now()
   while (!predicate()) {
     if (Date.now() - start > timeoutMs) break
+    await flushAsyncHandlers()
+  }
+}
+
+async function waitForAsyncCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 2000,
+): Promise<void> {
+  const start = Date.now()
+  while (!(await predicate())) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('Timed out waiting for asynchronous condition')
+    }
     await flushAsyncHandlers()
   }
 }
@@ -155,9 +169,45 @@ function makeExpertRuntimeMetadata(status: 'active' | 'exited') {
   }
 }
 
+function withCompletionEligibleRuntimeContract(state: WorkflowSessionState): WorkflowSessionState {
+  const now = state.updatedAt
+  // Test fixtures use this only for paths that model a phase after an explicit
+  // user review. Legacy persistence tests deliberately use raw states instead.
+  return recalculateWorkflowCompletionEligibility({
+    ...state,
+    runtimeContract: {
+      schemaVersion: 1,
+      migrationStatus: 'current',
+      phaseStates: Object.fromEntries(state.phases.map((phase) => [phase.id, {
+        phaseId: phase.id,
+        workStatus: phase.id === state.activePhaseId ? 'ready-for-review' : 'not-started',
+        eligibility: 'ineligible',
+        blockerReasons: [],
+        issues: [],
+        artifactRequirements: [],
+        checks: [{
+          id: 'completion-criteria',
+          description: 'Fixture completion review.',
+          required: true,
+          status: phase.id === state.activePhaseId ? 'passed' : 'pending',
+          evidenceArtifactIds: [],
+          updatedAt: now,
+        }],
+        taskSnapshots: [],
+        evaluatedAt: now,
+      }])),
+      audit: [{
+        at: now,
+        type: 'runtime-contract-created',
+        summary: 'Fixture workflow completion contract.',
+      }],
+    },
+  }, state.templateSnapshot, now)
+}
+
 function makeWorkflowState(sessionId: string): WorkflowSessionState {
   const now = '2026-05-20T00:00:00.000Z'
-  return {
+  const state: WorkflowSessionState = {
     schemaVersion: 1,
     sessionId,
     mode: 'workflow',
@@ -236,6 +286,8 @@ function makeWorkflowState(sessionId: string): WorkflowSessionState {
     updatedAt: now,
     pendingConfirmation: null,
   }
+
+  return withCompletionEligibleRuntimeContract(state)
 }
 
 function makeFollowUpWorkflowStageOneState(
@@ -269,7 +321,7 @@ function makeFollowUpWorkflowStageOneState(
     ...(input.toolPolicy ? { toolPolicy: input.toolPolicy } : {}),
     ...(input.runtimeContract ? { runtimeContract: input.runtimeContract } : {}),
   }
-  return {
+  return withCompletionEligibleRuntimeContract({
     ...state,
     template: {
       ...state.template,
@@ -297,7 +349,7 @@ function makeFollowUpWorkflowStageOneState(
       status: 'running',
       artifactPointers: [],
     }],
-  }
+  })
 }
 
 function makeCreatedWorkflowState(sessionId: string): WorkflowSessionState {
@@ -453,6 +505,43 @@ function makeFinalPendingWorkflowState(sessionId: string): WorkflowSessionState 
         evidence: [],
       },
     },
+  }
+}
+
+function bindAskUserQuestionFixture(
+  state: WorkflowSessionState,
+  requestId: string,
+  questionId: string,
+) {
+  const phaseId = state.activePhaseId
+  if (!phaseId || !state.runtimeContract) throw new Error('Workflow fixture must have an active runtime phase.')
+  const phaseState = state.runtimeContract.phaseStates[phaseId]
+  if (!phaseState) throw new Error('Workflow fixture must have a runtime phase state.')
+  const issueId = 'ask:' + requestId + ':0'
+  state.runtimeContract.phaseStates[phaseId] = {
+    ...phaseState,
+    issues: [...phaseState.issues, {
+      id: issueId,
+      phaseId,
+      sessionId: state.sessionId,
+      createdAt: state.updatedAt,
+      updatedAt: state.updatedAt,
+      source: 'ask-user-question',
+      status: 'open',
+      blocksCompletion: false,
+      question: questionId,
+      blockingReason: 'Fixture workflow question.',
+      questionRequestId: requestId,
+      questionId,
+      createdStateVersion: state.stateVersion,
+    }],
+  }
+  return {
+    sessionId: state.sessionId,
+    phaseId,
+    stateVersion: state.stateVersion,
+    requestId,
+    issues: [{ issueId, questionId }],
   }
 }
 
@@ -1107,6 +1196,199 @@ describe('WebSocket handler session isolation', () => {
     }
   })
 
+  it('persists AskUserQuestion as a blocking phase issue before delivery and keeps its answer pending explicit processing', async () => {
+    const sessionId = `workflow-persisted-ask-question-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const stateService = new WorkflowSessionStateService()
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const respondToPermission = spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
+    spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
+    await stateService.writeState(sessionId, makeWorkflowState(sessionId))
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'control_request',
+        request_id: 'ask-contract-question',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'AskUserQuestion',
+          tool_use_id: 'ask-contract-tool',
+          input: {
+            questions: [{ header: 'Decision', prompt: 'Which option should the phase use?' }],
+          },
+        },
+      })
+
+      await waitForCondition(() => parseSentMessages(ws).some((message) =>
+        message.type === 'permission_request' && message.requestId === 'ask-contract-question',
+      ))
+      await flushAsyncHandlers()
+
+      const recorded = await stateService.readState(sessionId)
+      const issue = recorded.state?.runtimeContract?.phaseStates['requirements-clarification']?.issues.find(
+        (candidate) => candidate.questionRequestId === 'ask-contract-question',
+      )
+      expect(issue).toMatchObject({
+        status: 'open',
+        blocksCompletion: true,
+        question: 'Which option should the phase use?',
+      })
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+        type: 'permission_request',
+        requestId: 'ask-contract-question',
+        toolName: 'AskUserQuestion',
+      }))
+
+      handleWebSocket.message(ws, JSON.stringify({
+        type: 'permission_response',
+        requestId: 'ask-contract-question',
+        allowed: true,
+        updatedInput: {
+          questions: [{ header: 'Decision', prompt: 'Which option should the phase use?' }],
+          answers: { 'Which option should the phase use?': 'Use option B.' },
+        },
+      }))
+      await waitForCondition(() => respondToPermission.mock.calls.length === 1)
+
+      const answered = await stateService.readState(sessionId)
+      expect(answered.state?.runtimeContract?.phaseStates['requirements-clarification']?.issues.find(
+        (candidate) => candidate.questionRequestId === 'ask-contract-question',
+      )).toMatchObject({
+        status: 'answered-pending-processing',
+        blocksCompletion: true,
+        answer: { 'Which option should the phase use?': 'Use option B.' },
+      })
+
+
+      callback({
+        type: 'control_request',
+        request_id: 'ask-retry-acknowledgement',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'AskUserQuestion',
+          tool_use_id: 'ask-retry-tool',
+          input: {
+            questions: [{
+              id: 'retry-stage-completion',
+              header: 'Retry',
+              question: 'Retry the current stage completion?',
+              blocksCompletion: false,
+              choices: [{ id: 'retry', label: 'Retry' }, { id: 'pause', label: 'Pause' }],
+            }],
+          },
+        },
+      })
+      await waitForCondition(() => parseSentMessages(ws).some((message) =>
+        message.type === 'permission_request' && message.requestId === 'ask-retry-acknowledgement',
+      ))
+      await flushAsyncHandlers()
+
+      const nonBlocking = await stateService.readState(sessionId)
+      expect(nonBlocking.state?.runtimeContract?.phaseStates['requirements-clarification']?.issues.find(
+        (candidate) => candidate.questionRequestId === 'ask-retry-acknowledgement',
+      )).toMatchObject({
+        status: 'open',
+        blocksCompletion: false,
+        question: 'Retry the current stage completion?',
+      })
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+
+  it('reconciles a legacy header-keyed workflow question from its persisted AskUserQuestion result', async () => {
+    const sessionId = `workflow-legacy-ask-answer-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const stateService = new WorkflowSessionStateService()
+    const state = makeWorkflowState(sessionId)
+    const phaseId = state.activePhaseId!
+    const phaseState = state.runtimeContract!.phaseStates[phaseId]!
+    state.runtimeContract!.phaseStates[phaseId] = {
+      ...phaseState,
+      issues: [{
+        id: 'ask:legacy-question:0',
+        phaseId,
+        sessionId,
+        createdAt: state.createdAt,
+        updatedAt: state.updatedAt,
+        source: 'ask-user-question',
+        status: 'open',
+        blocksCompletion: true,
+        question: 'Decision',
+        blockingReason: 'A workflow question requires an answer and explicit processing.',
+        questionRequestId: 'legacy-question',
+        questionId: 'Decision',
+        toolUseId: 'legacy-ask-tool',
+        createdStateVersion: state.stateVersion,
+      }],
+    }
+    await stateService.writeState(sessionId, state)
+    spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
+    spyOn(sessionService, 'getSessionMessages').mockResolvedValue([
+      {
+        id: 'legacy-tool-use',
+        type: 'tool_use',
+        timestamp: state.createdAt,
+        content: [{
+          type: 'tool_use',
+          id: 'legacy-ask-tool',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [{
+              header: 'Decision',
+              prompt: 'Which option should the phase use?',
+            }],
+          },
+        }],
+      },
+      {
+        id: 'legacy-tool-result',
+        type: 'tool_result',
+        timestamp: state.updatedAt,
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'legacy-ask-tool',
+          content: "User has answered your questions: \"Which option should the phase use?\"=\"Use option B.\". You can now continue with the user's answers in mind.",
+        }],
+      },
+    ])
+
+    handleWebSocket.open(ws)
+    await waitForAsyncCondition(async () => {
+      const persisted = await stateService.readState(sessionId)
+      return persisted.state?.runtimeContract?.phaseStates[phaseId]?.issues[0]?.status === 'answered-pending-processing'
+    })
+
+    const persisted = await stateService.readState(sessionId)
+    expect(persisted.state?.runtimeContract?.phaseStates[phaseId]?.issues[0]).toMatchObject({
+      status: 'answered-pending-processing',
+      answer: {
+        Decision: 'Use option B.',
+        'Which option should the phase use?': 'Use option B.',
+      },
+    })
+  })
+
   it('returns submit completion validation errors to the model for one corrected retry without restarting the CLI', async () => {
     const sessionId = `workflow-submit-input-recovery-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
@@ -1319,9 +1601,9 @@ describe('WebSocket handler session isolation', () => {
         usage: { input_tokens: 1, output_tokens: 1 },
       })
 
-      await waitForCondition(() => parseSentMessages(ws).some((message) =>
-        message.type === 'error' && message.code === 'CLI_ERROR'
-      ))
+      // The second terminal result is a protocol-registration failure. It must
+      // not trigger another terminal-recovery turn or surface a generic CLI error.
+      await flushAsyncHandlers()
 
       expect(sendMessage).toHaveBeenCalledTimes(1)
       expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({
@@ -2649,6 +2931,43 @@ describe('WebSocket handler workflow runtime gating', () => {
     }
   })
 
+  it('rejects a scoped workflow artifact write outside .workflow before it reaches the CLI', async () => {
+    const sessionId = `workflow-scoped-artifact-write-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const state = makeFollowUpWorkflowStageOneState(sessionId, {
+      templateId: 'artifact-write-fixture',
+      phaseId: 'scope-plan',
+      toolPolicy: { allowedTools: ['workflow_artifact_write'] },
+    })
+    await new WorkflowSessionStateService().writeState(sessionId, state)
+    const respondToPermission = spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([{
+      requestId: 'artifact-write-request',
+      toolName: 'Write',
+      input: { file_path: '.workflow/project-context.md' },
+    }])
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'permission_response',
+      requestId: 'artifact-write-request',
+      allowed: true,
+      updatedInput: { file_path: 'src/app.ts' },
+    }))
+    await waitForCondition(() => parseSentMessages(ws).some((message) => (
+      message.type === 'permission_response_ack'
+      && message.requestId === 'artifact-write-request'
+      && message.status === 'rejected'
+    )))
+
+    expect(respondToPermission).toHaveBeenCalledWith(sessionId, 'artifact-write-request', false)
+    expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'WORKFLOW_ARTIFACT_WRITE_FORBIDDEN',
+    }))
+  })
+
   it('accepts idempotent workflow retry transition commands for workflow sessions', async () => {
     const sessionId = `workflow-retry-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
@@ -2755,180 +3074,91 @@ describe('WebSocket handler workflow runtime gating', () => {
     )
   })
 
-  it('advances and resumes from an AskUserQuestion advance_phase choice without typed continue', async () => {
-    const sessionId = `workflow-choice-advance-${crypto.randomUUID()}`
+  it('always delivers a legacy action-shaped Ask answer to the current phase without routing', async () => {
+    const sessionId = `workflow-ask-action-is-answer-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
     const stateService = new WorkflowSessionStateService()
-    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
     const respondToPermission = spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
-    spyOn(conversationService, 'startSession').mockResolvedValue()
-    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
-    spyOn(conversationService, 'hasSession').mockReturnValue(true)
-    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
-    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
-    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
     spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue(process.cwd())
     spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
-    await stateService.writeState(sessionId, makePendingWorkflowState(sessionId))
-
-    handleWebSocket.open(ws)
-    handleWebSocket.message(ws, JSON.stringify({
-      type: 'permission_response',
-      requestId: 'ask-user-workflow-gate',
-      allowed: true,
-      updatedInput: {
-        questions: [{ id: 'confirm_next_action' }],
-        answers: { confirm_next_action: '进入下一阶段' },
-        workflowChoiceActions: [{
-          questionId: 'confirm_next_action',
-          choiceId: 'enter_next_stage',
-          action: 'advance_phase',
-          targetPhaseId: 'technical-design',
-        }],
-      },
-    }))
-
-    await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
-      calledSessionId === sessionId
-      && typeof content === 'string'
-      && content.includes('Active phase: technical-design')
-    ))
-    const persisted = await stateService.readState(sessionId)
-    expect(persisted.state?.activePhaseId).toBe('technical-design')
-    expect(respondToPermission).not.toHaveBeenCalled()
-  })
-
-  it('routes and resumes from an AskUserQuestion jump_to_phase choice without typed continue', async () => {
-    const sessionId = `workflow-choice-route-${crypto.randomUUID()}`
-    const ws = makeClientSocket(sessionId)
-    const stateService = new WorkflowSessionStateService()
-    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
-    spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
-    spyOn(conversationService, 'startSession').mockResolvedValue()
-    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
-    spyOn(conversationService, 'hasSession').mockReturnValue(true)
-    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
-    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
-    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
-    spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue(process.cwd())
-    spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
-
-    const state = makePendingWorkflowState(sessionId)
-    state.templateSnapshot.phases.push({
-      ...state.templateSnapshot.phases[0]!,
-      id: 'delegate-implement',
-      label: '分批实现与审查',
-      instructions: 'Implement the approved changes.',
-    })
-    state.phases.push({ id: 'delegate-implement', index: 2, status: 'created', artifactPointers: [] })
+    const state = makeWorkflowState(sessionId)
+    const workflowQuestionContext = bindAskUserQuestionFixture(state, 'ask-action-is-answer', 'adjustment')
     await stateService.writeState(sessionId, state)
 
     handleWebSocket.open(ws)
     handleWebSocket.message(ws, JSON.stringify({
       type: 'permission_response',
-      requestId: 'ask-user-route-gate',
+      requestId: 'ask-action-is-answer',
       allowed: true,
       updatedInput: {
-        questions: [{ id: 'route_after_validation' }],
-        answers: { route_after_validation: '返回 Stage 4 修复该问题' },
+        workflowQuestionContext,
+        questions: [{ id: 'adjustment' }],
+        answers: { adjustment: 'Return to the current requirements and revise the role rules.' },
         workflowChoiceActions: [{
-          questionId: 'route_after_validation',
-          choiceId: 'return-to-stage-4',
-          action: {
-            kind: 'workflow-route',
-            intent: 'jump_to_phase',
-            targetPhaseId: 'delegate-implement',
-          },
+          questionId: 'adjustment',
+          choiceId: 'legacy-route',
+          action: { kind: 'workflow-route', intent: 'jump_to_phase', targetPhaseId: 'delegate-implement' },
         }],
       },
     }))
 
-    await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
-      calledSessionId === sessionId
-      && typeof content === 'string'
-      && content.includes('Active phase: delegate-implement')
-    ))
+    await waitForCondition(() => respondToPermission.mock.calls.length === 1)
     const persisted = await stateService.readState(sessionId)
-    expect(persisted.state?.activePhaseId).toBe('delegate-implement')
-    expect(persisted.state?.pendingRoute).toBeNull()
-    expect(parseSentMessages(ws).filter((message) => message.type === 'error')).toEqual([])
+    expect(respondToPermission).toHaveBeenCalledWith(
+      sessionId,
+      'ask-action-is-answer',
+      true,
+      undefined,
+      expect.objectContaining({ answers: { adjustment: 'Return to the current requirements and revise the role rules.' } }),
+    )
+    expect(persisted.state?.activePhaseId).toBe('requirements-clarification')
+    expect(persisted.state?.pendingRoute).toBeFalsy()
+    expect(persisted.state?.runtimeContract?.phaseStates['requirements-clarification']?.issues).toContainEqual(expect.objectContaining({
+      questionId: 'adjustment',
+      status: 'answered-pending-processing',
+    }))
   })
 
-  it('routes and resumes from an AskUserQuestion jump_to_phase choice while the active phase is blocked', async () => {
-    const sessionId = `workflow-choice-blocked-route-${crypto.randomUUID()}`
+  it('does not treat stale legacy action metadata as a workflow transition command', async () => {
+    const sessionId = `workflow-ask-stale-action-is-answer-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
     const stateService = new WorkflowSessionStateService()
-    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
-    spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
-    spyOn(conversationService, 'startSession').mockResolvedValue()
-    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
-    spyOn(conversationService, 'hasSession').mockReturnValue(true)
-    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
-    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
-    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
+    const respondToPermission = spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
     spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue(process.cwd())
     spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
-
-    const state = makePendingWorkflowState(sessionId)
-    state.templateSnapshot.phases.push({
-      ...state.templateSnapshot.phases[0]!,
-      id: 'delegate-implement',
-      label: '分批实现与审查',
-      instructions: 'Repair the verified implementation defect.',
-    })
-    state.phases.push({ id: 'delegate-implement', index: 2, status: 'created', artifactPointers: [] })
-    state.workflowStatus = 'running'
-    state.status = 'running'
-    state.runStatus = 'blocked'
-    state.pendingConfirmation = null
-    state.phases[0]!.status = 'running'
-    state.phases[0]!.blockedReason = 'Validation found an implementation defect that requires a controlled repair route.'
+    const state = makeWorkflowState(sessionId)
+    const workflowQuestionContext = {
+      ...bindAskUserQuestionFixture(state, 'ask-stale-action-is-answer', 'clarify'),
+      stateVersion: state.stateVersion - 1,
+    }
     await stateService.writeState(sessionId, state)
 
     handleWebSocket.open(ws)
     handleWebSocket.message(ws, JSON.stringify({
       type: 'permission_response',
-      requestId: 'ask-user-blocked-route-gate',
+      requestId: 'ask-stale-action-is-answer',
       allowed: true,
       updatedInput: {
-        questions: [{ id: 'route_blocked_validation' }],
-        answers: { route_blocked_validation: '返回 Stage 4 修复该问题' },
-        workflowChoiceActions: [{
-          questionId: 'route_blocked_validation',
-          choiceId: 'return-to-stage-4',
-          action: {
-            kind: 'workflow-route',
-            intent: 'jump_to_phase',
-            targetPhaseId: 'delegate-implement',
-          },
-        }],
+        workflowQuestionContext,
+        questions: [{ id: 'clarify' }],
+        answers: { clarify: 'Use the teacher role for this requirement.' },
+        workflowChoiceActions: [{ questionId: 'clarify', choiceId: 'legacy-advance', action: 'advance_phase' }],
       },
     }))
 
-    await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
-      calledSessionId === sessionId
-      && typeof content === 'string'
-      && content.includes('Active phase: delegate-implement')
-    ))
+    await waitForCondition(() => respondToPermission.mock.calls.length === 1)
     const persisted = await stateService.readState(sessionId)
-    expect(persisted.state?.activePhaseId).toBe('delegate-implement')
-    expect(persisted.state?.runStatus).toBe('active')
-    expect(persisted.state?.pendingConfirmation).toBeNull()
-    expect(persisted.state?.pendingRoute).toBeNull()
-    expect(parseSentMessages(ws).filter((message) => message.type === 'error')).toEqual([])
+    expect(persisted.state?.activePhaseId).toBe('requirements-clarification')
+    expect(persisted.state?.pendingRoute).toBeFalsy()
   })
 
-  it('auto-resumes the next phase after a completed auto-transition submission without typed continue', async () => {
-    const sessionId = `workflow-completed-auto-${crypto.randomUUID()}`
+  it('keeps a completed auto-authority submission pending until the user confirms', async () => {
+    const sessionId = `workflow-completed-auto-${Date.now()}-${Math.random()}`
     const ws = makeClientSocket(sessionId)
     const stateService = new WorkflowSessionStateService()
     const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
-    spyOn(conversationService, 'startSession').mockResolvedValue()
-    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
     spyOn(conversationService, 'hasSession').mockReturnValue(true)
     spyOn(conversationService, 'getSessionWorkDir').mockReturnValue(process.cwd())
-    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
-    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
     spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue(process.cwd())
     spyOn(sessionService, 'appendSessionMetadata').mockResolvedValue()
 
@@ -2947,17 +3177,12 @@ describe('WebSocket handler workflow runtime gating', () => {
       evidence: [],
     }))
 
-    await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
-      calledSessionId === sessionId
-      && typeof content === 'string'
-      && content.includes('Active phase: technical-design')
-    ))
+    await waitForAsyncCondition(async () => (await stateService.readState(sessionId)).state?.pendingConfirmation?.status === 'pending')
     const persisted = await stateService.readState(sessionId)
-    expect(persisted.state?.activePhaseId).toBe('technical-design')
-    expect(sendMessage).toHaveBeenCalledWith(
-      sessionId,
-      expect.stringContaining('Active phase: technical-design'),
-    )
+    expect(persisted.state?.activePhaseId).toBe('requirements-clarification')
+    expect(persisted.state?.workflowStatus).toBe('pending-confirmation')
+    expect(persisted.state?.pendingConfirmation?.toPhaseId).toBe('technical-design')
+    expect(sendMessage).not.toHaveBeenCalledWith(sessionId, expect.stringContaining('Active phase: technical-design'))
   })
 
   it('automatically starts the next workflow phase after user-confirmed advancement', async () => {

@@ -1,5 +1,7 @@
+import * as path from 'node:path'
 ﻿import type { WorkflowPhaseActionPolicy, WorkflowPhaseDefinition, WorkflowSessionState, WorkflowTemplate } from './workflowTypes.js'
 import { getRipgrepStatus } from '../../utils/ripgrep.js'
+import { getWorkflowCompletionEligibility } from './workflowCompletionGate.js'
 
 type WorkflowRipgrepStatus = ReturnType<typeof getRipgrepStatus>
 
@@ -109,6 +111,8 @@ function isActiveWorkflowState(
 // Retained as an empty export for callers that still import the former built-in policy registry.
 export const BUILTIN_WORKFLOW_PHASE_ACTION_POLICIES: Record<string, WorkflowPhaseActionPolicy> = {}
 
+export const WORKFLOW_ARTIFACT_WRITE_CAPABILITY = 'workflow_artifact_write'
+
 function builtinWorkflowPhaseActionPolicyFor(phaseId: string): WorkflowPhaseActionPolicy | undefined {
   // Built-in action policies were retired; templates supply optional prompt guidance.
   return BUILTIN_WORKFLOW_PHASE_ACTION_POLICIES[phaseId]
@@ -129,6 +133,9 @@ export function concreteToolNamesForWorkflowCapability(value: string): string[] 
   }
   if (normalized === 'artifact') {
     return []
+  }
+  if (normalized === WORKFLOW_ARTIFACT_WRITE_CAPABILITY) {
+    return ['Write']
   }
   if (normalized === 'askuserquestion' || normalized.includes('question')) {
     return ['AskUserQuestion']
@@ -261,7 +268,16 @@ function phaseToolPolicy(state: WorkflowSessionState): {
 
   // A phase may use natural-language action rules rather than an explicit tool
   // policy. The runtime must still prevent source edits before formal advance.
-  if (isPreImplementationPhase(phase.id)) {
+  // The declarative workflow_artifact_write capability is the sole exception:
+  // it exposes Write for session-internal .workflow evidence only and is
+  // checked again at permission execution time.
+  const allowsScopedArtifactWrite = [
+    ...(toolPolicy?.allowedTools ?? []),
+    ...(runtime?.allowedTools ?? []),
+    ...(runtime?.toolAccess?.allowed ?? []),
+    ...(runtime?.allowedActions ?? []),
+  ].some((value) => value.trim().toLowerCase() === WORKFLOW_ARTIFACT_WRITE_CAPABILITY)
+  if (isPreImplementationPhase(phase.id) && !allowsScopedArtifactWrite) {
     for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) forbidden.add(tool)
   }
 
@@ -290,6 +306,32 @@ export function getWorkflowPhaseActionPolicy(
     allowedActions: [...policy.allowedActions],
     forbiddenActions: [...policy.forbiddenActions],
   }
+}
+
+export function hasWorkflowArtifactWriteCapability(
+  state: WorkflowSessionState | null | undefined,
+): boolean {
+  if (!isActiveWorkflowState(state)) return false
+  const phase = activePhaseDefinition(state)
+  if (!phase) return false
+  const runtime = phase.runtimeContract
+  return [
+    ...(phase.toolPolicy?.allowedTools ?? []),
+    ...(runtime?.allowedTools ?? []),
+    ...(runtime?.toolAccess?.allowed ?? []),
+    ...(runtime?.allowedActions ?? []),
+  ].some((value) => value.trim().toLowerCase() === WORKFLOW_ARTIFACT_WRITE_CAPABILITY)
+}
+
+export function isWorkflowArtifactWritePath(
+  workspaceRoot: string,
+  candidatePath: unknown,
+): boolean {
+  if (typeof candidatePath !== 'string' || !candidatePath.trim()) return false
+  const internalRoot = path.resolve(workspaceRoot, '.workflow')
+  const targetPath = path.resolve(workspaceRoot, candidatePath)
+  const relative = path.relative(internalRoot, targetPath)
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
 }
 
 export function getWorkflowPhaseDisallowedTools(
@@ -329,6 +371,13 @@ export function isWorkflowPhaseToolDenied(
   toolName: string,
   state: WorkflowSessionState | null | undefined,
 ): boolean {
+  if (
+    (toolName === SUBMIT_PHASE_COMPLETION_TOOL_NAME || toolName === REQUEST_WORKFLOW_ROUTE_TOOL_NAME)
+    && state?.runtimeContract
+    && !getWorkflowScopedToolNames(state).includes(toolName)
+  ) {
+    return true
+  }
   return getWorkflowPhaseDisallowedTools(state).includes(toolName)
 }
 
@@ -410,7 +459,14 @@ export function getWorkflowScopedToolNames(
   state: WorkflowSessionState | null | undefined,
 ): string[] {
   if (!isActiveWorkflowState(state)) return []
-  return [...WORKFLOW_PHASE_SCOPED_TOOL_NAMES]
+
+  // Both protocol tools are direct runtime tools, not Skills. Keep route
+  // requests visible while a phase is ineligible: after recording a blocked
+  // or needs-user result, the agent must be able to request a structured
+  // recovery route instead of hiding targetPhaseId in the completion handoff.
+  // The runtime service still validates phase, stateVersion, recovery state,
+  // route policy, target existence, and explicit user confirmation.
+  return [SUBMIT_PHASE_COMPLETION_TOOL_NAME, REQUEST_WORKFLOW_ROUTE_TOOL_NAME]
 }
 
 export function getWorkflowPromptToolGuidance(
@@ -426,6 +482,9 @@ export function getWorkflowPromptToolGuidance(
   const scopedToolNames = getWorkflowScopedToolNames(state)
   const hasCompletionTool = scopedToolNames.includes(SUBMIT_PHASE_COMPLETION_TOOL_NAME)
   const hasRouteTool = scopedToolNames.includes(REQUEST_WORKFLOW_ROUTE_TOOL_NAME)
+  const completionEligibility = state.runtimeContract
+    ? getWorkflowCompletionEligibility(state)
+    : null
   const unavailableSearchTools = getWorkflowUnavailableSearchToolNames()
   const skillGuidance = skillDeclarations
     .map((skill) => {
@@ -437,17 +496,20 @@ export function getWorkflowPromptToolGuidance(
   return [
     'Workflow-only tools',
     hasCompletionTool
-      ? `Use ${SUBMIT_PHASE_COMPLETION_TOOL_NAME} only when the active workflow phase is ready, blocked, or unable to complete.`
-      : `${SUBMIT_PHASE_COMPLETION_TOOL_NAME} is disabled by this phase tool policy; do not claim you can submit phase completion through that tool.`,
+      ? `${SUBMIT_PHASE_COMPLETION_TOOL_NAME} is a direct API tool, never a Skill. Do not call Skill with workflow:${SUBMIT_PHASE_COMPLETION_TOOL_NAME}, and do not prepend workflow: to this tool name.`
+      : null,
+    hasCompletionTool
+      ? `Use ${SUBMIT_PHASE_COMPLETION_TOOL_NAME} only when the active workflow phase is ready, genuinely blocked, or unable to complete.`
+      : null,
     hasCompletionTool
       ? `${SUBMIT_PHASE_COMPLETION_TOOL_NAME} requires status, handoff, rationale, and evidence. phaseId and stateVersion may be omitted because the active phase and latest state version are inferred at call time.`
       : null,
     hasCompletionTool
       ? `${SUBMIT_PHASE_COMPLETION_TOOL_NAME} input contract: handoff must be an object, rationale must be a non-empty string, and evidence must be an array. Plain assistant text does not satisfy these required tool inputs.`
       : null,
-    hasCompletionTool
-      ? `When the active phase is ready, present the handoff and call ${SUBMIT_PHASE_COMPLETION_TOOL_NAME} with status ready in the same assistant turn.`
-      : null,
+    completionEligibility?.status === 'eligible'
+      ? `The persisted completion gate is eligible. Present the handoff and call ${SUBMIT_PHASE_COMPLETION_TOOL_NAME} with status ready in the same assistant turn.`
+      : `The persisted completion gate is not yet eligible. Do not submit ready/completed or claim a phase transition. Resolve current work, blocking issues, required evidence, and checks through their explicit workflow state-update path first. If work must return for repair or wait on the user, first record the current result with ${SUBMIT_PHASE_COMPLETION_TOOL_NAME} with status blocked or needs_user, then request ${REQUEST_WORKFLOW_ROUTE_TOOL_NAME} with rework_current_phase or jump_to_phase; never put executable route fields in handoff.`,
     hasCompletionTool
       ? 'Do not ask the user to type continue before calling the completion tool; the tool creates the user-confirmation step.'
       : null,
@@ -457,6 +519,9 @@ export function getWorkflowPromptToolGuidance(
     hasCompletionTool
       ? 'Blocked or unable statuses record the response and keep the workflow on the current phase.'
       : null,
+    hasRouteTool
+      ? 'request_workflow_route is a separate direct API tool. Never call it through Skill and never use it for normal linear completion.'
+      : 'request_workflow_route is not currently exposed. Do not replace it with a Skill call or ordinary assistant prose.',
     unavailableSearchTools.length
       ? `${unavailableSearchTools.join('/')} are disabled for this workflow session because ripgrep is unavailable in the runtime environment. Do not retry them; use available files, project context, or ask the user for the needed path.`
       : null,

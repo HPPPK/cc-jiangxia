@@ -617,6 +617,19 @@ describe('workflowToolPolicy', () => {
     expect(isWorkflowPhaseToolDenied('Bash', state)).toBe(false)
     expect(isWorkflowPhaseToolDenied('Write', state)).toBe(true)
   })
+  test('allows only the declarative scoped artifact-write capability before implementation', () => {
+    const capability = workflowToolPolicy.WORKFLOW_ARTIFACT_WRITE_CAPABILITY
+    const state = workflowStateWithToolPolicy('scope-plan', ['Read', capability])
+
+    expect(concreteToolNamesForWorkflowCapability(capability)).toEqual(['Write'])
+    expect(workflowToolPolicy.hasWorkflowArtifactWriteCapability(state)).toBe(true)
+    expect(isWorkflowPhaseToolDenied('Write', state)).toBe(false)
+    expect(isWorkflowPhaseToolDenied('Edit', state)).toBe(true)
+    expect(workflowToolPolicy.isWorkflowArtifactWritePath('/workspace/project', '.workflow/project-context.md')).toBe(true)
+    expect(workflowToolPolicy.isWorkflowArtifactWritePath('/workspace/project', '.workflow/../src/app.ts')).toBe(false)
+    expect(workflowToolPolicy.isWorkflowArtifactWritePath('/workspace/project', 'src/app.ts')).toBe(false)
+  })
+
   test('classifies workflow template authoring operations by read-only and mutating behavior', () => {
     expect(WORKFLOW_TEMPLATE_AUTHORING_READ_ONLY_OPERATIONS).toEqual([
       'guide',
@@ -744,6 +757,35 @@ describe('workflowToolPolicy', () => {
     expect(completedTools).not.toContain(SUBMIT_PHASE_COMPLETION_TOOL_NAME)
   })
 
+  test('keeps direct completion submission and structured recovery routing visible while a phase is ineligible', () => {
+    const getToolNames = requireWorkflowScopedToolNames()
+    const getPromptGuidance = requireWorkflowPromptToolGuidance()
+    const state = {
+      ...stateFor('requirements-clarification'),
+      runtimeContract: {
+        migrationStatus: 'current',
+        phaseStates: {
+          'requirements-clarification': {
+            eligibility: 'ineligible',
+            blockerReasons: ['A required phase issue is still open.'],
+          },
+        },
+      },
+    } as WorkflowSessionState
+
+    expect(getToolNames(state)).toEqual([SUBMIT_PHASE_COMPLETION_TOOL_NAME, 'request_workflow_route'])
+    expect(isWorkflowPhaseToolDenied(SUBMIT_PHASE_COMPLETION_TOOL_NAME, state)).toBe(false)
+    expect(isWorkflowPhaseToolDenied('request_workflow_route', state)).toBe(false)
+
+    const guidance = getPromptGuidance(state)
+    expect(guidance).toContain('direct API tool, never a Skill')
+    expect(guidance).toContain('workflow:submit_phase_completion')
+    expect(guidance).toContain('not yet eligible')
+    expect(guidance).toContain('Do not submit ready/completed')
+    expect(guidance).toContain('submit_phase_completion with status blocked or needs_user')
+    expect(guidance).toContain('request_workflow_route with rework_current_phase or jump_to_phase')
+  })
+
   test('fails closed for dialogue sessions instead of leaking workflow tools', () => {
     const getToolNames = requireWorkflowScopedToolNames()
     const getPromptGuidance = requireWorkflowPromptToolGuidance()
@@ -774,7 +816,8 @@ describe('workflowToolPolicy', () => {
     expect(guidance).toContain('handoff must be an object')
     expect(guidance).toContain('rationale must be a non-empty string')
     expect(guidance).toContain('evidence must be an array')
-    expect(guidance).toContain('call submit_phase_completion with status ready in the same assistant turn')
+    expect(guidance).toContain('The persisted completion gate is not yet eligible')
+    expect(guidance).toContain('Do not submit ready/completed')
     expect(guidance).toContain('Do not ask the user to type continue before calling the completion tool')
     expect(guidance).toContain('requirements-review')
     expect(guidance).toContain('prompt-level guidance only')

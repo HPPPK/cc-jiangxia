@@ -19,8 +19,8 @@ vi.mock('../lib/desktopNotifications', () => ({
   notifyDesktop: notifyDesktopMock,
 }))
 
-function Harness() {
-  useScheduledTaskDesktopNotifications()
+function Harness({ enabled = true }: { enabled?: boolean }) {
+  useScheduledTaskDesktopNotifications(enabled)
   return null
 }
 
@@ -212,4 +212,21 @@ describe('useScheduledTaskDesktopNotifications', () => {
     await vi.advanceTimersByTimeAsync(30_000)
     await vi.waitFor(() => expect(notifyDesktopMock).toHaveBeenCalledTimes(2))
   })
+  it('does not poll until desktop server URL initialization has completed', async () => {
+    listMock.mockResolvedValue({ tasks: [] })
+    getRecentRunsMock.mockResolvedValue({ runs: [] })
+
+    const { rerender } = render(<Harness enabled={false} />)
+
+    expect(listMock).not.toHaveBeenCalled()
+    expect(getRecentRunsMock).not.toHaveBeenCalled()
+
+    rerender(<Harness enabled />)
+
+    await vi.waitFor(() => {
+      expect(listMock).toHaveBeenCalledTimes(1)
+      expect(getRecentRunsMock).toHaveBeenCalledWith(50)
+    })
+  })
+
 })

@@ -64,8 +64,10 @@ export function collectDesktopNotifiableRuns(
     .sort((a, b) => Date.parse(a.completedAt ?? a.startedAt) - Date.parse(b.completedAt ?? b.startedAt))
 }
 
-export function useScheduledTaskDesktopNotifications(): void {
+export function useScheduledTaskDesktopNotifications(enabled = true): void {
   useEffect(() => {
+    if (!enabled) return
+
     let stopped = false
     let initialized = false
 
@@ -116,5 +118,5 @@ export function useScheduledTaskDesktopNotifications(): void {
       stopped = true
       window.clearInterval(interval)
     }
-  }, [])
+  }, [enabled])
 }

@@ -1272,7 +1272,10 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       return
     }
 
-    if (launchTransitioning || !launchReady) return
+    // A workflow may safely start in the already-selected workspace while optional
+    // repository metadata is still loading. Branch/worktree changes are only applied
+    // after their own explicit controls have resolved.
+    if (launchTransitioning) return
 
     const shouldReplaceForRepositoryLaunch =
       !!activeLaunchWorkDir &&
@@ -1852,6 +1855,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                 <ModelSelector runtimeKey={activeTabId} disabled={isActive} compact={useCompactControls} />
               )}
               <button
+                data-testid="chat-submit-button"
                 onClick={showStopAction ? () => stopGeneration(activeTabId!) : handleSubmit}
                 disabled={showStopAction ? false : !canSubmit}
                 aria-label={showStopAction ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run')}

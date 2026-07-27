@@ -42,7 +42,9 @@ import { WorkflowSessionLinkService } from '../services/workflowSessionLinkServi
 import { validateWorkflowWorkspaceRoot } from '../services/workflowWorkspacePolicy.js'
 import { WorkflowReportStore } from '../services/workflowReportStore.js'
 import { WorkflowRuntimeService } from '../services/workflowRuntimeService.js'
+import { collectRuntimeVerifiedOutputEvidence, getRuntimeResolvableAnsweredIssueIds } from '../services/workflowCompletionEvidenceService.js'
 import { WorkflowPreviewService } from '../services/workflowPreviewService.js'
+import { enqueueWorkflowSessionTransition } from '../services/workflowTransitionCoordinator.js'
 import { buildWorkflowFinalReport } from '../services/workflowFinalReport.js'
 import {
   createWorkflowGitCheckpoint,
@@ -108,7 +110,6 @@ const workflowRuntimeService = new WorkflowRuntimeService()
 const workflowPreviewService = new WorkflowPreviewService()
 const expertSessionService = new ExpertSessionService()
 
-const workflowTransitionPromises = new Map<string, Promise<unknown>>()
 
 class WorkflowApiError extends ApiError {
   constructor(statusCode: number, code: string, message: string) {
@@ -559,6 +560,9 @@ async function handleWorkflowSessionRoute(
     case 'transition':
       if (req.method !== 'POST') return methodNotAllowed(req.method)
       return await transitionWorkflow(req, sessionId)
+    case 'completion-progress':
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      return await updateWorkflowCompletionProgress(req, sessionId)
     case 'start':
       if (req.method !== 'POST') return methodNotAllowed(req.method)
       return await startLinkedWorkflow(req, sessionId)
@@ -652,7 +656,7 @@ async function handleWorkflowGitCheckpoints(
           removedFiles: restored.removedFiles,
           restoredAt: now,
         })
-        const written = await workflowSessionStateService.writeState(sessionId, restoredState)
+        const written = await workflowSessionStateService.writeState(sessionId, restoredState, { expectedStateVersion: current.state?.stateVersion })
         workflow = workflowSummaryFromState(written.state)
       }
       const transcriptTrim = restored.transcriptSnapshot
@@ -942,7 +946,7 @@ async function readOptionalObjectBody(req: Request): Promise<Record<string, unkn
 async function exitWorkflow(_req: Request, sessionId: string): Promise<Response> {
   await requireWorkflowSession(sessionId)
 
-  return await enqueueWorkflowTransition(sessionId, async () => {
+  return await enqueueWorkflowSessionTransition(sessionId, async () => {
     const stateRead = await workflowSessionStateService.readState(sessionId)
     if (!stateRead.exists || !stateRead.state) {
       throw workflowError(404, 'WORKFLOW_STATE_UNAVAILABLE', 'Workflow state is unavailable')
@@ -961,7 +965,7 @@ async function exitWorkflow(_req: Request, sessionId: string): Promise<Response>
       requestedAt: now,
       transitionId: 'exit-' + sessionId + '-' + stateRead.state.stateVersion,
     })
-    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state)
+    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state, { expectedStateVersion: stateRead.state.stateVersion })
     const detail = await sessionService.getSession(sessionId)
     const workDir = detail.workDir || process.cwd()
     await workflowSessionCreateService.appendWorkflowMetadata(
@@ -1003,7 +1007,7 @@ async function controlWorkflowPreview(
   }
   const request = body as Record<string, unknown>
 
-  return await enqueueWorkflowTransition(sessionId, async () => {
+  return await enqueueWorkflowSessionTransition(sessionId, async () => {
     const stateRead = await workflowSessionStateService.readState(sessionId)
     if (!stateRead.exists || !stateRead.state) {
       throw workflowError(404, 'WORKFLOW_STATE_UNAVAILABLE', 'Workflow state is unavailable')
@@ -1021,7 +1025,7 @@ async function controlWorkflowPreview(
           reason: optionalString(request.reason, 'reason'),
         })
 
-    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state)
+    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state, { expectedStateVersion: stateRead.state.stateVersion })
     const detail = await sessionService.getSession(sessionId)
     const workDir = detail.workDir || process.cwd()
     await workflowSessionCreateService.appendWorkflowMetadata(
@@ -1115,7 +1119,7 @@ async function startFollowUpWorkflowRun(req: Request, sessionId: string): Promis
     throw workflowError(400, 'WORKFLOW_TEMPLATE_INVALID', 'request is required')
   }
 
-  return await enqueueWorkflowTransition(sessionId, async () => {
+  return await enqueueWorkflowSessionTransition(sessionId, async () => {
     const stateRead = await workflowSessionStateService.readState(sessionId)
     if (!stateRead.exists || !stateRead.state) {
       throw workflowError(404, 'WORKFLOW_STATE_UNAVAILABLE', 'Workflow state is unavailable')
@@ -1146,7 +1150,7 @@ async function startFollowUpWorkflowRun(req: Request, sessionId: string): Promis
       testOutput: typeof record.testOutput === 'string' ? record.testOutput : undefined,
       now,
     })
-    const { pointer } = await workflowSessionStateService.writeState(sessionId, state)
+    const { pointer } = await workflowSessionStateService.writeState(sessionId, state, { expectedStateVersion: stateRead.state.stateVersion })
     const detail = await sessionService.getSession(sessionId)
     const workDir = detail.workDir || process.cwd()
     await workflowSessionCreateService.appendWorkflowMetadata(
@@ -1304,7 +1308,7 @@ async function transitionWorkflow(req: Request, sessionId: string): Promise<Resp
     throw workflowError(400, 'WORKFLOW_TRANSITION_INVALID', 'Unsupported next phase context strategy')
   }
 
-  return await enqueueWorkflowTransition(sessionId, async () => {
+  return await enqueueWorkflowSessionTransition(sessionId, async () => {
     const stateRead = await workflowSessionStateService.readState(sessionId)
     if (!stateRead.exists || !stateRead.state) {
       throw workflowError(404, 'WORKFLOW_STATE_UNAVAILABLE', 'Workflow state is unavailable')
@@ -1312,21 +1316,50 @@ async function transitionWorkflow(req: Request, sessionId: string): Promise<Resp
     assertWorkflowStateTrustedForTransition(stateRead.state)
 
     const requestedAt = new Date().toISOString()
+    const prepared = await prepareRuntimeVerifiedCompletionEvidence(
+      sessionId,
+      stateRead.state,
+      body as WorkflowBoundaryTransitionRequest,
+      requestedAt,
+    )
+
+    // Evidence collection updates the authoritative runtime contract. Persist it before
+    // asking the transition evaluator whether the phase is eligible; otherwise a
+    // fail-closed rejection discards the very evidence needed to become eligible.
+    const transitionState = prepared.state
+    if (transitionState !== stateRead.state) {
+      const { pointer } = await workflowSessionStateService.writeState(
+        sessionId,
+        transitionState,
+        { expectedStateVersion: stateRead.state.stateVersion },
+      )
+      const detail = await sessionService.getSession(sessionId)
+      const workDir = detail.workDir || process.cwd()
+      await workflowSessionCreateService.appendWorkflowMetadata(
+        sessionId,
+        workDir,
+        stateToWorkflowMetadata(transitionState, pointer),
+      )
+    }
+
+    const transitionRequest: WorkflowBoundaryTransitionRequest = transitionState === stateRead.state
+      ? body as WorkflowBoundaryTransitionRequest
+      : { ...(body as WorkflowBoundaryTransitionRequest), stateVersion: transitionState.stateVersion }
     let result: WorkflowBoundaryTransitionResult
     try {
-      result = await applyWorkflowBoundaryTransition(stateRead.state, body, requestedAt)
+      result = await applyWorkflowBoundaryTransition(transitionState, transitionRequest, requestedAt)
     } catch (error) {
       if (isAuthoritativeWorkflowTransitionError(error)) {
         return Response.json({
           error: error.code || 'WORKFLOW_TRANSITION_INVALID',
           message: error.message,
-          state: stateRead.state,
-          workflow: workflowSummaryFromState(stateRead.state),
+          state: transitionState,
+          workflow: workflowSummaryFromState(transitionState),
         }, { status: error.statusCode })
       }
       throw error
     }
-    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state)
+    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state, { expectedStateVersion: transitionState.stateVersion })
     await persistWorkflowFinalReportIfReady(result.state)
     const detail = await sessionService.getSession(sessionId)
     const workDir = detail.workDir || process.cwd()
@@ -1344,6 +1377,154 @@ async function transitionWorkflow(req: Request, sessionId: string): Promise<Resp
       state: result.state,
       workflow: workflowSummaryFromState(result.state),
       ...(result.route ? { route: result.route } : {}),
+    })
+  })
+}
+
+function workflowArtifactPointers(state: WorkflowSessionState): WorkflowArtifactPointer[] {
+  return Array.isArray(state.artifactIndex)
+    ? state.artifactIndex
+    : Object.values(state.artifactIndex ?? {})
+}
+
+function appendWorkflowArtifactPointers(
+  state: WorkflowSessionState,
+  pointers: WorkflowArtifactPointer[],
+): WorkflowSessionState {
+  if (!pointers.length) return state
+  const newPointers = pointers.filter((pointer) => !workflowArtifactPointers(state).some((existing) => existing.artifactId === pointer.artifactId))
+  if (!newPointers.length) return state
+  return {
+    ...state,
+    artifactIndex: Array.isArray(state.artifactIndex)
+      ? [...state.artifactIndex, ...newPointers]
+      : Object.fromEntries([...workflowArtifactPointers(state), ...newPointers].map((pointer) => [pointer.artifactId, pointer])),
+    phases: state.phases.map((phase) => phase.id === state.activePhaseId
+      ? {
+          ...phase,
+          artifactPointers: [...phase.artifactPointers, ...newPointers.filter((pointer) => !phase.artifactPointers.some((existing) => existing.artifactId === pointer.artifactId))],
+        }
+      : phase),
+    phaseRuns: state.phaseRuns.map((phaseRun) => phaseRun.phaseId === state.activePhaseId
+      ? {
+          ...phaseRun,
+          outputArtifactRefs: [...phaseRun.outputArtifactRefs, ...newPointers.filter((pointer) => !phaseRun.outputArtifactRefs.some((existing) => existing.artifactId === pointer.artifactId))],
+        }
+      : phaseRun),
+  }
+}
+
+async function persistUserRecordedArtifactEvidence(
+  sessionId: string,
+  state: WorkflowSessionState,
+  phaseId: string,
+  update: Record<string, unknown>,
+  requestedAt: string,
+): Promise<WorkflowSessionState> {
+  if (update.type !== 'artifact-satisfied') return state
+  if (!Array.isArray(update.artifactIds) || !update.artifactIds.length || !update.artifactIds.every((artifactId) => typeof artifactId === 'string' && artifactId.trim())) {
+    throw ApiError.badRequest('artifact-satisfied updates require at least one artifact ID')
+  }
+  if (typeof update.artifactRequirementId !== 'string' || !update.artifactRequirementId) {
+    throw ApiError.badRequest('artifact-satisfied updates require artifactRequirementId')
+  }
+  if (state.activePhaseId !== phaseId) {
+    throw workflowError(409, 'WORKFLOW_PHASE_MISMATCH', 'Phase progress can only update the active workflow phase.')
+  }
+  if (state.stateVersion !== update.stateVersion) {
+    throw workflowError(409, 'WORKFLOW_STATE_STALE', 'Workflow state is stale. Refresh the session before recording evidence.')
+  }
+
+  const knownIds = new Set(workflowArtifactPointers(state).map((pointer) => pointer.artifactId))
+  const pointers: WorkflowArtifactPointer[] = []
+  for (const artifactId of [...new Set(update.artifactIds as string[])]) {
+    if (knownIds.has(artifactId)) continue
+    const artifact = await workflowSessionStateService.writePhaseArtifact(sessionId, {
+      schemaVersion: 1,
+      sessionId,
+      phaseId,
+      artifactId,
+      lifecycleStatus: 'pending',
+      type: 'structured-output',
+      createdAt: requestedAt,
+      title: 'User-recorded evidence for ' + update.artifactRequirementId,
+      content: {
+        requirementId: update.artifactRequirementId,
+        rationale: update.rationale,
+        recordedBy: 'user',
+      },
+      provenance: {
+        messageId: 'workflow-completion-progress:' + phaseId + ':' + artifactId,
+      },
+    })
+    pointers.push(artifact.pointer)
+  }
+  return appendWorkflowArtifactPointers(state, pointers)
+}
+
+async function updateWorkflowCompletionProgress(req: Request, sessionId: string): Promise<Response> {
+  await requireWorkflowSession(sessionId)
+  let body: unknown
+  try {
+    body = await req.json()
+  } catch {
+    throw ApiError.badRequest('Invalid JSON body')
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw ApiError.badRequest('Workflow completion progress must be an object')
+  }
+  const input = body as Record<string, unknown>
+  if (typeof input.phaseId !== 'string' || !input.phaseId) {
+    throw ApiError.badRequest('phaseId is required')
+  }
+  if (typeof input.stateVersion !== 'number') {
+    throw ApiError.badRequest('stateVersion is required')
+  }
+  if (!input.update || typeof input.update !== 'object' || Array.isArray(input.update)) {
+    throw ApiError.badRequest('update is required')
+  }
+  const update = input.update as Record<string, unknown>
+  if (update.actor !== 'user') {
+    throw ApiError.badRequest('Workflow completion progress updates require explicit user actor')
+  }
+  if (typeof update.type !== 'string' || typeof update.rationale !== 'string' || !update.rationale.trim()) {
+    throw ApiError.badRequest('update.type and update.rationale are required')
+  }
+
+  return await enqueueWorkflowSessionTransition(sessionId, async () => {
+    const stateRead = await workflowSessionStateService.readState(sessionId)
+    if (!stateRead.exists || !stateRead.state) {
+      throw workflowError(404, 'WORKFLOW_STATE_UNAVAILABLE', 'Workflow state is unavailable')
+    }
+    const requestedAt = new Date().toISOString()
+    const stateWithEvidence = await persistUserRecordedArtifactEvidence(
+      sessionId,
+      stateRead.state,
+      input.phaseId as string,
+      { ...update, stateVersion: input.stateVersion },
+      requestedAt,
+    )
+    const result = await workflowRuntimeService.updatePhaseProgress({
+      state: stateWithEvidence,
+      phaseId: input.phaseId as string,
+      stateVersion: input.stateVersion as number,
+      update: update as import('../services/workflowCompletionGate.js').WorkflowPhaseProgressUpdate,
+      requestedAt,
+    })
+    const { pointer } = await workflowSessionStateService.writeState(sessionId, result.state, { expectedStateVersion: stateRead.state.stateVersion })
+    const detail = await sessionService.getSession(sessionId)
+    await workflowSessionCreateService.appendWorkflowMetadata(
+      sessionId,
+      detail.workDir || process.cwd(),
+      stateToWorkflowMetadata(result.state, pointer),
+    )
+    for (const notification of result.notifications) {
+      sendToSession(sessionId, workflowNotificationForDesktop(notification) as any)
+    }
+    return Response.json({
+      ok: true,
+      state: result.state,
+      workflow: workflowSummaryFromState(result.state),
     })
   })
 }
@@ -1379,6 +1560,121 @@ type WorkflowBoundaryTransitionRequest = Omit<WorkflowTransitionRequest, 'action
   evidence?: unknown
 }
 
+async function prepareRuntimeVerifiedCompletionEvidence(
+  sessionId: string,
+  state: WorkflowSessionState,
+  request: WorkflowBoundaryTransitionRequest,
+  requestedAt: string,
+): Promise<{ state: WorkflowSessionState }> {
+  if (!isCompletionSubmissionAction(request.action) || (request.action !== 'ready' && request.action !== 'completed' && request.action !== 'manual_complete')) {
+    return { state }
+  }
+
+  const workspaceRoot = await requireSessionWorkspace(
+    sessionId,
+    'Workflow output evidence cannot be evaluated because the session workspace is unavailable.',
+    'WORKFLOW_OUTPUT_EVIDENCE_UNAVAILABLE',
+  )
+  const verified = await collectRuntimeVerifiedOutputEvidence({
+    sessionId,
+    state,
+    workspaceRoot,
+    requestedAt,
+    stateService: workflowSessionStateService,
+  })
+  if (!verified) return { state }
+
+  let next = verified.state
+  const evidenceArtifactIds = [...verified.outputPointersById.values()].map((pointer) => pointer.artifactId)
+  if (!evidenceArtifactIds.length) return { state }
+
+  const phaseState = () => next.runtimeContract?.phaseStates[verified.phaseId]
+  for (const requirement of phaseState()?.artifactRequirements ?? []) {
+    if (!requirement.required || requirement.status === 'satisfied') continue
+    const direct = verified.outputPointersById.get(requirement.id)
+    const artifactIds = direct
+      ? [direct.artifactId]
+      : requirement.id === verified.evidenceOutputArtifactId
+        ? evidenceArtifactIds
+        : null
+    if (!artifactIds) continue
+    next = (await workflowRuntimeService.updatePhaseProgress({
+      state: next,
+      phaseId: verified.phaseId,
+      stateVersion: next.stateVersion,
+      update: {
+        type: 'artifact-satisfied',
+        actor: 'runtime',
+        artifactRequirementId: requirement.id,
+        artifactIds,
+        rationale: 'Runtime verified all required declared .workflow output files for this requirement and registered session-scoped audit evidence.',
+      },
+      requestedAt,
+    })).state
+  }
+
+  const refreshed = phaseState()
+  if (!refreshed || refreshed.artifactRequirements.some((requirement) => requirement.required && requirement.status !== 'satisfied')) {
+    return { state: next }
+  }
+
+  for (const check of refreshed.checks) {
+    if (!check.required || check.status === 'passed') continue
+    next = (await workflowRuntimeService.updatePhaseProgress({
+      state: next,
+      phaseId: verified.phaseId,
+      stateVersion: next.stateVersion,
+      update: {
+        type: 'check-passed',
+        actor: 'runtime',
+        checkId: check.id,
+        evidenceArtifactIds,
+        rationale: 'Runtime structurally verified the declared workflow output files. This is file-presence and hash evidence only; user confirmation remains required before transition.',
+      },
+      requestedAt,
+    })).state
+  }
+
+  const issueArtifactRequirementIds = (phaseState()?.artifactRequirements ?? [])
+    .filter((requirement) => requirement.required && requirement.status === 'satisfied')
+    .map((requirement) => requirement.id)
+  const passedCheckIds = (phaseState()?.checks ?? [])
+    .filter((check) => check.required && check.status === 'passed')
+    .map((check) => check.id)
+  for (const issueId of getRuntimeResolvableAnsweredIssueIds(next, verified)) {
+    next = (await workflowRuntimeService.updatePhaseProgress({
+      state: next,
+      phaseId: verified.phaseId,
+      stateVersion: next.stateVersion,
+      update: {
+        type: 'process-issue',
+        actor: 'runtime',
+        issueId,
+        status: 'resolved',
+        artifactIds: issueArtifactRequirementIds,
+        checkIds: passedCheckIds,
+        rationale: 'Runtime verified that every required declared .workflow output was rewritten after the user answer, hash-verified, and linked to the current phase completion evidence.',
+      },
+      requestedAt,
+    })).state
+  }
+
+  if (phaseState()?.workStatus !== 'ready-for-review') {
+    next = (await workflowRuntimeService.updatePhaseProgress({
+      state: next,
+      phaseId: verified.phaseId,
+      stateVersion: next.stateVersion,
+      update: {
+        type: 'work-ready-for-review',
+        actor: 'runtime',
+        rationale: 'Runtime completion evaluator verified all declared output artifacts and structural completion checks for review.',
+      },
+      requestedAt,
+    })).state
+  }
+
+  return { state: next }
+}
 type WorkflowBoundaryTransitionResult = {
   state: WorkflowSessionState
   notifications: Array<Record<string, unknown>>
@@ -1501,21 +1797,6 @@ function toCompletionSubmission(request: WorkflowBoundaryTransitionRequest): Com
     rationale: request.rationale as string,
     evidence: request.evidence as CompletionSubmission['evidence'],
   }
-}
-
-function enqueueWorkflowTransition<T>(
-  sessionId: string,
-  transition: () => Promise<T>,
-): Promise<T> {
-  const previous = workflowTransitionPromises.get(sessionId) ?? Promise.resolve()
-  const next = previous.catch(() => {}).then(transition)
-  const tracked = next.then(() => {}, () => {})
-  workflowTransitionPromises.set(sessionId, tracked)
-  return next.finally(() => {
-    if (workflowTransitionPromises.get(sessionId) === tracked) {
-      workflowTransitionPromises.delete(sessionId)
-    }
-  })
 }
 
 async function getWorkflowReport(sessionId: string): Promise<Response> {

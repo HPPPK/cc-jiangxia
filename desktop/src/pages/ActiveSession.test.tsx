@@ -875,6 +875,97 @@ describe('ActiveSession task polling', () => {
     expect(screen.getByTestId('message-list')).toBeInTheDocument()
   })
 
+  it('keeps completion management collapsed until the user explicitly opens stage status', () => {
+    const sessionId = 'workflow-completion-entry-session'
+    const workflow: WorkflowSessionSummary & { stateVersion: number } = {
+      ...WORKFLOW_SUMMARY,
+      completion: {
+        migrationStatus: 'current',
+        phaseId: 'specify',
+        eligibility: 'ineligible',
+        workStatus: 'in-progress',
+        blockerReasons: [
+          'Phase work is not ready for completion review.',
+          'Required artifact is not verified: route-context',
+        ],
+        issues: [],
+        artifactRequirements: [{
+          id: 'route-context',
+          required: true,
+          description: 'Internal template contract that must not be shown as the normal workflow landing page.',
+          status: 'pending',
+          artifactIds: [],
+          updatedAt: '2026-07-24T00:00:00.000Z',
+        }],
+        checks: [{
+          id: 'completion-criteria:0',
+          required: true,
+          description: 'Internal completion criteria that must not be rendered as primary workflow content.',
+          status: 'pending',
+          evidenceArtifactIds: [],
+          updatedAt: '2026-07-24T00:00:00.000Z',
+        }],
+      },
+    }
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Workflow Completion Entry Session',
+        createdAt: '2026-07-24T00:00:00.000Z',
+        modifiedAt: '2026-07-24T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+        workflow,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Workflow Completion Entry Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'workflow started', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByRole('button', { name: '阶段状态' })).toBeInTheDocument()
+    expect(screen.queryByTestId('workflow-completion-status-card')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Required artifact is not verified/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '阶段状态' }))
+
+    const completionCard = screen.getByTestId('workflow-completion-status-card')
+    expect(completionCard).toHaveTextContent('当前阶段尚未标记为可复核。')
+    expect(completionCard).toHaveTextContent('阶段工作证据')
+    expect(completionCard).toHaveTextContent('阶段完成核验')
+    expect(completionCard).not.toHaveTextContent(/Required artifact is not verified/i)
+    expect(completionCard).not.toHaveTextContent(/Internal template contract/i)
+  })
+
   it('renders workflow preview controls and calls start and stop preview APIs', async () => {
     const sessionId = 'workflow-preview-session'
     const workflow: WorkflowSessionSummary = {

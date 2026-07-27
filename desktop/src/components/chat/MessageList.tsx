@@ -532,7 +532,7 @@ export function getLatestCompletedTurnTarget(messages: UIMessage[]): RewindTurnT
   return completedTurns.length > 0 ? completedTurns[completedTurns.length - 1] ?? null : null
 }
 
-function buildTurnCardInsertionMap(
+export function buildTurnCardInsertionMap(
   renderItems: RenderItem[],
   turnChangeCards: TurnChangeCardModel[],
 ) {
@@ -552,8 +552,15 @@ function buildTurnCardInsertionMap(
     }
   })
 
+  const latestCardByTargetMessageId = new Map<string, TurnChangeCardModel>()
+  for (const card of turnChangeCards) {
+    // Historical checkpoint APIs can repeat a turn during refresh/recovery.
+    // A turn has exactly one visible undo card; the last payload is the freshest.
+    latestCardByTargetMessageId.set(card.target.messageId, card)
+  }
+
   const cardsByRenderIndex = new Map<number, TurnChangeCardModel[]>()
-  turnChangeCards.forEach((card) => {
+  latestCardByTargetMessageId.forEach((card) => {
     const renderIndex =
       lastResponseIndexByTurnId.get(card.target.messageId) ??
       userIndexByTurnId.get(card.target.messageId)
@@ -596,7 +603,23 @@ function normalizeTurnCheckpoints(response: unknown): SessionTurnCheckpoint[] {
   if (!response || typeof response !== 'object') return []
   const checkpoints = (response as { checkpoints?: unknown }).checkpoints
   if (!Array.isArray(checkpoints)) return []
-  return checkpoints.filter(isSessionTurnCheckpoint)
+
+  const normalized: SessionTurnCheckpoint[] = []
+  const indexByTargetUserMessageId = new Map<string, number>()
+  for (const checkpoint of checkpoints) {
+    if (!isSessionTurnCheckpoint(checkpoint)) continue
+    const existingIndex = indexByTargetUserMessageId.get(checkpoint.target.targetUserMessageId)
+    if (existingIndex === undefined) {
+      indexByTargetUserMessageId.set(checkpoint.target.targetUserMessageId, normalized.length)
+      normalized.push(checkpoint)
+    } else {
+      // A duplicate checkpoint represents a refreshed version of the same turn.
+      // Keep one card for the turn and let the newest payload replace the older one.
+      normalized[existingIndex] = checkpoint
+    }
+  }
+
+  return normalized
 }
 
 function memoryFileLabel(path: string) {

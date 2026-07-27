@@ -13,74 +13,48 @@ describe('AskUserQuestionTool workflow contract', () => {
     expect(tool.inputSchema.safeParse({}).success).toBe(false)
   })
 
-  test('accepts structured workflow choices with runtime actions while retaining the legacy question/options shape', async () => {
+  test('accepts explicit workflow completion blocking semantics without adding a new tool', async () => {
     const tool = await loadTool()
     expect(tool.inputSchema.safeParse({
       questions: [{
-        id: 'confirm_next_action',
-        prompt: '是否进入下一阶段？',
-        choices: [{
-          id: 'enter_next_stage',
-          label: '进入下一阶段',
-          action: 'advance_phase',
-          targetPhaseId: 'feature-implement',
-          metadata: { source: 'workflow-gate' },
-        }, {
-          id: 'stay',
-          label: '返回修改当前阶段',
-          action: 'return_to_phase',
-        }],
-      }],
-    }).success).toBe(true)
-    expect(tool.inputSchema.safeParse({
-      questions: [{
-        question: 'Continue?',
-        options: [{ label: 'Yes' }, { label: 'No' }],
+        id: 'status-preference',
+        prompt: 'How much status detail would you like?',
+        blocksCompletion: false,
+        choices: [{ id: 'brief', label: 'Brief summary' }, { id: 'detailed', label: 'Detailed summary' }],
       }],
     }).success).toBe(true)
   })
-})
 
+  test('rejects workflow commands in question options so Ask can only return an answer to the current phase', async () => {
+    const tool = await loadTool()
+    const base = {
+      questions: [{
+        id: 'confirm-next-action',
+        prompt: 'What should be adjusted?',
+        choices: [{ id: 'adjust', label: 'Adjust current work' }, { id: 'continue', label: 'Continue current work' }],
+      }],
+    }
+    expect(tool.inputSchema.safeParse(base).success).toBe(true)
+    expect(tool.inputSchema.safeParse({
+      ...base,
+      questions: [{
+        ...base.questions[0],
+        choices: [{ id: 'illegal-route', label: 'Go next', action: 'advance_phase' }, base.questions[0].choices[1]],
+      }],
+    }).success).toBe(false)
+    expect(tool.inputSchema.safeParse({
+      ...base,
+      questions: [{
+        ...base.questions[0],
+        choices: [{ id: 'illegal-jump', label: 'Jump', targetPhaseId: 'delegate-implement' }, base.questions[0].choices[1]],
+      }],
+    }).success).toBe(false)
+  })
 
-test('requires stable IDs and valid structured targets for workflow route options', async () => {
-  const tool = await loadTool()
-  const base = {
-    questions: [{
-      prompt: 'Route workflow?',
-      choices: [
-        {
-          id: 'return-to-stage-4',
-          label: 'Return to Stage 4',
-          action: { kind: 'workflow-route', intent: 'jump_to_phase', targetPhaseId: 'delegate-implement' },
-        },
-        { id: 'continue', label: 'Continue' },
-      ],
-    }],
-  }
-  expect(tool.inputSchema.safeParse(base).success).toBe(true)
-  expect(tool.inputSchema.safeParse({
-    ...base,
-    questions: [{
-      ...base.questions[0],
-      choices: [{ label: 'Broken', action: 'jump_to_phase', targetPhaseId: 'delegate-implement' }, base.questions[0].choices[1]],
-    }],
-  }).success).toBe(false)
-  expect(tool.inputSchema.safeParse({
-    ...base,
-    questions: [{
-      ...base.questions[0],
-      choices: [{ id: 'broken', label: 'Broken', action: { kind: 'workflow-route', intent: 'jump_to_phase' } }, base.questions[0].choices[1]],
-    }],
-  }).success).toBe(false)
-  expect(tool.inputSchema.safeParse({
-    ...base,
-    questions: [{
-      ...base.questions[0],
-      choices: [{
-        id: 'unsupported-workflow-switch',
-        label: 'Switch workflow',
-        action: { kind: 'workflow-route', intent: 'route_to_workflow', targetWorkflowId: 'debug-repair-workflow-v8' },
-      }, base.questions[0].choices[1]],
-    }],
-  }).success).toBe(false)
+  test('retains ordinary legacy question/options calls without workflow actions', async () => {
+    const tool = await loadTool()
+    expect(tool.inputSchema.safeParse({
+      questions: [{ question: 'Continue?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+    }).success).toBe(true)
+  })
 })

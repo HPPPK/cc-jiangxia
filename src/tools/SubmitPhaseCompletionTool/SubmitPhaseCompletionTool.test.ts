@@ -98,6 +98,23 @@ describe('SubmitPhaseCompletionTool', () => {
     expect(findToolByName(getAllBaseTools(), TOOL_NAME)).toBeUndefined()
   })
 
+  test('does not expose retired report-rendering tools to dialogue or workflow pools', () => {
+    expect(findToolByName(getAllBaseTools(), 'EvidenceReport')).toBeUndefined()
+
+    const workflowTools = assembleWorkflowToolPool(
+      getEmptyToolPermissionContext(),
+      [],
+      {
+        mode: 'workflow',
+        activePhaseId: 'discussion',
+        workflowStatus: 'running',
+        status: 'running',
+      } as any,
+    )
+
+    expect(findToolByName(workflowTools, 'EvidenceReport')).toBeUndefined()
+  })
+
   test('is included in the initial headless tool pool when Desktop supplies a workflow binding', () => {
     process.env.ANTHROPIC_API_KEY = 'test-key'
     process.env.CC_JIANGXIA_WORKFLOW_SESSION_ID = 'workflow-session'
@@ -123,6 +140,31 @@ describe('SubmitPhaseCompletionTool', () => {
     )
 
     expect(findToolByName(tools, TOOL_NAME)?.name).toBe(TOOL_NAME)
+  })
+
+  test('keeps the direct submit tool in the pool while an active phase is completion-ineligible', () => {
+    const tools = assembleWorkflowToolPool(
+      getEmptyToolPermissionContext(),
+      [],
+      {
+        mode: 'workflow',
+        activePhaseId: 'discussion',
+        workflowStatus: 'running',
+        status: 'running',
+        runtimeContract: {
+          migrationStatus: 'current',
+          phaseStates: {
+            discussion: {
+              eligibility: 'ineligible',
+              blockerReasons: ['A required question still needs explicit processing.'],
+            },
+          },
+        },
+      } as any,
+    )
+
+    expect(findToolByName(tools, 'submit_phase_completion')?.name).toBe('submit_phase_completion')
+    expect(findToolByName(tools, 'request_workflow_route')?.name).toBe('request_workflow_route')
   })
 
   test('requires status, handoff, rationale, and evidence while allowing phaseId and stateVersion to be inferred', async () => {
@@ -193,8 +235,8 @@ describe('SubmitPhaseCompletionTool', () => {
     expect(prompt).toContain('rationale must be a non-empty string')
     expect(prompt).toContain('evidence must be an array')
     expect(prompt).toContain('Plain assistant text does not satisfy')
-    expect(prompt).toContain('request_workflow_route')
-    expect(prompt).toContain('same assistant turn')
+    expect(prompt).toContain('wait for the controlled user confirmation')
+    expect(prompt).toContain('do not initiate a route or begin another phase in the same turn')
     expect(prompt).toContain('Do not hide a route inside handoff')
   })
 
@@ -374,8 +416,8 @@ describe('SubmitPhaseCompletionTool', () => {
         rationale: 'The required requirements artifact was produced.',
       })
       expect(result.data.message).toContain('user confirmation')
-      expect(result.data.message).toContain('request_workflow_route')
-      expect(result.data.message).toContain('same assistant turn')
+      expect(result.data.message).toContain('stop current-phase business progression')
+      expect(result.data.message).toContain('Do not produce next-phase questions')
       expect(result.data.message).toContain('Do not hide a route inside handoff')
     } finally {
       server.stop(true)

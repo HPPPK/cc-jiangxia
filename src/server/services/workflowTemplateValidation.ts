@@ -18,7 +18,10 @@ import {
   WORKFLOW_EFFORT_MODES,
   WORKFLOW_LABELS,
 } from './workflowTypes.js'
-import { WORKFLOW_PHASE_CONFIGURABLE_TOOL_NAMES } from './workflowToolPolicy.js'
+import {
+  WORKFLOW_ARTIFACT_WRITE_CAPABILITY,
+  WORKFLOW_PHASE_CONFIGURABLE_TOOL_NAMES,
+} from './workflowToolPolicy.js'
 
 export const WORKFLOW_TEMPLATE_SCHEMA_VERSION = 1
 export const WORKFLOW_TEMPLATE_SUPPORTED_SCHEMA_VERSIONS = [1, 2] as const
@@ -519,7 +522,10 @@ export function normalizeActionPolicy(value: unknown): WorkflowPhaseActionPolicy
   }
 }
 
-const CONFIGURABLE_WORKFLOW_TOOL_NAME_SET = new Set<string>(WORKFLOW_PHASE_CONFIGURABLE_TOOL_NAMES)
+const CONFIGURABLE_WORKFLOW_TOOL_NAME_SET = new Set<string>([
+  ...WORKFLOW_PHASE_CONFIGURABLE_TOOL_NAMES,
+  WORKFLOW_ARTIFACT_WRITE_CAPABILITY,
+])
 
 export function normalizeToolPolicy(value: unknown): {
   policy?: WorkflowPhaseToolPolicy

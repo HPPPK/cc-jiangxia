@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MessageList, buildRenderModel } from './MessageList'
+import { MessageList, buildRenderModel, buildTurnCardInsertionMap } from './MessageList'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
 import { sessionsApi } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
@@ -97,6 +97,34 @@ async function selectMessageText(element: Element, text: string) {
     await Promise.resolve()
   })
 }
+
+describe('buildTurnCardInsertionMap', () => {
+  it('keeps only the newest card when a target turn is repeated', () => {
+    const renderItems = [
+      { kind: 'message', message: { id: 'user-1', type: 'user_text', content: 'Update', timestamp: 1 } },
+      { kind: 'message', message: { id: 'assistant-1', type: 'assistant_text', content: 'Done', timestamp: 2 } },
+    ] as never
+    const cards = [
+      {
+        target: { messageId: 'user-1', userMessageIndex: 0, content: 'Update', expectedContent: 'Update' },
+        checkpoint: { target: { targetUserMessageId: 'user-1', userMessageIndex: 0, userMessageCount: 1 }, code: { available: true, filesChanged: ['older.ts'], insertions: 1, deletions: 0 } },
+        workDir: null,
+        isLatest: true,
+      },
+      {
+        target: { messageId: 'user-1', userMessageIndex: 0, content: 'Update', expectedContent: 'Update' },
+        checkpoint: { target: { targetUserMessageId: 'user-1', userMessageIndex: 0, userMessageCount: 1 }, code: { available: true, filesChanged: ['newer.ts'], insertions: 2, deletions: 0 } },
+        workDir: null,
+        isLatest: true,
+      },
+    ] as never
+
+    const cardsByRenderIndex = buildTurnCardInsertionMap(renderItems, cards)
+
+    expect(cardsByRenderIndex.get(1)).toHaveLength(1)
+    expect(cardsByRenderIndex.get(1)?.[0]?.checkpoint.code.filesChanged).toEqual(['newer.ts'])
+  })
+})
 
 describe('MessageList nested tool calls', () => {
   beforeEach(() => {
@@ -2357,6 +2385,54 @@ describe('MessageList nested tool calls', () => {
 
     expect(await screen.findByRole('button', { name: 'Undo current turn changes' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Rewind to here' })).toBeNull()
+  })
+
+  it('renders one turn card when the checkpoint response repeats a target user message', async () => {
+    vi.spyOn(sessionsApi, 'getTurnCheckpoints').mockResolvedValue({
+      checkpoints: [
+        {
+          target: {
+            targetUserMessageId: 'user-1',
+            userMessageIndex: 0,
+            userMessageCount: 1,
+          },
+          code: {
+            available: true,
+            filesChanged: ['src/older.ts'],
+            insertions: 1,
+            deletions: 0,
+          },
+        },
+        {
+          target: {
+            targetUserMessageId: 'user-1',
+            userMessageIndex: 0,
+            userMessageCount: 1,
+          },
+          code: {
+            available: true,
+            filesChanged: ['src/newer.ts'],
+            insertions: 2,
+            deletions: 0,
+          },
+        },
+      ],
+    })
+
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            { id: 'user-1', type: 'user_text', content: 'Update the page', timestamp: 1 },
+            { id: 'assistant-1', type: 'assistant_text', content: 'Done', timestamp: 2 },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(await screen.findAllByRole('button', { name: 'Undo current turn changes' })).toHaveLength(1)
   })
 
   it('keeps historical sessions readable when turn checkpoint payloads are missing', async () => {

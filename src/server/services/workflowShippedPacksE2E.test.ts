@@ -6,9 +6,13 @@ import { PackRegistryService, resetPackRegistryForTests } from './packRegistrySe
 import { WorkflowRuntimeService } from './workflowRuntimeService.js'
 import { WorkflowSessionCreateService } from './workflowSessionCreateService.js'
 import { WorkflowSessionStateService } from './workflowSessionStateService.js'
+import { ZipPackAdapter } from './zipPackAdapter.js'
 import { resetWorkflowTemplateRegistryForTests } from './workflowTemplateRegistryService.js'
-import { getWorkflowPhaseDisallowedTools } from './workflowToolPolicy.js'
-import type { CompletionSubmission, WorkflowSessionState } from './workflowTypes.js'
+import {
+  getWorkflowPhaseDisallowedTools,
+  hasWorkflowArtifactWriteCapability,
+} from './workflowToolPolicy.js'
+import type { CompletionSubmission, WorkflowArtifactPointer, WorkflowSessionState } from './workflowTypes.js'
 
 type ShippedWorkflowCase = {
   id: string
@@ -44,6 +48,24 @@ const SHIPPED_WORKFLOWS: ShippedWorkflowCase[] = [
     routeToPhaseId: 'feature-implement',
     request: '为现有项目新增可配置的导出筛选功能，并完成实现、验证与预览。',
   },
+]
+
+const CANONICAL_WORKFLOW_PROTOCOL_TOOLS = [
+  'Agent',
+  'AskUserQuestion',
+  'Bash',
+  'Edit',
+  'Glob',
+  'Grep',
+  'LS',
+  'MultiEdit',
+  'PowerShell',
+  'Read',
+  'Write',
+  'request_workflow_route',
+  'submit_phase_completion',
+  'workflow_artifact_write',
+  'workflow_template_authoring',
 ]
 
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
@@ -122,11 +144,115 @@ function completionFor(
   }
 }
 
+function appendPhaseEvidence(
+  state: WorkflowSessionState,
+  phaseId: string,
+  pointer: WorkflowArtifactPointer,
+): WorkflowSessionState {
+  const hasArtifact = (items: WorkflowArtifactPointer[]) => items.some((item) => item.artifactId === pointer.artifactId)
+  return {
+    ...state,
+    artifactIndex: Array.isArray(state.artifactIndex)
+      ? (hasArtifact(state.artifactIndex) ? state.artifactIndex : [...state.artifactIndex, pointer])
+      : { ...(state.artifactIndex ?? {}), [pointer.artifactId]: pointer },
+    phases: state.phases.map((phase) => phase.id === phaseId && !hasArtifact(phase.artifactPointers)
+      ? { ...phase, artifactPointers: [...phase.artifactPointers, pointer] }
+      : phase),
+    phaseRuns: state.phaseRuns.map((phaseRun) => phaseRun.phaseId === phaseId && !hasArtifact(phaseRun.outputArtifactRefs)
+      ? { ...phaseRun, outputArtifactRefs: [...phaseRun.outputArtifactRefs, pointer] }
+      : phaseRun),
+  }
+}
+
+async function recordCompletionPrerequisites(
+  service: WorkflowRuntimeService,
+  initial: WorkflowSessionState,
+  sequence: number,
+): Promise<WorkflowSessionState> {
+  const phaseId = initial.activePhaseId
+  if (!phaseId) throw new Error('Cannot record prerequisites for a terminal workflow')
+  const stateService = new WorkflowSessionStateService()
+  let state = initial
+  const phaseState = state.runtimeContract?.phaseStates[phaseId]
+  if (!phaseState) throw new Error('New workflow session is missing its runtime completion contract')
+
+  for (const requirement of phaseState.artifactRequirements.filter((item) => item.required && item.status !== 'satisfied')) {
+    const artifactId = 'e2e-evidence-' + phaseId + '-' + requirement.id + '-' + sequence
+    const persisted = await stateService.writePhaseArtifact(state.sessionId, {
+      schemaVersion: 1,
+      sessionId: state.sessionId,
+      phaseId,
+      artifactId,
+      lifecycleStatus: 'pending',
+      type: 'structured-output',
+      createdAt: '2026-07-17T00:' + String(sequence).padStart(2, '0') + ':10.000Z',
+      title: 'Deterministic E2E evidence for ' + requirement.id,
+      content: {
+        requirementId: requirement.id,
+        phaseId,
+        evidence: 'Persisted before completion review.',
+      },
+      provenance: {
+        messageId: 'shipped-pack-e2e:' + phaseId + ':' + sequence,
+      },
+    })
+    state = appendPhaseEvidence(state, phaseId, persisted.pointer)
+    state = (await service.updatePhaseProgress({
+      state,
+      phaseId,
+      stateVersion: state.stateVersion,
+      update: {
+        type: 'artifact-satisfied',
+        actor: 'runtime',
+        artifactRequirementId: requirement.id,
+        artifactIds: [artifactId],
+        rationale: 'Recorded persisted deterministic E2E evidence for the declared artifact requirement.',
+      },
+      requestedAt: '2026-07-17T00:' + String(sequence).padStart(2, '0') + ':11.000Z',
+    })).state
+  }
+
+  const refreshedPhaseState = state.runtimeContract?.phaseStates[phaseId]
+  if (!refreshedPhaseState) throw new Error('Runtime completion contract disappeared while recording prerequisites')
+  const evidenceArtifactIds = refreshedPhaseState.artifactRequirements.flatMap((requirement) => requirement.artifactIds)
+  for (const check of refreshedPhaseState.checks.filter((item) => item.required && item.status !== 'passed')) {
+    state = (await service.updatePhaseProgress({
+      state,
+      phaseId,
+      stateVersion: state.stateVersion,
+      update: {
+        type: 'check-passed',
+        actor: 'runtime',
+        checkId: check.id,
+        ...(evidenceArtifactIds.length ? { evidenceArtifactIds } : {}),
+        rationale: 'Recorded deterministic E2E completion check against persisted runtime state.',
+      },
+      requestedAt: '2026-07-17T00:' + String(sequence).padStart(2, '0') + ':12.000Z',
+    })).state
+  }
+
+  if (state.runtimeContract?.phaseStates[phaseId]?.workStatus !== 'ready-for-review') {
+    state = (await service.updatePhaseProgress({
+      state,
+      phaseId,
+      stateVersion: state.stateVersion,
+      update: {
+        type: 'work-ready-for-review',
+        actor: 'runtime',
+        rationale: 'Marked deterministic shipped-pack phase work ready for review after its declared evidence and checks were recorded.',
+      },
+      requestedAt: '2026-07-17T00:' + String(sequence).padStart(2, '0') + ':13.000Z',
+    })).state
+  }
+  return state
+}
+
 async function completeCurrentPhase(
   service: WorkflowRuntimeService,
   state: WorkflowSessionState,
   sequence: number,
 ): Promise<WorkflowSessionState> {
+  state = await recordCompletionPrerequisites(service, state, sequence)
   const phaseId = state.activePhaseId
   if (!phaseId) throw new Error('Cannot complete an already terminal workflow')
   const phase = state.templateSnapshot?.phases.find((candidate) => candidate.id === phaseId)
@@ -196,6 +322,38 @@ afterEach(async () => {
 })
 
 describe('shipped workflow packs deterministic end-to-end protocol coverage', () => {
+  test('declares the canonical runtime tools and structured repair-route capabilities in every shipped workflow ZIP', async () => {
+    const adapter = new ZipPackAdapter()
+    const routingPhaseIds: Record<string, string[]> = {
+      'efficient-constrained-dev-debug-workflow-v5': ['scenario-review', 'local-preview'],
+      'feature-extension-workflow-v8': ['feature-quality-preview'],
+      'debug-repair-workflow-v8': ['debug-quality-preview'],
+    }
+
+    for (const workflow of SHIPPED_WORKFLOWS) {
+      const source = path.join(process.cwd(), 'src', 'server', 'packs', workflow.packFile)
+      const archive = await adapter.read(new Uint8Array(await fs.readFile(source)))
+      const hostTools = await archive.readJson<{ requiredHostTools: Array<{ name: string; supported: boolean }> }>('tools/host-tools.json')
+      const manifest = await archive.readJson<{ dependencies?: { requiredHostTools?: Array<{ name: string; supported: boolean }> } }>('manifest.json')
+      const workflowEntry = archive.entries.find((entry) => entry.path.startsWith('workflows/') && entry.path.endsWith('.workflow.json'))
+      if (!workflowEntry) throw new Error('Workflow entry is missing from ' + workflow.packFile)
+      const template = await archive.readJson<{ phases: Array<{ id: string; runtimeContract?: { toolAccess?: { allowed?: string[] } }; instructions?: string }> }>(workflowEntry.path)
+
+      expect(hostTools.requiredHostTools.map((tool) => tool.name)).toEqual(CANONICAL_WORKFLOW_PROTOCOL_TOOLS)
+      expect(hostTools.requiredHostTools.every((tool) => tool.supported)).toBe(true)
+      expect(manifest.dependencies?.requiredHostTools).toEqual(hostTools.requiredHostTools)
+      for (const phase of template.phases) {
+        expect(phase.runtimeContract?.toolAccess?.allowed).toContain('submit_phase_completion')
+        expect(phase.runtimeContract?.toolAccess?.allowed).toContain('request_workflow_route')
+      }
+      for (const phaseId of routingPhaseIds[workflow.id] ?? []) {
+        const phase = template.phases.find((candidate) => candidate.id === phaseId)
+        expect(phase, `${workflow.id} is missing routing phase ${phaseId}`).toBeDefined()
+        expect(phase?.runtimeContract?.toolAccess?.allowed).toContain('request_workflow_route')
+        expect(phase?.runtimeContract?.toolAccess?.allowed).toContain('submit_phase_completion')
+      }
+    }
+  })
   test('runs every actual ZIP workflow through stage permissions, malformed completion rejection, pause/resume, invalid routes, repair loops, and final completion', async () => {
     await initializeIsolatedPackRegistry()
     const service = runtimeService()
@@ -210,8 +368,15 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
         path: 'rg',
         working: true,
       })
-      for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']) {
-        expect(stageOneDenied, `${workflow.id} stage one denies ${tool}`).toContain(tool)
+      if (hasWorkflowArtifactWriteCapability(state)) {
+        expect(stageOneDenied, `${workflow.id} stage one exposes scoped artifact Write`).not.toContain('Write')
+        for (const tool of ['Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']) {
+          expect(stageOneDenied, `${workflow.id} stage one still denies ${tool}`).toContain(tool)
+        }
+      } else {
+        for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent']) {
+          expect(stageOneDenied, `${workflow.id} stage one denies ${tool}`).toContain(tool)
+        }
       }
       for (const tool of ['Read', 'Glob', 'Grep', 'LS', 'AskUserQuestion', 'submit_phase_completion', 'request_workflow_route']) {
         expect(stageOneDenied, `${workflow.id} stage one permits ${tool}`).not.toContain(tool)
@@ -254,7 +419,7 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
         } as CompletionSubmission,
       })).rejects.toMatchObject({ code: 'WORKFLOW_COMPLETION_INVALID' })
 
-      const paused = await service.requestWorkflowRoute({
+      const pauseRequested = await service.requestWorkflowRoute({
         state,
         requestedAt: '2026-07-17T00:01:00.000Z',
         transitionId: `e2e-pause-${workflow.id}`,
@@ -264,11 +429,23 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
           intent: 'pause',
           rationale: 'Exercise the user-visible pause control before continuing.',
           evidence: [],
-          requireUserConfirmation: false,
+          requireUserConfirmation: true,
+        },
+      })
+      expect(pauseRequested.state.pendingRoute).toMatchObject({ intent: 'pause', status: 'pending' })
+      const paused = await service.applyTransition({
+        state: pauseRequested.state,
+        requestedAt: '2026-07-17T00:01:10.000Z',
+        request: {
+          phaseId: pauseRequested.state.activePhaseId!,
+          action: 'confirm',
+          confirmationId: pauseRequested.state.pendingRoute!.routeId,
+          stateVersion: pauseRequested.state.stateVersion,
+          transitionId: `e2e-pause-confirm-${workflow.id}`,
         },
       })
       expect(paused.state.runStatus).toBe('paused')
-      const resumed = await service.requestWorkflowRoute({
+      const resumeRequested = await service.requestWorkflowRoute({
         state: paused.state,
         requestedAt: '2026-07-17T00:02:00.000Z',
         transitionId: `e2e-resume-${workflow.id}`,
@@ -278,7 +455,19 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
           intent: 'resume',
           rationale: 'Resume the active workflow without requiring a typed continue message.',
           evidence: [],
-          requireUserConfirmation: false,
+          requireUserConfirmation: true,
+        },
+      })
+      expect(resumeRequested.state.pendingRoute).toMatchObject({ intent: 'resume', status: 'pending' })
+      const resumed = await service.applyTransition({
+        state: resumeRequested.state,
+        requestedAt: '2026-07-17T00:02:10.000Z',
+        request: {
+          phaseId: resumeRequested.state.activePhaseId!,
+          action: 'confirm',
+          confirmationId: resumeRequested.state.pendingRoute!.routeId,
+          stateVersion: resumeRequested.state.stateVersion,
+          transitionId: `e2e-resume-confirm-${workflow.id}`,
         },
       })
       state = resumed.state
@@ -297,6 +486,7 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
 
       for (const [routeIndex, routeFromPhaseId] of workflow.routeFromPhaseIds.entries()) {
         state = await advanceToPhase(service, state, routeFromPhaseId)
+        state = await recordCompletionPrerequisites(service, state, 50 + routeIndex)
         const pending = await service.submitPhaseCompletion({
           state,
           requestedAt: `2026-07-17T01:${String(routeIndex).padStart(2, '0')}:00.000Z`,
@@ -368,6 +558,7 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
         expect(state.pendingRoute).toBeNull()
 
         if (routeIndex === 0) {
+          state = await recordCompletionPrerequisites(service, state, 60 + routeIndex)
           const reworkPending = await service.submitPhaseCompletion({
             state,
             requestedAt: '2026-07-17T01:30:00.000Z',
@@ -423,11 +614,12 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
           await createRealWorkflowState(workflow),
           routeFromPhaseId,
         )
+        const preparedValidation = await recordCompletionPrerequisites(service, reachedValidation, 70 + routeIndex)
         const blocked = await service.submitPhaseCompletion({
-          state: reachedValidation,
+          state: preparedValidation,
           requestedAt: `2026-07-20T02:${String(routeIndex).padStart(2, '0')}:00.000Z`,
           transitionId: `e2e-blocked-${workflow.id}-${routeFromPhaseId}`,
-          submission: completionFor(reachedValidation, 'blocked'),
+          submission: completionFor(preparedValidation, 'blocked'),
         })
         expect(blocked.state.runStatus).toBe('blocked')
         expect(blocked.state.pendingConfirmation).toBeNull()

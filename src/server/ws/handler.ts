@@ -23,12 +23,22 @@ import { deriveTitle, generateTitle, saveAiTitle } from '../services/titleServic
 import { WorkflowRuntimeService } from '../services/workflowRuntimeService.js'
 import { WorkflowSessionStateService } from '../services/workflowSessionStateService.js'
 import { WorkflowReportStore } from '../services/workflowReportStore.js'
+import {
+  clearWorkflowSessionTransitionCoordinatorForTests,
+  enqueueWorkflowSessionTransition,
+} from '../services/workflowTransitionCoordinator.js'
+import {
+  recordAskUserQuestionAnswer,
+  recordAskUserQuestionIssue,
+} from '../services/workflowCompletionGate.js'
 import { loadCurrentWorkflowTemplate } from '../services/workflowRuntimeTemplateService.js'
 import { buildWorkflowFinalReport } from '../services/workflowFinalReport.js'
 import {
   getWorkflowPhaseDisallowedTools,
   getWorkflowPromptToolGuidance,
   getWorkflowScopedToolNames,
+  hasWorkflowArtifactWriteCapability,
+  isWorkflowArtifactWritePath,
 } from '../services/workflowToolPolicy.js'
 import {
   stateToWorkflowMetadata,
@@ -91,6 +101,8 @@ const sessionStopRequested = new Set<string>()
 /**
  * Track user message count and title state per session for auto-title generation.
  */
+const e2eTestPermissionRequestIds = new Set<string>()
+
 const sessionTitleState = new Map<string, {
   userMessageCount: number
   hasCustomTitle: boolean
@@ -107,7 +119,8 @@ type RuntimeOverride = {
 const runtimeOverrides = new Map<string, RuntimeOverride>()
 
 const runtimeTransitionPromises = new Map<string, Promise<void>>()
-const workflowTransitionPromises = new Map<string, Promise<void>>()
+
+
 const ephemeralWorkflowStates = new Map<string, WorkflowSessionState>()
 const sessionStartupPromises = new Map<string, Promise<void>>()
 const lastResolvedStartupWorkDirs = new Map<string, string>()
@@ -347,6 +360,11 @@ export const handleWebSocket = {
     }
 
     addActiveClient(sessionId, ws)
+    void reconcilePersistedWorkflowAskUserQuestionAnswers(sessionId).catch((error) => {
+      console.warn('[WS] Failed to reconcile persisted AskUserQuestion answers for ' + sessionId + ': ' + (
+        error instanceof Error ? error.message : String(error)
+      ))
+    })
     if (prewarmPendingSessions.has(sessionId) || prewarmedSessions.has(sessionId)) {
       bindPrewarmMetadataCapture(sessionId)
     } else {
@@ -426,6 +444,14 @@ export const handleWebSocket = {
 
         case 'stop_generation':
           handleStopGeneration(ws)
+          break
+
+        case 'e2e_test_permission_request':
+          handleE2ETestPermissionRequest(ws, message)
+          break
+
+        case 'e2e_test_permission_response_ack':
+          handleE2ETestPermissionResponseAck(ws, message)
           break
 
         case 'ping':
@@ -789,7 +815,7 @@ async function resolveWorkflowUserMessage(
     isRequestedModelAvailable: async (modelId) => defaultModel.modelId === modelId,
   })
 
-  await persistWorkflowStateIfAvailable(sessionId, started.state)
+  await persistWorkflowStateIfAvailable(sessionId, started.state, state.stateVersion)
   for (const notification of started.notifications) {
     sendMessage(ws, workflowNotificationForDesktop(notification) as ServerMessage)
   }
@@ -882,25 +908,128 @@ function isWorkflowModelResolution(value: unknown): value is WorkflowModelResolu
   )
 }
 
+function isE2ETestModeEnabled(): boolean {
+  return process.env.CC_JIANGXIA_E2E_TEST_MODE === '1'
+}
+
+function handleE2ETestPermissionRequest(
+  ws: ServerWebSocket<WebSocketData>,
+  message: Extract<ClientMessage, { type: 'e2e_test_permission_request' }>,
+): void {
+  if (!isE2ETestModeEnabled()) {
+    sendError(ws, 'E2E WebSocket controls are disabled.', 'E2E_TEST_MODE_DISABLED')
+    return
+  }
+  e2eTestPermissionRequestIds.add(message.requestId)
+  broadcastServerMessageToSession(ws.data.sessionId, {
+    type: 'tool_use_complete',
+    toolName: 'AskUserQuestion',
+    toolUseId: message.toolUseId,
+    input: message.input,
+  })
+  broadcastServerMessageToSession(ws.data.sessionId, {
+    type: 'permission_request',
+    requestId: message.requestId,
+    toolName: 'AskUserQuestion',
+    toolUseId: message.toolUseId,
+    input: message.input,
+  })
+}
+
+function handleE2ETestPermissionResponseAck(
+  ws: ServerWebSocket<WebSocketData>,
+  message: Extract<ClientMessage, { type: 'e2e_test_permission_response_ack' }>,
+): void {
+  if (!isE2ETestModeEnabled()) {
+    sendError(ws, 'E2E WebSocket controls are disabled.', 'E2E_TEST_MODE_DISABLED')
+    return
+  }
+  broadcastServerMessageToSession(ws.data.sessionId, {
+    type: 'permission_response_ack',
+    requestId: message.requestId,
+    status: message.status,
+    ...(message.message ? { message: message.message } : {}),
+  })
+}
+
+async function rejectUnsafeWorkflowArtifactWrite(
+  sessionId: string,
+  requestId: string,
+  allowed: boolean,
+  updatedInput?: Record<string, unknown>,
+): Promise<string | null> {
+  if (!allowed) return null
+  const pending = conversationService.getPendingPermissionRequests(sessionId)
+    .find((request) => request.requestId === requestId)
+  if (!pending || pending.toolName !== 'Write') return null
+
+  const stateRead = await workflowSessionStateService.readState(sessionId)
+  if (!stateRead.exists || !stateRead.state || !hasWorkflowArtifactWriteCapability(stateRead.state)) return null
+
+  const input = updatedInput ?? pending.input
+  const candidatePath = input.file_path ?? input.filePath ?? input.path
+  const workDir = conversationService.getSessionWorkDir(sessionId)
+    || await sessionService.getSessionWorkDir(sessionId).catch(() => null)
+  if (workDir && isWorkflowArtifactWritePath(workDir, candidatePath)) return null
+
+  conversationService.respondToPermission(sessionId, requestId, false)
+  return 'This workflow phase may write only session-internal .workflow artifacts. Production files and unknown paths remain blocked until a phase explicitly grants normal edit capability.'
+}
+
 async function handlePermissionResponse(
   ws: ServerWebSocket<WebSocketData>,
   message: Extract<ClientMessage, { type: 'permission_response' }>
 ) {
   const { sessionId } = ws.data
-  const workflowChoice = workflowChoiceActionFromInput(message.updatedInput)
-  if (workflowChoice) {
-    await handleWorkflowChoiceAction(ws, workflowChoice)
+  if (isE2ETestModeEnabled() && e2eTestPermissionRequestIds.has(message.requestId)) {
     return
   }
-
-  const delivered = conversationService.respondToPermission(
+  const artifactWriteDenial = await rejectUnsafeWorkflowArtifactWrite(
     sessionId,
     message.requestId,
     message.allowed,
-    message.rule,
     message.updatedInput,
   )
-  if (!delivered && isAskUserQuestionAnswer(message.updatedInput)) {
+  if (artifactWriteDenial) {
+    sendMessage(ws, {
+      type: 'permission_response_ack',
+      requestId: message.requestId,
+      status: 'rejected',
+      message: artifactWriteDenial,
+    })
+    sendMessage(ws, {
+      type: 'error',
+      message: artifactWriteDenial,
+      code: 'WORKFLOW_ARTIFACT_WRITE_FORBIDDEN',
+    })
+    return
+  }
+  const askUserQuestionAnswer = isAskUserQuestionAnswer(message.updatedInput)
+  const delivered = askUserQuestionAnswer
+    ? await enqueueWorkflowSessionTransition(sessionId, async () => {
+        await recordWorkflowAskUserQuestionAnswer(sessionId, message.requestId, message.updatedInput as Record<string, unknown>)
+        return conversationService.respondToPermission(
+          sessionId,
+          message.requestId,
+          message.allowed,
+          message.rule,
+          message.updatedInput,
+        )
+      })
+    : conversationService.respondToPermission(
+        sessionId,
+        message.requestId,
+        message.allowed,
+        message.rule,
+        message.updatedInput,
+      )
+  if (!delivered && askUserQuestionAnswer) {
+    sendMessage(ws, {
+      type: 'permission_response_ack',
+      requestId: message.requestId,
+      status: 'rejected',
+      message: 'The structured answer could not be delivered because the CLI session is not running.',
+    })
     sendMessage(ws, {
       type: 'error',
       message: 'The structured answer could not be delivered because the CLI session is not running.',
@@ -909,123 +1038,293 @@ async function handlePermissionResponse(
     sendMessage(ws, { type: 'status', state: 'idle' })
     return
   }
+  sendMessage(ws, { type: 'permission_response_ack', requestId: message.requestId, status: 'accepted' })
   console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
 }
 
-type WorkflowRouteChoiceAction = {
-  kind: 'workflow-route'
-  intent: 'advance' | 'rework_current_phase' | 'jump_to_phase' | 'pause' | 'resume' | 'finish'
-  targetPhaseId?: string
-}
-
-type WorkflowChoiceAction = {
-  questionId: string
-  choiceId: string
-  action: 'advance_phase' | 'return_to_phase' | 'rework_current_phase' | 'jump_to_phase' | 'workflow_route' | 'pause_workflow' | WorkflowRouteChoiceAction
-  targetPhaseId?: string
-  metadata?: Record<string, unknown>
-}
-
-function workflowChoiceActionFromInput(input: unknown): WorkflowChoiceAction | null {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
-  const actions = (input as Record<string, unknown>).workflowChoiceActions
-  if (!Array.isArray(actions) || actions.length !== 1) return null
-  const candidate = actions[0]
-  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null
-  const record = candidate as Record<string, unknown>
-  if (typeof record.questionId !== 'string' || typeof record.choiceId !== 'string') return null
-  const action = record.action
-  const legacy = action === 'advance_phase'
-    || action === 'return_to_phase'
-    || action === 'rework_current_phase'
-    || action === 'jump_to_phase'
-    || action === 'workflow_route'
-    || action === 'pause_workflow'
-  const structured = action && typeof action === 'object' && !Array.isArray(action)
-    && (action as Record<string, unknown>).kind === 'workflow-route'
-    && typeof (action as Record<string, unknown>).intent === 'string'
-  if (!legacy && !structured) return null
-  const targetPhaseId = typeof record.targetPhaseId === 'string'
-    ? record.targetPhaseId
-    : structured && typeof (action as Record<string, unknown>).targetPhaseId === 'string'
-      ? (action as Record<string, unknown>).targetPhaseId as string
+function askUserQuestionPrompts(input: unknown): Array<{ id?: string; question?: string; prompt?: string; header?: string; blocksCompletion?: boolean }> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return []
+  const questions = (input as Record<string, unknown>).questions
+  if (!Array.isArray(questions)) return []
+  return questions.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const record = item as Record<string, unknown>
+    const id = typeof record.id === 'string' ? record.id : undefined
+    const question = typeof record.question === 'string' ? record.question : undefined
+    const prompt = typeof record.prompt === 'string' ? record.prompt : undefined
+    const header = typeof record.header === 'string' ? record.header : undefined
+    const explicitBlocksCompletion = typeof record.blocksCompletion === 'boolean'
+      ? record.blocksCompletion
       : undefined
-  if ((action === 'jump_to_phase' || (structured && (action as Record<string, unknown>).intent === 'jump_to_phase')) && !targetPhaseId) return null
+    return id || question || prompt || header ? [{
+      id,
+      question,
+      prompt,
+      header,
+      // AskUserQuestion is only for current-phase information or authorization.
+      // Retain the fail-closed default unless the tool explicitly marks an
+      // informational acknowledgement as non-blocking.
+      blocksCompletion: explicitBlocksCompletion ?? true,
+    }] : []
+  })
+}
+
+type WorkflowQuestionContext = {
+  sessionId: string
+  phaseId: string
+  stateVersion: number
+  requestId: string
+  toolUseId?: string
+  issues: Array<{ issueId: string; questionId: string }>
+}
+
+function workflowQuestionContextForRequest(
+  state: WorkflowSessionState,
+  request: Extract<ServerMessage, { type: 'permission_request' }>,
+): WorkflowQuestionContext | null {
+  if (!state.activePhaseId || !state.runtimeContract) return null
+  const phaseState = state.runtimeContract.phaseStates[state.activePhaseId]
+  if (!phaseState) return null
+  const issues = phaseState.issues.flatMap((issue) => {
+    if (issue.source !== 'ask-user-question' || issue.status !== 'open' || issue.questionRequestId !== request.requestId || !issue.questionId) return []
+    return [{ issueId: issue.id, questionId: issue.questionId }]
+  })
+  if (!issues.length) return null
   return {
-    questionId: record.questionId,
-    choiceId: record.choiceId,
-    action: action as WorkflowChoiceAction['action'],
-    ...(targetPhaseId ? { targetPhaseId } : {}),
-    ...(record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
-      ? { metadata: record.metadata as Record<string, unknown> }
-      : {}),
+    sessionId: state.sessionId,
+    phaseId: state.activePhaseId,
+    stateVersion: state.stateVersion,
+    requestId: request.requestId,
+    ...(request.toolUseId ? { toolUseId: request.toolUseId } : {}),
+    issues,
   }
 }
 
-function routeIntentForChoice(choice: WorkflowChoiceAction): WorkflowRouteChoiceAction['intent'] | null {
-  if (typeof choice.action === 'object') return choice.action.intent
-  if (choice.action === 'advance_phase') return 'advance'
-  if (choice.action === 'return_to_phase' || choice.action === 'rework_current_phase') return 'rework_current_phase'
-  if (choice.action === 'jump_to_phase') return 'jump_to_phase'
+function requestWithWorkflowQuestionContext(
+  request: Extract<ServerMessage, { type: 'permission_request' }>,
+  context: WorkflowQuestionContext | null,
+): Extract<ServerMessage, { type: 'permission_request' }> {
+  if (!context || !request.input || typeof request.input !== 'object' || Array.isArray(request.input)) return request
+  return { ...request, input: { ...(request.input as Record<string, unknown>), workflowQuestionContext: context } }
+}
+
+async function appendWorkflowStateMetadata(
+  sessionId: string,
+  state: WorkflowSessionState,
+  pointer: ReturnType<typeof stateToWorkflowMetadata>['statePointer'],
+): Promise<void> {
+  const workDir = conversationService.getSessionWorkDir(sessionId)
+    || await sessionService.getSessionWorkDir(sessionId).catch(() => null)
+  if (!workDir) return
+  await sessionService.appendSessionMetadata(sessionId, {
+    workDir,
+    workflow: stateToWorkflowMetadata(state, pointer),
+  })
+}
+
+async function recordWorkflowAskUserQuestion(
+  sessionId: string,
+  request: Extract<ServerMessage, { type: 'permission_request' }>,
+): Promise<Extract<ServerMessage, { type: 'permission_request' }>> {
+  if (request.toolName !== 'AskUserQuestion') return request
+  const questions = askUserQuestionPrompts(request.input)
+  if (!questions.length) return request
+
+  const stateRead = await workflowSessionStateService.readState(sessionId)
+  if (!stateRead.exists || !stateRead.state || !isWorkflowSessionState(stateRead.state)) return request
+  const now = new Date().toISOString()
+  const candidate = recordAskUserQuestionIssue(stateRead.state, {
+    requestId: request.requestId,
+    ...(request.toolUseId ? { toolUseId: request.toolUseId } : {}),
+    questions,
+    now,
+  })
+  if (candidate === stateRead.state) return request
+
+  const written = await workflowSessionStateService.updateState(
+    sessionId,
+    () => candidate,
+    { expectedStateVersion: stateRead.state.stateVersion },
+  )
+  await appendWorkflowStateMetadata(sessionId, written.state, written.pointer)
+  sendToSession(sessionId, workflowNotificationForDesktop({
+    type: 'system_notification',
+    subtype: 'workflow_state',
+    data: written.state,
+  }) as ServerMessage)
+  return requestWithWorkflowQuestionContext(request, workflowQuestionContextForRequest(written.state, request))
+}
+
+async function recordWorkflowAskUserQuestionAnswer(
+  sessionId: string,
+  requestId: string,
+  input: Record<string, unknown>,
+): Promise<void> {
+  const stateRead = await workflowSessionStateService.readState(sessionId)
+  if (!stateRead.exists || !stateRead.state || !isWorkflowSessionState(stateRead.state)) return
+  const answers = normalizedAskUserQuestionAnswers(input)
+  if (!Object.keys(answers).length) return
+
+  const candidate = recordAskUserQuestionAnswer(stateRead.state, {
+    requestId,
+    answers,
+    now: new Date().toISOString(),
+  })
+  if (candidate === stateRead.state) return
+
+  const written = await workflowSessionStateService.updateState(
+    sessionId,
+    () => candidate,
+    { expectedStateVersion: stateRead.state.stateVersion },
+  )
+  await appendWorkflowStateMetadata(sessionId, written.state, written.pointer)
+  sendToSession(sessionId, workflowNotificationForDesktop({
+    type: 'system_notification',
+    subtype: 'workflow_state',
+    data: written.state,
+  }) as ServerMessage)
+}
+
+function askUserQuestionKeys(question: { id?: string; question?: string; prompt?: string; header?: string }): string[] {
+  return [...new Set([question.id, question.question, question.prompt, question.header]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
+}
+
+function normalizedAskUserQuestionAnswers(input: Record<string, unknown>): Record<string, unknown> {
+  const rawAnswers = input.answers
+  if (!rawAnswers || typeof rawAnswers !== 'object' || Array.isArray(rawAnswers)) return {}
+  const answers = { ...(rawAnswers as Record<string, unknown>) }
+  for (const question of askUserQuestionPrompts(input)) {
+    const keys = askUserQuestionKeys(question)
+    const suppliedKey = keys.find((key) => Object.hasOwn(answers, key))
+    if (!suppliedKey) continue
+    const answer = answers[suppliedKey]
+    for (const key of keys) answers[key] = answer
+  }
+  return answers
+}
+
+function textFromToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.flatMap((block) => {
+    if (typeof block === 'string') return [block]
+    if (!block || typeof block !== 'object') return []
+    const record = block as Record<string, unknown>
+    if (typeof record.text === 'string') return [record.text]
+    return typeof record.content === 'string' ? [record.content] : []
+  }).join('\n')
+}
+
+function persistedAskUserQuestionAnswer(
+  resultText: string,
+  question: { id?: string; question?: string; prompt?: string; header?: string },
+): { questionKey: string; answer: string } | null {
+  const prefix = 'User has answered your questions: '
+  const suffix = ". You can now continue with the user's answers in mind."
+  const start = resultText.indexOf(prefix)
+  if (start === -1) return null
+  const bodyStart = start + prefix.length
+  const bodyEnd = resultText.indexOf(suffix, bodyStart)
+  const body = resultText.slice(bodyStart, bodyEnd === -1 ? undefined : bodyEnd)
+  for (const key of askUserQuestionKeys(question).sort((left, right) => right.length - left.length)) {
+    const marker = '"' + key + '"="'
+    const answerStart = body.indexOf(marker)
+    if (answerStart === -1) continue
+    const valueStart = answerStart + marker.length
+    const valueEnd = body.indexOf('"', valueStart)
+    if (valueEnd === -1) continue
+    return { questionKey: key, answer: body.slice(valueStart, valueEnd) }
+  }
   return null
 }
 
-async function handleWorkflowChoiceAction(
-  ws: ServerWebSocket<WebSocketData>,
-  choice: WorkflowChoiceAction,
-): Promise<void> {
-  const { sessionId } = ws.data
-  const state = await loadWorkflowStateForWebSocket(sessionId)
-  if (!state) {
-    sendMessage(ws, {
-      type: 'error',
-      code: 'WORKFLOW_STATE_UNAVAILABLE',
-      message: 'The workflow choice cannot run because workflow state is unavailable.',
-    })
+async function reconcilePersistedWorkflowAskUserQuestionAnswers(sessionId: string): Promise<void> {
+  const stateRead = await workflowSessionStateService.readState(sessionId)
+  if (!stateRead.exists || !stateRead.state || !isWorkflowSessionState(stateRead.state)) return
+  const state = stateRead.state
+  const phaseId = state.activePhaseId
+  const phaseState = phaseId ? state.runtimeContract?.phaseStates[phaseId] : null
+  const openIssues = phaseState?.issues.filter((issue) =>
+    issue.source === 'ask-user-question'
+    && issue.status === 'open'
+    && typeof issue.questionRequestId === 'string'
+    && typeof issue.toolUseId === 'string'
+  ) ?? []
+  if (!openIssues.length) return
+
+  let messages: Array<{ type?: unknown; content?: unknown }>
+  try {
+    messages = await sessionService.getSessionMessages(sessionId)
+  } catch {
     return
   }
-  const routeIntent = routeIntentForChoice(choice)
-  if (routeIntent) {
-    const hasPendingCompletion = state.pendingConfirmation?.status === 'pending'
-    const activePhase = state.activePhaseId
-      ? state.phases.find((phase) => phase.id === state.activePhaseId)
-      : null
-    const isBlockedRecovery = Boolean(
-      state.runStatus === 'blocked'
-      && !state.pendingConfirmation
-      && activePhase?.blockedReason
-      && (routeIntent === 'rework_current_phase' || routeIntent === 'jump_to_phase'),
-    )
-    if (!hasPendingCompletion && !isBlockedRecovery) {
-      sendMessage(ws, {
-        type: 'error',
-        code: 'WORKFLOW_COMPLETION_REQUIRED',
-        message: 'This workflow choice requires a pending completion or a blocked-phase recovery route.',
-      })
-      return
+
+  const askInputsByToolUseId = new Map<string, Record<string, unknown>>()
+  const resultsByToolUseId = new Map<string, string>()
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      if (!block || typeof block !== 'object') continue
+      const record = block as Record<string, unknown>
+      if (
+        message.type === 'tool_use'
+        && record.type === 'tool_use'
+        && record.name === 'AskUserQuestion'
+        && typeof record.id === 'string'
+        && record.input
+        && typeof record.input === 'object'
+        && !Array.isArray(record.input)
+      ) {
+        askInputsByToolUseId.set(record.id, record.input as Record<string, unknown>)
+      }
+      if (
+        message.type === 'tool_result'
+        && record.type === 'tool_result'
+        && typeof record.tool_use_id === 'string'
+      ) {
+        const text = textFromToolResultContent(record.content)
+        if (text.includes('User has answered your questions:')) {
+          resultsByToolUseId.set(record.tool_use_id, text)
+        }
+      }
     }
-    await applyWorkflowTransitionMessage(ws, {
-      type: 'workflow_transition',
-      phaseId: state.activePhaseId ?? state.pendingConfirmation?.phaseId ?? 'workflow',
-      action: 'route',
-      routeIntent,
-      targetPhaseId: choice.targetPhaseId,
-      rationale: typeof choice.metadata?.rationale === 'string' ? choice.metadata.rationale : `User selected workflow route ${routeIntent}.`,
-      evidence: [],
-      requireUserConfirmation: false,
-      stateVersion: state.stateVersion,
-      transitionId: `ask-user-question:${choice.questionId}:${choice.choiceId}:${state.stateVersion}`,
-    } as WorkflowBoundaryTransitionMessage)
-    return
   }
-  if (choice.action !== 'pause_workflow') return
-  await applyWorkflowTransitionMessage(ws, {
-    type: 'workflow_transition',
-    phaseId: state.activePhaseId ?? 'workflow',
-    action: 'pause',
-    stateVersion: state.stateVersion,
-    transitionId: `ask-user-question:${choice.questionId}:${choice.choiceId}:${state.stateVersion}`,
-  } as WorkflowBoundaryTransitionMessage)
+
+  let candidate = state
+  for (const issue of openIssues) {
+    const input = askInputsByToolUseId.get(issue.toolUseId!)
+    const resultText = resultsByToolUseId.get(issue.toolUseId!)
+    if (!input || !resultText) continue
+    const question = askUserQuestionPrompts(input).find((entry) =>
+      askUserQuestionKeys(entry).includes(issue.questionId ?? ''),
+    )
+    if (!question) continue
+    const persistedAnswer = persistedAskUserQuestionAnswer(resultText, question)
+    if (!persistedAnswer) continue
+    const answers = normalizedAskUserQuestionAnswers({
+      ...input,
+      answers: { [persistedAnswer.questionKey]: persistedAnswer.answer },
+    })
+    candidate = recordAskUserQuestionAnswer(candidate, {
+      requestId: issue.questionRequestId!,
+      answers,
+      now: new Date().toISOString(),
+    })
+  }
+  if (candidate === state) return
+
+  const written = await workflowSessionStateService.updateState(
+    sessionId,
+    () => candidate,
+    { expectedStateVersion: state.stateVersion },
+  )
+  await appendWorkflowStateMetadata(sessionId, written.state, written.pointer)
+  broadcastServerMessageToSession(sessionId, workflowNotificationForDesktop({
+    type: 'system_notification',
+    subtype: 'workflow_state',
+    data: written.state,
+  }) as ServerMessage)
 }
 
 function isAskUserQuestionAnswer(input: unknown): boolean {
@@ -1083,7 +1382,7 @@ async function handleWorkflowTransition(
   message: Extract<ClientMessage, { type: 'workflow_transition' }>,
 ) {
   try {
-    await enqueueWorkflowTransition(ws.data.sessionId, () =>
+    await enqueueWorkflowSessionTransition(ws.data.sessionId, () =>
       applyWorkflowTransitionMessage(ws, normalizeWorkflowTransitionMessage(message)),
     )
   } catch (error) {
@@ -1127,7 +1426,7 @@ async function applyWorkflowTransitionMessage(
 
   const result = await applyWorkflowBoundaryTransition(state, message, new Date().toISOString())
 
-  await persistWorkflowStateIfAvailable(sessionId, result.state)
+  await persistWorkflowStateIfAvailable(sessionId, result.state, state.stateVersion)
   for (const notification of result.notifications) {
     sendMessage(ws, workflowNotificationForDesktop(notification) as ServerMessage)
   }
@@ -1322,7 +1621,7 @@ async function sendWorkflowResumeTurn(
     isRequestedModelAvailable: async (modelId) => defaultModel.modelId === modelId,
   })
 
-  await persistWorkflowStateIfAvailable(sessionId, started.state)
+  await persistWorkflowStateIfAvailable(sessionId, started.state, state.stateVersion)
   for (const notification of started.notifications) {
     sendMessage(ws, workflowNotificationForDesktop(notification) as ServerMessage)
   }
@@ -2863,15 +3162,32 @@ function bindAllClientSessionOutputs(
   conversationService.onOutput(sessionId, callback)
 }
 
+function broadcastServerMessageToSession(sessionId: string, message: ServerMessage): void {
+  const clients = activeSessions.get(sessionId)
+  if (!clients) return
+  for (const ws of [...clients]) {
+    sendMessage(ws, message)
+  }
+}
+
 function broadcastCliMessagesToSession(sessionId: string, cliMsg: any): void {
   const serverMsgs = translateCliMessage(cliMsg, sessionId)
-  const clients = activeSessions.get(sessionId)
-  if (clients) {
-    for (const ws of [...clients]) {
-      for (const msg of serverMsgs) {
-        if (sendMessage(ws, msg) === 'dropped') break
-      }
+  for (const message of serverMsgs) {
+    if (message.type === 'permission_request' && message.toolName === 'AskUserQuestion') {
+      void enqueueWorkflowSessionTransition(sessionId, async () => {
+        const boundRequest = await recordWorkflowAskUserQuestion(sessionId, message)
+        broadcastServerMessageToSession(sessionId, boundRequest)
+      }).catch((error) => {
+        console.warn(`[WS] Failed to persist AskUserQuestion state for ${sessionId}:`, error)
+        sendToSession(sessionId, {
+          type: 'error',
+          code: 'WORKFLOW_STATE_PERSIST_FAILED',
+          message: 'The structured question was not delivered because its runtime state could not be persisted safely.',
+        })
+      })
+      continue
     }
+    broadcastServerMessageToSession(sessionId, message)
   }
 }
 
@@ -3273,6 +3589,8 @@ type RuntimeSettings = {
   disallowedTools?: string[]
   workflowSessionId?: string
   workflowSystemPrompt?: string
+  expertSystemPrompt?: string
+  expertOutputTemplateWriteGuard?: string
 }
 
 async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> {
@@ -3505,23 +3823,6 @@ function enqueueRuntimeTransition(
   return next
 }
 
-function enqueueWorkflowTransition(
-  sessionId: string,
-  transition: () => Promise<void>,
-): Promise<void> {
-  const previous = workflowTransitionPromises.get(sessionId) ?? Promise.resolve()
-  const next = previous
-    .catch(() => {})
-    .then(transition)
-    .finally(() => {
-      if (workflowTransitionPromises.get(sessionId) === next) {
-        workflowTransitionPromises.delete(sessionId)
-      }
-    })
-  workflowTransitionPromises.set(sessionId, next)
-  return next
-}
-
 async function waitForRuntimeTransitionBeforeUserTurn(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
@@ -3592,13 +3893,14 @@ async function loadWorkflowStateForWebSocket(
 async function persistWorkflowStateIfAvailable(
   sessionId: string,
   state: WorkflowSessionState,
+  expectedStateVersion: number,
 ): Promise<void> {
   const read = await workflowSessionStateService.readState(sessionId).catch(() => null)
   if (!read?.exists) {
     ephemeralWorkflowStates.set(sessionId, state)
     return
   }
-  const write = await workflowSessionStateService.writeState(sessionId, state).catch((error) => {
+  const write = await workflowSessionStateService.writeState(sessionId, state, { expectedStateVersion }).catch((error) => {
     console.warn(`[WS] Failed to persist workflow state for ${sessionId}:`, error)
     return null
   })
@@ -3892,7 +4194,7 @@ export function __resetWebSocketHandlerStateForTests(): void {
   clientOutputCallbacks.clear()
   sessionCleanupTimers.clear()
   prewarmIdleTimers.clear()
-  workflowTransitionPromises.clear()
+  clearWorkflowSessionTransitionCoordinatorForTests()
   runtimeTransitionPromises.clear()
   runtimeOverrides.clear()
   sessionStartupPromises.clear()

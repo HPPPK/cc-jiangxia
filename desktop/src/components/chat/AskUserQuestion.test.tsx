@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 
 const { sendMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
@@ -113,87 +113,68 @@ describe('AskUserQuestion', () => {
     })
   })
 
-  it('sends workflow choice actions as structured runtime data instead of ordinary chat text', () => {
+  it('submits a legacy action-shaped option as an ordinary current-phase answer', () => {
     render(
       <AskUserQuestion
         toolUseId="tool-1"
         input={{
+          workflowQuestionContext: {
+            sessionId: ACTIVE_TAB,
+            phaseId: 'requirements',
+            stateVersion: 3,
+            requestId: 'perm-1',
+            issues: [{ issueId: 'ask:perm-1:0', questionId: 'adjustment' }],
+          },
           questions: [{
-            id: 'confirm_next_action',
-            prompt: '进入下一阶段？',
-            choices: [{
-              id: 'enter_next_stage',
-              label: '进入下一阶段',
-              action: 'advance_phase',
-              targetPhaseId: 'feature-implement',
-            }, { id: 'stay', label: '返回修改当前阶段', action: 'return_to_phase' }],
-          }],
-        }}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /^进入下一阶段$/ }))
-    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
-
-    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, expect.objectContaining({
-      type: 'permission_response',
-      updatedInput: expect.objectContaining({
-        answers: { '进入下一阶段？': '进入下一阶段' },
-        workflowChoiceActions: [{
-          questionId: 'confirm_next_action',
-          choiceId: 'enter_next_stage',
-          action: 'advance_phase',
-          targetPhaseId: 'feature-implement',
-        }],
-      }),
-    }))
-  })
-
-  it('serializes a structured jump route by stable option id and preserves the route action', () => {
-    render(
-      <AskUserQuestion
-        toolUseId="tool-1"
-        input={{
-          questions: [{
-            id: 'route_after_validation',
-            prompt: '发现问题后要怎么做？',
+            id: 'adjustment',
+            prompt: 'What should be adjusted?',
             choices: [
-              {
-                id: 'return-to-stage-4',
-                label: '返回 Stage 4 修复该问题',
-                action: {
-                  kind: 'workflow-route',
-                  intent: 'jump_to_phase',
-                  targetPhaseId: 'delegate-implement',
-                },
-              },
-              { id: 'continue-stage-7', label: '继续下一阶段' },
+              { id: 'adjust', label: 'Adjust current work', action: 'return_to_phase' },
+              { id: 'continue', label: 'Continue current work' },
             ],
           }],
         }}
       />,
     )
 
-    const routeOption = screen.getByRole('button', { name: /^返回 Stage 4 修复该问题$/ })
-    fireEvent.click(routeOption)
-    expect(routeOption.querySelector('svg')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust current work' }))
     fireEvent.click(screen.getByRole('button', { name: /submit/i }))
 
     expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, expect.objectContaining({
       type: 'permission_response',
-      updatedInput: expect.objectContaining({
-        answers: { '发现问题后要怎么做？': '返回 Stage 4 修复该问题' },
-        workflowChoiceActions: [{
-          questionId: 'route_after_validation',
-          choiceId: 'return-to-stage-4',
-          action: {
-            kind: 'workflow-route',
-            intent: 'jump_to_phase',
-            targetPhaseId: 'delegate-implement',
-          },
-        }],
-      }),
+      updatedInput: expect.objectContaining({ answers: { adjustment: 'Adjust current work' } }),
     }))
+    const sent = sendMock.mock.calls[sendMock.mock.calls.length - 1]?.[1] as { updatedInput?: Record<string, unknown> }
+    expect(sent.updatedInput?.workflowChoiceActions).toBeUndefined()
+  })
+
+  it('does not serialize a legacy structured jump action from an Ask answer', () => {
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          questions: [{
+            id: 'route-after-validation',
+            prompt: 'What should happen after validation?',
+            choices: [
+              {
+                id: 'repair',
+                label: 'Return to repair',
+                action: { kind: 'workflow-route', intent: 'jump_to_phase', targetPhaseId: 'delegate-implement' },
+              },
+              { id: 'continue', label: 'Continue current work' },
+            ],
+          }],
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Return to repair' }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    const sent = sendMock.mock.calls[sendMock.mock.calls.length - 1]?.[1] as { updatedInput?: Record<string, unknown> }
+    expect(sent.updatedInput?.answers).toEqual({ 'route-after-validation': 'Return to repair' })
+    expect(sent.updatedInput?.workflowChoiceActions).toBeUndefined()
   })
 
   it('shows the real permission mode control when a workflow asks for tool access', () => {
@@ -646,6 +627,49 @@ describe('AskUserQuestion', () => {
     })
   })
 
+  it('keeps a question non-terminal until acknowledgement and restores it after a rejected response', async () => {
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          questions: [{
+            question: 'Which scope should be used?',
+            options: [{ label: 'Current scope' }, { label: 'Expanded scope' }],
+          }],
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Current scope' }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    expect(screen.queryByText(/answered/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+
+    await act(async () => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [ACTIVE_TAB]: {
+            ...state.sessions[ACTIVE_TAB]!,
+            permissionResponse: {
+              requestId: 'perm-1',
+              status: 'rejected',
+              message: 'The selected action was rejected. Please choose again.',
+            },
+            pendingPermission: state.sessions[ACTIVE_TAB]!.pendingPermission,
+            chatState: 'permission_pending',
+          },
+        },
+      }))
+    })
+
+    expect(screen.getByRole('alert').textContent).toContain('Please choose again')
+    expect(screen.getByRole('button', { name: /submit/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    expect(sendMock).toHaveBeenCalledTimes(2)
+  })
+
   it('renders aborted permission results as terminal instead of asking again', () => {
     useChatStore.setState((state) => ({
       sessions: {
@@ -676,5 +700,40 @@ describe('AskUserQuestion', () => {
     expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
     expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
     expect(screen.getByText(/Tool permission request failed: AbortError/)).toBeTruthy()
+  })
+
+  it('returns stable option IDs only for a trusted research recovery question', () => {
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          metadata: {
+            research_recovery_field: 'competitor_pricing',
+            research_recovery_state: 'access_limited',
+            attempted_urls: ['https://example.com/pricing'],
+          },
+          questions: [{
+            id: 'research-recovery:competitor_pricing',
+            prompt: '竞品价格页受限后如何处理？',
+            choices: [
+              { id: 'provide_alternative_source', label: '提供链接' },
+              { id: 'provide_internal_material', label: '提供材料' },
+              { id: 'keep_evidence_gap', label: '保留缺口' },
+              { id: 'keep_hypothesis', label: '保留假设' },
+            ],
+          }],
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^保留缺口$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, expect.objectContaining({
+      updatedInput: expect.objectContaining({
+        answers: { 'research-recovery:competitor_pricing': '保留缺口' },
+        answerChoiceIds: { 'research-recovery:competitor_pricing': ['keep_evidence_gap'] },
+      }),
+    }))
   })
 })

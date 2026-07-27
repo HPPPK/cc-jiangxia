@@ -411,6 +411,12 @@ describe('ChatInput file mentions', () => {
 
 
 
+  it('exposes a stable submit control for browser automation', () => {
+    render(<ChatInput />)
+
+    expect(screen.getByTestId('chat-submit-button')).toBeInTheDocument()
+  })
+
   it('blocks pasted image attachments when the selected model lacks image input capability', async () => {
     useSettingsStore.setState({
       locale: 'zh',
@@ -1059,6 +1065,8 @@ describe('ChatInput file mentions', () => {
   })
 
   it('opens workflows from the plus menu in an empty active session and starts a workflow session', async () => {
+    // Starting a workflow in the current workspace must not wait for optional repository metadata.
+    mocks.getRepositoryContext.mockImplementation(() => new Promise(() => {}))
     mocks.create.mockResolvedValueOnce({
       sessionId: 'created-workflow',
       workDir: '/repo',

@@ -42,7 +42,7 @@ const inputSchema = lazySchema(() =>
   z.strictObject({
     phaseId: z.string().min(1).optional().describe('The active workflow phase ID. If omitted, the tool uses the current active workflow phase.'),
     stateVersion: z.number().int().nonnegative().optional().describe('The current workflow state version. If omitted, the tool refreshes the current workflow state version.'),
-    status: z.enum(['ready', 'needs_user', 'completed', 'blocked', 'unable']).describe('Completion result for the active phase. Use needs_user when a structured user decision is required; use completed when an auto-transition phase is fully complete.'),
+    status: z.enum(['ready', 'needs_user', 'completed', 'blocked', 'unable']).describe('Completion result for the active phase. Use ready for a normal completion request. Legacy completed is accepted for compatibility but still waits for user confirmation; it never auto-advances.'),
     handoff: handoffSchema.describe('Structured phase handoff for user confirmation or follow-up.'),
     rationale: z.string().min(1).describe('Why the phase is ready, blocked, or unable.'),
     evidence: z.array(evidenceSchema).describe('Evidence supporting the completion status.'),
@@ -106,8 +106,8 @@ function messageForStatus(status: Output['status']): string {
 
   return [
     'Completion is recorded and is waiting for user confirmation.',
-    'Do not stop solely because completion is waiting for confirmation.',
-    'If the current phase requires a non-linear route, call request_workflow_route in the same assistant turn before waiting for the user.',
+    'While confirmation is pending, stop current-phase business progression and wait for the user.',
+    'Do not produce next-phase questions, plans, artifacts, operations, or nonessential tool calls while confirmation is pending.',
     'Do not hide a route inside handoff or ordinary assistant text; submit_phase_completion records completion only and never creates a workflow route.',
   ].join(' ')
 }
@@ -342,13 +342,13 @@ export const SubmitPhaseCompletionTool: Tool<InputSchema, Output> = buildTool({
   },
   async prompt() {
     return [
-      'Submit the active workflow phase completion. Use status ready to request user confirmation; use blocked or unable to record why the workflow must stay on the current phase.',
+      'Submit the active workflow phase completion. Use status ready only after the current phase is complete; it always requests user confirmation. Use blocked or unable only to record why the workflow must stay on the current phase.',
       'Required input: status, handoff, rationale, and evidence.',
       'handoff must be an object containing the phase summary, key decisions, evidence or artifact references, remaining risks, and next-phase inputs.',
       'rationale must be a non-empty string explaining why the selected completion status is appropriate.',
       'evidence must be an array of evidence objects. Use an empty array only when no evidence can be recorded, and explain that limitation in rationale.',
       'Plain assistant text does not satisfy handoff, rationale, or evidence: put all three values in this tool input before calling the tool.',
-      'If you determine that the completed phase must take a non-linear route, call request_workflow_route in the same assistant turn after this tool succeeds and before waiting for user confirmation.',
+      'After status ready succeeds, wait for the controlled user confirmation, rejection, retry, pause, stop, or other explicitly supported recovery action; do not initiate a route or begin another phase in the same turn.',
       'Do not hide a route inside handoff or ordinary assistant text: submit_phase_completion records completion only; request_workflow_route is the only tool that creates a pending route.',
       'phaseId and stateVersion may be omitted; the active workflow phase and latest workflow state are inferred at call time.',
     ].join('\n')

@@ -1592,6 +1592,12 @@ fn resolve_h5_dist_dir(app: &AppHandle, app_root: &Path) -> PathBuf {
     select_h5_dist_dir(resource_dir.as_deref(), app_root)
 }
 
+fn select_bundled_packs_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let resource_dir = resource_dir?;
+    let packs_dir = resource_dir.join("binaries").join("packs");
+    packs_dir.is_dir().then_some(packs_dir)
+}
+
 
 fn is_application_control_block(error: &str) -> bool {
     error.contains("Application Control")
@@ -1687,6 +1693,9 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     let h5_dist_dir = resolve_h5_dist_dir(app, &app_root)
         .to_string_lossy()
         .to_string();
+    let resource_dir = app.path().resource_dir().ok();
+    let bundled_packs_dir = select_bundled_packs_dir(resource_dir.as_deref())
+        .map(|path| path.to_string_lossy().to_string());
 
     let sidecar_args = vec![
         "server".to_string(),
@@ -1697,13 +1706,14 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
         "--port".to_string(),
         port.to_string(),
     ];
-    let envs = base_sidecar_environment(
-        &app_root,
-        &[
-            ("CLAUDE_H5_AUTO_PUBLIC_URL", "1".to_string()),
-            ("CLAUDE_H5_DIST_DIR", h5_dist_dir),
-        ],
-    );
+    let mut sidecar_environment = vec![
+        ("CLAUDE_H5_AUTO_PUBLIC_URL", "1".to_string()),
+        ("CLAUDE_H5_DIST_DIR", h5_dist_dir),
+    ];
+    if let Some(packs_dir) = bundled_packs_dir {
+        sidecar_environment.push(("CLAUDE_PACKS_DIR", packs_dir));
+    }
+    let envs = base_sidecar_environment(&app_root, &sidecar_environment);
 
     let startup_logs = Arc::new(Mutex::new(VecDeque::new()));
     let logs_for_task = Arc::clone(&startup_logs);
@@ -1975,7 +1985,7 @@ mod tests {
         decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
         has_meaningful_intersection, is_persistable_window_state, normalize_terminal_bash_path,
         parse_env_block, resolve_desktop_terminal_shell, run_notification_bridge,
-        select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
+        select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
         TerminalHostPlatform, SERVER_BIND_HOST, SERVER_CONTROL_HOST, SERVER_STARTUP_TIMEOUT_SECS,
     };
     use std::{collections::HashMap, fs};
@@ -2205,6 +2215,31 @@ mod tests {
     fn server_sidecar_binds_lan_but_reports_loopback_control_url() {
         assert_eq!(SERVER_BIND_HOST, "0.0.0.0");
         assert_eq!(SERVER_CONTROL_HOST, "127.0.0.1");
+    }
+
+    #[test]
+    fn bundled_packs_dir_uses_the_packaged_resource_directory_when_present() {
+        let root = std::env::temp_dir().join(format!("cchh-bundled-packs-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        let packs_dir = resource_dir.join("binaries").join("packs");
+
+        fs::create_dir_all(&packs_dir).expect("create bundled packs dir");
+
+        assert_eq!(select_bundled_packs_dir(Some(&resource_dir)), Some(packs_dir));
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
+
+    #[test]
+    fn bundled_packs_dir_is_not_injected_when_the_resource_directory_has_no_packs() {
+        let root = std::env::temp_dir().join(format!("cchh-no-bundled-packs-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        fs::create_dir_all(&resource_dir).expect("create resource dir");
+
+        assert_eq!(select_bundled_packs_dir(Some(&resource_dir)), None);
+        assert_eq!(select_bundled_packs_dir(None), None);
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
     }
 
     #[test]

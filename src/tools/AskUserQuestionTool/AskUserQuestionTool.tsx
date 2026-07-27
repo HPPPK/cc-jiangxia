@@ -11,43 +11,20 @@ import type { Tool } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { ASK_USER_QUESTION_TOOL_CHIP_WIDTH, ASK_USER_QUESTION_TOOL_NAME, ASK_USER_QUESTION_TOOL_PROMPT, DESCRIPTION, PREVIEW_FEATURE_PROMPT } from './prompt.js';
-const workflowRouteActionSchema = z.strictObject({
-  kind: z.literal('workflow-route'),
-  intent: z.enum(['advance', 'rework_current_phase', 'jump_to_phase', 'pause', 'resume', 'finish']),
-  targetPhaseId: z.string().min(1).optional(),
-}).superRefine((value, ctx) => {
-  if (value.intent === 'jump_to_phase' && !value.targetPhaseId) {
-    ctx.addIssue({ code: 'custom', path: ['targetPhaseId'], message: 'jump_to_phase requires targetPhaseId.' })
-  }
-})
-
-const questionOptionSchema = lazySchema(() => z.object({
-  id: z.string().min(1).optional().describe('Stable option ID. Required for workflow action choices when supplied by the workflow runtime.'),
+const questionOptionSchema = lazySchema(() => z.strictObject({
+  id: z.string().min(1).optional().describe('Stable option ID used to preserve the selected answer across the current-phase question and response.'),
   label: z.string().describe('The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice.'),
   description: z.string().optional().describe('Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications.'),
-  action: z.union([
-    z.enum(['advance_phase', 'return_to_phase', 'rework_current_phase', 'jump_to_phase', 'workflow_route', 'pause_workflow']),
-    workflowRouteActionSchema,
-  ]).optional().describe('Structured workflow action. A workflow-route action is handled by runtime, never by label text.'),
-  targetPhaseId: z.string().min(1).optional().describe('Optional target workflow phase ID used by legacy flat workflow runtime actions.'),
-  metadata: z.record(z.string(), z.unknown()).optional().describe('Optional structured metadata consumed by the workflow runtime; never render it as ordinary user text.'),
   preview: z.string().optional().describe('Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons that help users compare options. See the tool description for the expected content format.')
 }).superRefine((value, ctx) => {
-  if (value.action && !value.id) {
-    ctx.addIssue({ code: 'custom', path: ['id'], message: 'Workflow action choices require a stable id.' })
-  }
-  const intent = typeof value.action === 'object' && value.action ? value.action.intent : value.action
-  const target = typeof value.action === 'object' && value.action ? value.action.targetPhaseId : value.targetPhaseId
-  if ((intent === 'jump_to_phase' || value.action === 'jump_to_phase') && !target) {
-    ctx.addIssue({ code: 'custom', path: ['targetPhaseId'], message: 'jump_to_phase requires targetPhaseId.' })
-  }
 }));
 const questionSchema = lazySchema(() => z.object({
   id: z.string().min(1).optional().describe('Stable question ID. Use this for workflow questions so a structured reply can be matched without relying on display text.'),
   prompt: z.string().min(1).optional().describe('Canonical question prompt shown to the user.'),
   question: z.string().min(1).optional().describe('Legacy alias for prompt. Use prompt for new workflow questions.'),
   header: z.string().optional().describe(`Very short label displayed as a chip/tag (max ${ASK_USER_QUESTION_TOOL_CHIP_WIDTH} chars). Examples: "Auth method", "Library", "Approach".`),
-  choices: z.array(questionOptionSchema()).min(2).max(4).optional().describe('Canonical choices for this question. Workflow action choices must include id, label, action, and targetPhaseId when applicable.'),
+  blocksCompletion: z.boolean().optional().describe('Workflow only: set true only when the answer must be reflected in current-phase work before completion. Set false for informational or acknowledgement questions that must not create a completion blocker. Omit outside workflows.'),
+  choices: z.array(questionOptionSchema()).min(2).max(4).optional().describe('Canonical choices for this question. Choices represent only user answers; never include workflow actions, route commands, or phase targets.'),
   options: z.array(questionOptionSchema()).min(2).max(4).optional().describe('Legacy alias for choices. New workflow questions should use choices.'),
   multiSelect: z.boolean().default(false).describe('Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive.')
 }).superRefine((value, ctx) => {
@@ -107,6 +84,7 @@ type InputSchema = ReturnType<typeof inputSchema>;
 const outputSchema = lazySchema(() => z.object({
   questions: z.array(questionSchema()).describe('The questions that were asked'),
   answers: z.record(z.string(), z.string()).describe('The answers provided by the user (question text -> answer string; multi-select answers are comma-separated)'),
+  answerChoiceIds: z.record(z.string(), z.array(z.string().min(1))).optional().describe('Stable choice IDs for runtime-bound question handling.'),
   annotations: annotationsSchema()
 }));
 type OutputSchema = ReturnType<typeof outputSchema>;
@@ -247,12 +225,14 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
   async call({
     questions,
     answers = {},
+    answerChoiceIds,
     annotations
   }, _context) {
     return {
       data: {
         questions,
         answers,
+        ...(answerChoiceIds && { answerChoiceIds }),
         ...(annotations && {
           annotations
         })

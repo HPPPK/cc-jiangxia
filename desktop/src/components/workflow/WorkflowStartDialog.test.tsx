@@ -66,6 +66,24 @@ describe('WorkflowStartDialog template loading recovery', () => {
 
     expect(screen.getByText('Inherit Context + Mini Scope')).toBeInTheDocument()
   })
+  it('uses general theme tokens for dialog surfaces and selected controls', () => {
+    render(
+      <WorkflowStartDialog
+        {...BASE_PROPS}
+        templates={[TEMPLATE]}
+        selectedTemplateId={TEMPLATE.id}
+        selectedTemplateSource={TEMPLATE.source}
+      />,
+    )
+
+    const dialog = screen.getByTestId('workflow-start-dialog')
+    const routing = screen.getByTestId('workflow-routing-controls')
+    expect(dialog).toHaveClass('bg-[var(--color-surface)]', 'w-[1150px]', 'h-[680px]')
+    expect(screen.getByRole('button', { name: /Requirements to Implementation/ })).toHaveClass('border-[var(--color-brand)]', 'bg-[var(--color-surface-selected)]')
+    expect(routing).toHaveTextContent('Task type')
+    expect(screen.getByRole('button', { name: 'Development' })).toHaveClass('border-[var(--color-brand)]', 'bg-[var(--color-surface-selected)]')
+  })
+
   it('shows a retry action after loading fails and renders recovered templates', () => {
     const onRetryTemplates = vi.fn()
     const { rerender } = render(

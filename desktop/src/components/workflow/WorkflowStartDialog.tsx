@@ -204,7 +204,7 @@ export function WorkflowStartDialog({
         onKeyDown={(event) => {
           if (event.key === 'Escape') onClose()
         }}
-        className="flex max-h-[min(760px,calc(100vh-2rem))] w-full max-w-4xl flex-col overflow-hidden rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl focus-visible:outline-none"
+        className="flex h-[680px] w-[1150px] flex-none flex-col overflow-hidden rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl focus-visible:outline-none"
       >
         <header className="flex min-w-0 items-start justify-between gap-4 border-b border-[var(--color-border)] px-4 py-3">
           <div className="min-w-0">
@@ -234,10 +234,10 @@ export function WorkflowStartDialog({
         <div className="grid min-h-0 flex-1 gap-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
           <section
             aria-label={t('workflows.startDialog.templateList')}
-            className="min-h-0 overflow-y-auto border-b border-[var(--color-border)] bg-[#fffdf9] p-4 md:border-b-0 md:border-r"
+            className="min-h-0 overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4 md:border-b-0 md:border-r"
           >
             <div className="mb-4 flex items-start gap-3">
-              <span className="material-symbols-outlined mt-1 text-[20px] text-[#9a542f]" aria-hidden="true">format_list_bulleted</span>
+              <span className="material-symbols-outlined mt-1 text-[20px] text-[var(--color-brand)]" aria-hidden="true">format_list_bulleted</span>
               <div className="min-w-0">
                 <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{t('workflows.startDialog.listTitle')}</h3>
                 <p className="mt-1 text-[12px] leading-5 text-[var(--color-text-secondary)]">{t('workflows.startDialog.listDescription')}</p>
@@ -246,7 +246,7 @@ export function WorkflowStartDialog({
             {templatesLoadFailed ? (
               <div
                 role="alert"
-                className="mb-3 rounded-[8px] border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-950"
+                className="mb-3 rounded-[8px] border border-[var(--color-warning)]/40 bg-[var(--color-warning-container)] px-3 py-3 text-sm text-[var(--color-text-primary)]"
               >
                 <p>{t('workflows.startDialog.loadFailed')}</p>
                 {onRetryTemplates ? (
@@ -254,7 +254,7 @@ export function WorkflowStartDialog({
                     type="button"
                     onClick={onRetryTemplates}
                     disabled={templatesLoading}
-                    className="mt-2 rounded-[6px] border border-amber-400 bg-white px-2.5 py-1.5 text-xs font-medium text-amber-950 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="mt-2 rounded-[6px] border border-[var(--color-warning)]/60 bg-[var(--color-surface-container-lowest)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-warning-container)] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {t('workflows.startDialog.retry')}
                   </button>
@@ -288,10 +288,10 @@ export function WorkflowStartDialog({
             )}
           </section>
 
-          <aside className="min-h-0 overflow-y-auto bg-[#fffdf9] p-4">
+          <aside className="min-h-0 overflow-y-auto bg-[var(--color-surface-container-low)] p-4">
             <section
               data-testid="workflow-routing-controls"
-              className="rounded-[14px] border border-[#eadfd7] bg-white px-4 py-4 shadow-sm"
+              className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-4 py-4 shadow-sm"
             >
               <ConfigSection title={t('workflows.startDialog.taskTypeTitle')} description={t('workflows.startDialog.taskTypeDescription')}>
                 <div className="grid grid-cols-3 gap-2">
@@ -368,7 +368,7 @@ export function WorkflowStartDialog({
                   ) : workflowWorkspaceRoot ? (
                     <WorkspacePathDisplay workspaceRoot={workflowWorkspaceRoot} />
                   ) : (
-                    <p className="rounded-[10px] border border-[#d97706]/30 bg-[#fef3c7] px-3 py-2 text-[12px] leading-5 text-[#92400e]">
+                    <p className="rounded-[10px] border border-[var(--color-warning)]/30 bg-[var(--color-warning-container)] px-3 py-2 text-[12px] leading-5 text-[var(--color-text-primary)]">
                       {t('workflows.startDialog.workspaceRequired')}
                     </p>
                   )}
@@ -389,11 +389,11 @@ export function WorkflowStartDialog({
                         return (
                           <label
                             key={ref.runId}
-                            className={`flex cursor-pointer gap-3 rounded-[10px] border px-3 py-2 text-left transition-colors ${checked ? 'border-[#9a542f] bg-[#fff7ef]' : 'border-[#eadfd7] bg-[#fffdf9] hover:bg-[#fff8f3]'}`}
+                            className={`flex cursor-pointer gap-3 rounded-[10px] border px-3 py-2 text-left transition-colors ${checked ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)]' : 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] hover:bg-[var(--color-surface-hover)]'}`}
                           >
                             <input
                               type="checkbox"
-                              className="mt-1 h-4 w-4 shrink-0 accent-[#9a542f]"
+                              className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-brand)]"
                               checked={checked}
                               onChange={(event) => {
                                 setSelectedExpertRunIds((current) => event.target.checked
@@ -462,7 +462,7 @@ export function WorkflowStartDialog({
             type="button"
             disabled={!selectedTemplateStartable || !workflowWorkspaceRoot || starting}
             onClick={handleStart}
-            className="inline-flex h-9 items-center gap-1.5 rounded-[7px] bg-[var(--color-brand)] px-3 text-sm font-medium text-white transition-colors hover:bg-[var(--color-brand-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35 disabled:cursor-not-allowed disabled:opacity-55"
+            className="inline-flex h-9 items-center gap-1.5 rounded-[7px] bg-[var(--color-brand)] px-3 text-sm font-medium text-[var(--color-on-primary)] transition-colors hover:bg-[var(--color-brand-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35 disabled:cursor-not-allowed disabled:opacity-55"
           >
             <span className="material-symbols-outlined text-[17px]" aria-hidden="true">play_arrow</span>
             {starting ? t('workflows.startDialog.starting') : t('workflows.startDialog.start')}
@@ -491,14 +491,14 @@ function WorkflowStartCardButton({
       aria-disabled={!card.startable}
       disabled={!card.startable}
       onClick={onSelect}
-      className={`group w-full rounded-[12px] border px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9a542f]/30 ${
+      className={`group w-full rounded-[12px] border px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/30 ${
         card.selected
-          ? 'border-[#c58f78] bg-[#fbf4ef] shadow-sm'
-          : 'border-[#eadfd7] bg-white hover:border-[#d4a48f] hover:bg-[#fffaf6]'
-      } ${card.startable ? '' : 'cursor-not-allowed opacity-55 hover:border-[#eadfd7] hover:bg-white'}`}
+          ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] shadow-sm'
+          : 'border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] hover:border-[var(--color-brand)] hover:bg-[var(--color-surface-hover)]'
+      } ${card.startable ? '' : 'cursor-not-allowed opacity-55 hover:border-[var(--color-border)] hover:bg-[var(--color-surface-container-lowest)]'}`}
     >
       <div className="flex min-w-0 items-center gap-4">
-        <span className="inline-flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-[12px] bg-[#f5ebe6] text-[#9a542f]">
+        <span className="inline-flex h-[66px] w-[66px] shrink-0 items-center justify-center rounded-[12px] bg-[var(--color-surface-container-high)] text-[var(--color-brand)]">
           <span className="material-symbols-outlined text-[34px]" aria-hidden="true">{card.icon}</span>
         </span>
         <div className="min-w-0 flex-1">
@@ -506,7 +506,7 @@ function WorkflowStartCardButton({
             <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[var(--color-text-primary)]">
               {card.title}
             </span>
-            <span className="shrink-0 rounded-[7px] bg-[#f7e8df] px-2 py-1 text-[11px] font-semibold text-[#8a4b2b]">
+            <span className="shrink-0 rounded-[7px] bg-[var(--color-surface-container)] px-2 py-1 text-[11px] font-semibold text-[var(--color-text-primary)]">
               {card.badge}
             </span>
           </div>
@@ -516,17 +516,17 @@ function WorkflowStartCardButton({
           <ol className="mt-2 flex flex-wrap items-center gap-1.5" aria-label={card.phasesLabel}>
             {card.phases.map((phase, index) => (
               <li key={`${card.key}:${index}:${phase}`} className="flex items-center gap-1">
-                <span className="rounded-[5px] bg-[#f6f2ee] px-1.5 py-0.5 text-[10px] text-[#6b5b50]">
+                <span className="rounded-[5px] bg-[var(--color-surface-container)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)]">
                   {phase}
                 </span>
                 {index < card.phases.length - 1 ? (
-                  <span className="text-[10px] text-[#b8a69a]" aria-hidden="true">&gt;</span>
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]" aria-hidden="true">&gt;</span>
                 ) : null}
               </li>
             ))}
           </ol>
         </div>
-        <span className="material-symbols-outlined shrink-0 text-[20px] text-[#9b8b80] transition-transform group-hover:translate-x-0.5" aria-hidden="true">
+        <span className="material-symbols-outlined shrink-0 text-[20px] text-[var(--color-text-tertiary)] transition-transform group-hover:translate-x-0.5" aria-hidden="true">
           chevron_right
         </span>
       </div>
@@ -567,7 +567,7 @@ function ConfigSection({
 }
 
 function Divider() {
-  return <div className="my-4 h-px bg-[#eee6df]" />
+  return <div className="my-4 h-px bg-[var(--color-border)]" />
 }
 
 function TaskTypeButton({
@@ -591,10 +591,10 @@ function TaskTypeButton({
       type="button"
       aria-pressed={selected}
       onClick={onClick}
-      className={`rounded-[10px] border px-2 py-3 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9a542f]/30 ${
+      className={`rounded-[10px] border px-2 py-3 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/30 ${
         selected
-          ? 'border-[#9a542f] bg-[#fbf4ef] text-[#7d3f23]'
-          : 'border-[#eadfd7] bg-[#fffdf9] text-[var(--color-text-secondary)] hover:border-[#d8b39f] hover:bg-[#fff8f3]'
+          ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+          : 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] text-[var(--color-text-secondary)] hover:border-[var(--color-brand)] hover:bg-[var(--color-surface-hover)]'
       }`}
     >
       <span className="material-symbols-outlined block text-[22px]" aria-hidden="true">
@@ -619,10 +619,10 @@ function SegmentButton({
       type="button"
       aria-pressed={selected}
       onClick={onClick}
-      className={`rounded-[9px] border px-2 py-2 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9a542f]/30 ${
+      className={`rounded-[9px] border px-2 py-2 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/30 ${
         selected
-          ? 'border-[#9a542f] bg-[#fbf4ef] text-[#7d3f23]'
-          : 'border-[#eadfd7] bg-[#fffdf9] text-[var(--color-text-secondary)] hover:border-[#d8b39f] hover:bg-[#fff8f3]'
+          ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+          : 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] text-[var(--color-text-secondary)] hover:border-[var(--color-brand)] hover:bg-[var(--color-surface-hover)]'
       }`}
     >
       {children}
@@ -636,8 +636,8 @@ function WorkspacePathDisplay({ workspaceRoot }: { workspaceRoot: string }) {
   const parent = normalized.slice(0, Math.max(0, normalized.length - projectName.length)).replace(/\/+$/, '')
   const shortParent = parent ? `${parent.split('/').filter(Boolean).slice(-1)[0] ?? 'workspace'}/${projectName}` : projectName
   return (
-    <div className="flex min-w-0 items-center gap-3 rounded-[10px] border border-[#eadfd7] bg-[#fffdf9] px-3 py-2">
-      <span className="material-symbols-outlined text-[28px] text-[#9a542f]" aria-hidden="true">folder</span>
+    <div className="flex min-w-0 items-center gap-3 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-3 py-2">
+      <span className="material-symbols-outlined text-[28px] text-[var(--color-brand)]" aria-hidden="true">folder</span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-semibold text-[var(--color-text-primary)]">{projectName}</p>
         <p className="mt-0.5 truncate text-[11px] text-[var(--color-text-tertiary)]">/{shortParent}</p>

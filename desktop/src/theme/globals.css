@@ -300,7 +300,7 @@
 /* ─── Tailwind Theme Override (matches prototype design system) ─── */
 @theme {
   --color-primary: #8F482F;
-  --color-primary-container: #AD5F45;
+  --color-primary-container: #9c8178;
   --color-primary-fixed: #FFDBD0;
   --color-primary-fixed-dim: #FFB59D;
 
@@ -530,7 +530,7 @@
   color-scheme: light;
 
   --color-primary: #8F482F;
-  --color-primary-container: #AD5F45;
+  --color-primary-container: #9c8178;
   --color-primary-fixed: #FFDBD0;
   --color-primary-fixed-dim: #FFB59D;
 

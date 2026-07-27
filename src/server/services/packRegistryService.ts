@@ -1,4 +1,5 @@
-﻿import * as fs from 'node:fs/promises'
+﻿import { createHash } from 'node:crypto'
+import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { getAppStoragePath } from '../../utils/appIdentity.js'
@@ -110,6 +111,16 @@ export type ExportWorkflowPackInput = {
 
 const PACK_REGISTRY_SCHEMA_VERSION = 1
 const adapter = new ZipPackAdapter()
+
+// A stored pack is user-owned. These fingerprints are the only legacy packs
+// that may be refreshed automatically: they identify an unchanged shipped V5
+// template, rather than relying on its id or version alone.
+const KNOWN_BUNDLED_WORKFLOW_UPGRADES = new Map<string, { version: string; fingerprint: string }>([
+  ['efficient-constrained-dev-debug-workflow-v5', {
+    version: '9',
+    fingerprint: '078573febf09165e6cb12517ad7c10abdaff113e0a3af00b1634fc0e622944c5',
+  }],
+])
 let cachedIndex: PackRegistryIndex | null = null
 let cachedIndexPath: string | null = null
 
@@ -204,6 +215,29 @@ function isCanonicalWorkflowPackPath(storagePath: string): boolean {
 
 function workflowPackStorageRelativePath(fileName: string): string {
   return `workflows/packs/${fileName}`
+}
+
+function canonicalWorkflowFingerprint(workflow: WorkflowTemplateRegistryTemplate): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalizeWorkflowTemplate(workflow)))
+    .digest('hex')
+}
+
+function canonicalizeWorkflowTemplate(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeWorkflowTemplate)
+  if (!isRecord(value)) return value
+  const transientKeys = new Set(['source', 'editable', 'copyable', 'packId', 'packName', 'packVersion', 'packEntrypoint'])
+  return Object.fromEntries(Object.keys(value)
+    .filter((key) => !transientKeys.has(key))
+    .sort()
+    .map((key) => [key, canonicalizeWorkflowTemplate(value[key])]))
+}
+
+export function isKnownBundledWorkflowUpgrade(workflow: WorkflowTemplateRegistryTemplate): boolean {
+  const known = KNOWN_BUNDLED_WORKFLOW_UPGRADES.get(workflow.id)
+  return !!known
+    && workflow.version === known.version
+    && canonicalWorkflowFingerprint(workflow) === known.fingerprint
 }
 
 function clone<T>(value: T): T {
@@ -844,12 +878,6 @@ export class PackRegistryService {
     for (const pack of bundledPacks) {
       for (const workflow of pack.workflows) {
         const target = path.join(storageDir, workflowPackFileName(workflow.id))
-        try {
-          await fs.access(target)
-          continue
-        } catch {
-          // seed missing workflows only; user edits in the fixed ZIP store win
-        }
         const sourceZip = new Uint8Array(await fs.readFile(pack.storage.path))
         const zip = await adapter.read(sourceZip)
         if (!zip.has(workflow.entrypoint)) continue
@@ -859,7 +887,26 @@ export class PackRegistryService {
           { basePath: `bundled:${pack.packId}:${workflow.entrypoint}`, source: 'import' },
         )
         if (!validation.template || validation.issues.some((issue) => issue.severity === 'error')) continue
-        await this.writeSingleWorkflowPack(validation.template, validation.template.id)
+
+        try {
+          await fs.access(target)
+        } catch {
+          await this.writeSingleWorkflowPack(validation.template, validation.template.id)
+          continue
+        }
+
+        // Never overwrite a user-owned pack merely because a bundled version
+        // changed. The narrow exception is an exact fingerprint match for a
+        // known earlier canonical template, which gives old defaults a safe
+        // upgrade path without treating customizations as defaults.
+        try {
+          const existing = await loadStoredWorkflowTemplate(workflow.id)
+          if (!isKnownBundledWorkflowUpgrade(existing)) continue
+          await this.writeSingleWorkflowPack(validation.template, validation.template.id)
+        } catch {
+          // An unreadable or malformed existing pack is user state too; leave
+          // it intact for explicit repair/import rather than replacing it.
+        }
       }
     }
   }

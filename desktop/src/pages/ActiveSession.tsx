@@ -37,6 +37,7 @@ import {
   type WorkflowStatusPanelSummary,
 } from '../components/workflow/WorkflowComponents'
 import { WorkflowTransitionControls } from '../components/workflow/WorkflowTransitionControls'
+import { WorkflowCompletionStatusCard } from '../components/workflow/WorkflowCompletionStatusCard'
 import { formatWorkflowPhaseSummary } from '../components/workflow/workflowPhaseDisplay'
 import { ExpertInfoSidebar } from '../components/experts/ExpertInfoSidebar'
 import { sessionsApi, type WorkflowCompletionProgressUpdate } from '../api/sessions'
@@ -834,6 +835,11 @@ export function ActiveSession() {
   const [workflowCheckpointsLoading, setWorkflowCheckpointsLoading] = useState(false)
   const [workflowCheckpointBusy, setWorkflowCheckpointBusy] = useState<'create' | 'restore' | null>(null)
   const [workflowCheckpointError, setWorkflowCheckpointError] = useState<string | null>(null)
+  useEffect(() => {
+    setWorkflowCompletionStatusOpen(false)
+    setWorkflowCompletionError(null)
+  }, [activeTabId])
+
   const handleWorkflowTransition = useCallback(async (command: WorkflowTransitionCommand) => {
     if (!activeTabId) return
 
@@ -932,11 +938,6 @@ export function ActiveSession() {
       connectToSession(activeTabId)
     }
   }, [activeTabId, isMemberSession, connectToSession])
-
-  useEffect(() => {
-    setExpertIntakeOpen(false)
-    setExpertMaterialsOpen(false)
-  }, [activeTabId, session?.expert?.expertId, session?.expert?.status])
 
   useEffect(() => {
     if (!session?.expert || expertDefinitions.length > 0) return
@@ -1063,6 +1064,30 @@ export function ActiveSession() {
     />
   ) : null
 
+  const handleWorkflowCompletionProgress = useCallback(async (update: WorkflowCompletionProgressUpdate) => {
+    if (!activeTabId || !workflowDisplay?.activePhaseId || workflowDisplay.stateVersion === undefined) return
+    setWorkflowCompletionPending(true)
+    setWorkflowCompletionError(null)
+    try {
+      const result = await sessionsApi.updateWorkflowCompletionProgress(activeTabId, {
+        phaseId: workflowDisplay.activePhaseId,
+        stateVersion: workflowDisplay.stateVersion,
+        update,
+      })
+      useSessionStore.setState((state) => ({
+        sessions: state.sessions.map((candidate) =>
+          candidate.id === activeTabId
+            ? { ...candidate, workflow: result.workflow, modifiedAt: new Date().toISOString() }
+            : candidate,
+        ),
+      }))
+    } catch (error) {
+      setWorkflowCompletionError(error instanceof Error ? error.message : '阶段完成状态更新失败')
+    } finally {
+      setWorkflowCompletionPending(false)
+    }
+  }, [activeTabId, workflowDisplay])
+
   const loadWorkflowCheckpoints = useCallback(async () => {
     if (!activeTabId || !workflowDisplay || isMemberSession) return
     setWorkflowCheckpointsLoading(true)
@@ -1133,44 +1158,6 @@ export function ActiveSession() {
       setWorkflowCheckpointBusy(null)
     }
   }, [activeTabId, loadWorkflowCheckpoints, reloadHistory])
-
-  const handleWriteExpertMaterial = useCallback(async (focus: string, notes: string, answers: Record<string, unknown>) => {
-    if (!activeTabId || !session?.expert) return
-    try {
-      const expertStore = useExpertStore.getState()
-      const firstAnswerKey = Object.keys(answers)[0] ?? 'intake'
-      try {
-        await expertStore.submitIntakeStep(activeTabId, { stepId: firstAnswerKey, answer: answers[firstAnswerKey], answers })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (!message.includes('请先进入专家 Mode')) throw error
-        const refreshedExpert = await expertStore.enterExpertMode(activeTabId, session.expert.expertId)
-        useSessionStore.setState((state) => ({
-          sessions: state.sessions.map((candidate) => candidate.id === activeTabId
-            ? { ...candidate, expert: refreshedExpert, modifiedAt: new Date().toISOString() }
-            : candidate),
-        }))
-        await expertStore.submitIntakeStep(activeTabId, { stepId: firstAnswerKey, answer: answers[firstAnswerKey], answers })
-      }
-      const projectRootAnswer = typeof answers.projectRoot === 'string' ? answers.projectRoot : undefined
-      const result = await expertStore.runExpertAgent(activeTabId, {
-        expertId: session.expert.expertId,
-        projectRoot: projectRootAnswer || session.workDir || session.projectRoot || session.projectPath,
-        notes,
-        title: notes.trim()
-          ? `${session.expert.expertName}：${focus}（含补充说明）`
-          : `${session.expert.expertName}：${focus}`,
-      })
-      useSessionStore.setState((state) => ({
-        sessions: state.sessions.map((candidate) => candidate.id === activeTabId
-          ? { ...candidate, expert: result.expert, modifiedAt: new Date().toISOString() }
-          : candidate),
-      }))
-      useUIStore.getState().addToast({ type: 'success', message: '专家材料包已生成，可在后续 workflow 启动时继承。' })
-    } catch (error) {
-      useUIStore.getState().addToast({ type: 'error', message: error instanceof Error ? error.message : '写入专家材料包失败' })
-    }
-  }, [activeTabId, session?.expert, session?.projectPath, session?.projectRoot, session?.workDir])
 
   const handleExitWorkflow = useCallback(async () => {
     if (!activeTabId || !workflowDisplay) return
@@ -1322,16 +1309,35 @@ export function ActiveSession() {
                   <>
                     <WorkflowStatusPanel
                       workflow={workflowDisplay}
-                      actions={canExitWorkflow ? (
-                        <button
-                          type="button"
-                          onClick={() => setWorkflowExitDialogOpen(true)}
-                          className="inline-flex h-7 items-center gap-1 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
-                        >
-                          <span className="material-symbols-outlined text-[14px]" aria-hidden="true">logout</span>
-                          退出工作流
-                        </button>
-                      ) : null}
+                      actions={(
+                        <div className="flex items-center gap-2">
+                          {workflowDisplay.completion ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setWorkflowCompletionStatusOpen((open) => !open)
+                                setWorkflowCompletionError(null)
+                              }}
+                              aria-expanded={workflowCompletionStatusOpen}
+                              aria-controls="workflow-completion-status-card"
+                              className="inline-flex h-7 items-center gap-1 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
+                            >
+                              <span className="material-symbols-outlined text-[14px]" aria-hidden="true">fact_check</span>
+                              {workflowCompletionStatusOpen ? '收起阶段状态' : '阶段状态'}
+                            </button>
+                          ) : null}
+                          {canExitWorkflow ? (
+                            <button
+                              type="button"
+                              onClick={() => setWorkflowExitDialogOpen(true)}
+                              className="inline-flex h-7 items-center gap-1 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
+                            >
+                              <span className="material-symbols-outlined text-[14px]" aria-hidden="true">logout</span>
+                              退出工作流
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
                       checkpointActions={(
                         <WorkflowGitCheckpointControls
                           enabled={workflowCheckpoints.enabled}
@@ -1346,6 +1352,14 @@ export function ActiveSession() {
                         />
                       )}
                     />
+                    {workflowCompletionStatusOpen && workflowDisplay.completion ? (
+                      <WorkflowCompletionStatusCard
+                        workflow={workflowDisplay}
+                        pending={workflowCompletionPending}
+                        error={workflowCompletionError}
+                        onUpdate={handleWorkflowCompletionProgress}
+                      />
+                    ) : null}
                     {canShowWorkflowPreviewControls ? (
                       <WorkflowPreviewControls
                         workflow={workflowDisplay}
@@ -1372,20 +1386,6 @@ export function ActiveSession() {
             </div>
           ) : null}
 
-          {activeExpertMode && session?.expert ? (
-            <ExpertModeStrip
-              expert={session.expert}
-              definition={activeExpertDefinition}
-              intakeOpen={expertIntakeOpen}
-              materialsOpen={expertMaterialsOpen}
-              busy={expertModeBusy}
-              downloadingRunId={expertMaterialDownloadingRunId}
-              onToggleIntake={() => setExpertIntakeOpen((open) => !open)}
-              onToggleMaterials={() => setExpertMaterialsOpen((open) => !open)}
-              onDownload={(material) => { void handleDownloadExpertMaterial(material) }}
-              onExit={() => { void handleExitExpertMode() }}
-            />
-          ) : null}
           <ConfirmDialog
             open={workflowExitDialogOpen}
             title="退出工作流"
@@ -1494,8 +1494,7 @@ export function ActiveSession() {
                         <>
                           <span className="text-[var(--color-outline)]">·</span>
                           <span>{expertStatusLabel(session.expert.status)}</span>
-                          <span className="text-[var(--color-outline)]">·</span>
-                          <span>{session.expert.materialRefs.length} 份材料</span>
+
                           <button
                             type="button"
                             disabled={expertModePhase === 'writing' || expertModePhase === 'loading' || expertModePhase === 'entering' || session.expert.status === 'running'}

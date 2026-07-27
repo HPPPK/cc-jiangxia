@@ -63,19 +63,34 @@ describe('RequestWorkflowRouteTool', () => {
       targetWorkflowId: 'debug-repair-workflow-v8',
       rationale: 'Switch workflows.',
       evidence: [],
+    }).success).toBe(true)
+    expect(tool.inputSchema.safeParse({
+      intent: 'route_to_workflow',
+      rationale: 'A route-to-workflow request must name its target.',
+      evidence: [],
     }).success).toBe(false)
     expect(tool.inputSchema.safeParse({ ...valid, unknown: true }).success).toBe(false)
+    expect(tool.inputSchema.safeParse({
+      intent: 'advance',
+      rationale: 'Ordinary linear progression.',
+      evidence: [],
+    }).success).toBe(true)
+    const defaultConfirmation = tool.inputSchema.safeParse(valid)
+    expect(defaultConfirmation.success).toBe(true)
+    if (defaultConfirmation.success) expect(defaultConfirmation.data.requireUserConfirmation).toBe(true)
+    expect(tool.inputSchema.safeParse({ ...valid, requireUserConfirmation: false }).success).toBe(false)
   })
 
   test('instructs the model not to route to the ordinary linear next phase', async () => {
     const tool = await loadTool()
     const prompt = await tool.prompt()
 
-    expect(prompt).toContain('Do not use this tool for ordinary linear progression')
+    expect(prompt).toContain('Do not use advance for ordinary linear progression')
     expect(prompt).toContain('immediate linear next phase')
-    expect(prompt).toContain('pause and resume may be called directly')
-    expect(prompt).not.toContain('workflow switch')
-    expect(prompt).not.toContain('route_to_workflow')
+    expect(prompt).toContain('status blocked or needs_user')
+    expect(prompt).toContain('route_to_workflow requires targetWorkflowId')
+    expect(prompt).toContain('structured unsupported error')
+    expect(prompt).toContain('Every model-requested route waits for an explicit user confirmation')
   })
 
   test('reports a same-target route as the existing normal completion confirmation, not a second pending route', async () => {

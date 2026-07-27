@@ -1,23 +1,14 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import { Button } from '../shared/Button'
 import { PermissionModeSelector } from '../controls/PermissionModeSelector'
 
-type WorkflowRouteOptionAction = {
-  kind: 'workflow-route'
-  intent: 'advance' | 'rework_current_phase' | 'jump_to_phase' | 'pause' | 'resume' | 'finish'
-  targetPhaseId?: string
-}
-
 type QuestionOption = {
   id?: string
   label: string
   description?: string
-  action?: string | WorkflowRouteOptionAction
-  targetPhaseId?: string
-  metadata?: Record<string, unknown>
 }
 
 type Question = {
@@ -82,7 +73,7 @@ function questionText(question: Question): string {
 }
 
 function questionKey(question: Question): string {
-  return question.question ?? question.prompt ?? question.id ?? ''
+  return question.id ?? question.question ?? question.prompt ?? ''
 }
 
 function questionOptions(question: Question): QuestionOption[] {
@@ -178,6 +169,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const targetSessionId = sessionId ?? activeTabId
   const pendingPermission = useChatStore((s) => targetSessionId ? s.sessions[targetSessionId]?.pendingPermission : undefined)
+  const permissionResponse = useChatStore((s) => targetSessionId ? s.sessions[targetSessionId]?.permissionResponse : undefined)
   const t = useTranslation()
   const questions = parseInput(input)
   const inputObject = (input && typeof input === 'object') ? input as Record<string, unknown> : {}
@@ -185,7 +177,30 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const [selections, setSelections] = useState<QuestionSelections>({})
   const [freeTexts, setFreeTexts] = useState<QuestionFreeTexts>({})
   const [hasSubmitted, setHasSubmitted] = useState(false)
+  const [submissionRequestId, setSubmissionRequestId] = useState<string | null>(null)
+  const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'submitting' | 'stale'>('idle')
+  const [submissionMessage, setSubmissionMessage] = useState<string | null>(null)
   const composingRef = useRef(false)
+
+  useEffect(() => {
+    if (!submissionRequestId || permissionResponse?.requestId !== submissionRequestId) return
+    if (permissionResponse.status === 'accepted') {
+      setHasSubmitted(true)
+      setSubmissionStatus('idle')
+      setSubmissionMessage(null)
+      return
+    }
+    if (permissionResponse.status === 'stale') {
+      setSubmissionStatus('stale')
+      setSubmissionMessage(permissionResponse.message ?? 'This question has expired because the workflow was updated.')
+      return
+    }
+    if (permissionResponse.status === 'rejected') {
+      setSubmissionRequestId(null)
+      setSubmissionStatus('idle')
+      setSubmissionMessage(permissionResponse.message ?? 'The response was rejected. Please choose again.')
+    }
+  }, [permissionResponse, submissionRequestId])
 
   if (questions.length === 0) return null
   const safeActiveTab = Math.min(activeTab, questions.length - 1)
@@ -219,6 +234,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       .join('; ')
   }, [freeTexts, hasStructuredAnswers, questions, resultAnswers, resultText, selections])
   const submitted = hasTerminalResult || hasSubmitted
+  const interactionLocked = submitted || submissionStatus === 'submitting' || submissionStatus === 'stale'
   const terminalWithoutAnswers = submitted && !hasStructuredAnswers && resultText.length > 0
   const showPermissionControl = !submitted && !!activeQuestion && questionNeedsPermissionControl(activeQuestion)
 
@@ -236,7 +252,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleSelect = (qIndex: number, optionKey: string) => {
-    if (submitted) return
+    if (interactionLocked) return
     const question = questions[qIndex]
     const option = question
       ? questionOptions(question).find((candidate) => (candidate.id ?? candidate.label) === optionKey)
@@ -282,7 +298,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleFreeTextChange = (qIndex: number, value: string) => {
-    if (submitted) return
+    if (interactionLocked) return
     setFreeTexts((prev) => {
       const next = { ...prev }
       if (value) {
@@ -303,7 +319,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleSubmit = () => {
-    if (submitted) return
+    if (interactionLocked) return
 
     const parts: string[] = []
     for (let i = 0; i < questions.length; i++) {
@@ -326,25 +342,22 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       return acc
     }, {})
 
-    const workflowChoiceActions = questions.flatMap((question, index) => {
+    const answerChoiceIds = questions.reduce<Record<string, string[]>>((acc, question, index) => {
+      const key = questionKey(question)
+      if (!key.startsWith('research-recovery:') || freeTexts[index]?.trim()) return acc
       const selected = selections[index] ?? []
-      return questionOptions(question)
-        .filter((option) => selected.includes(option.id ?? option.label) && option.action)
-        .map((option) => ({
-          questionId: question.id ?? questionKey(question),
-          choiceId: option.id ?? option.label,
-          action: option.action!,
-          ...(option.targetPhaseId ? { targetPhaseId: option.targetPhaseId } : {}),
-          ...(option.metadata ? { metadata: option.metadata } : {}),
-        }))
-    })
+      if (selected.length > 0) acc[key] = selected
+      return acc
+    }, {})
 
-    setHasSubmitted(true)
+    setSubmissionRequestId(pendingRequest.requestId)
+    setSubmissionStatus('submitting')
+    setSubmissionMessage(null)
     respondToPermission(targetSessionId, pendingRequest.requestId, true, {
       updatedInput: {
         ...inputObject,
         answers,
-        ...(workflowChoiceActions.length > 0 ? { workflowChoiceActions } : {}),
+        ...(Object.keys(answerChoiceIds).length > 0 ? { answerChoiceIds } : {}),
       },
     })
   }
@@ -384,6 +397,16 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
           )}
         </div>
       </div>
+
+      {submissionMessage && (
+        <div role="alert" className={`mx-4 mt-3 rounded-[var(--radius-sm)] border px-3 py-2 text-xs ${
+          submissionStatus === 'stale'
+            ? 'border-[var(--color-warning)]/50 bg-[var(--color-warning)]/10 text-[var(--color-text-secondary)]'
+            : 'border-[var(--color-error)]/50 bg-[var(--color-error)]/10 text-[var(--color-error)]'
+        }`}>
+          {submissionMessage}
+        </div>
+      )}
 
       {/* Question tabs — horizontal tab bar (only show when multiple questions) */}
       {questions.length > 1 && (
@@ -447,6 +470,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
               return (
                 <button
                   key={optIndex}
+                  data-testid={`ask-user-option-${safeActiveTab}-${opt.id ?? opt.label}`}
                   onClick={() => handleSelect(safeActiveTab, opt.id ?? opt.label)}
                   disabled={submitted || fakePermissionGrant}
                   aria-disabled={fakePermissionGrant || undefined}
@@ -496,7 +520,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
         )}
 
         {/* Free text input */}
-        {!submitted && (
+        {!interactionLocked && (
           <div>
             <label className="text-xs text-[var(--color-text-tertiary)] mb-1.5 block">
               {t('question.customResponse')}
@@ -533,9 +557,10 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       </div>
 
       {/* Submit button */}
-      {!submitted && (
+      {!interactionLocked && (
         <div className="flex items-center gap-2 px-4 py-3 border-t border-[var(--color-outline-variant)]/20 bg-[var(--color-surface-container-low)]">
           <Button
+            data-testid="ask-user-submit"
             variant="primary"
             size="sm"
             disabled={!hasAnswer || !pendingRequest}

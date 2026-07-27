@@ -12,6 +12,7 @@ import type { WorkflowPhaseSkillCatalogEntry } from './workflowPhaseSkillResolve
 
 const NOW = '2026-05-20T00:00:00.000Z'
 const SESSION_ID = 'workflow-runtime-service-test'
+const workflowRuntimeServiceModule = import('./workflowRuntimeService.js')
 
 type WorkflowRuntimeServiceContract = {
   startPhase(input: {
@@ -31,6 +32,16 @@ type WorkflowRuntimeServiceContract = {
     content: string
     skillProvenance: unknown[]
     scheduledToolCalls?: unknown[]
+  }>
+  updatePhaseProgress(input: {
+    state: WorkflowSessionState
+    phaseId: string
+    stateVersion: number
+    update: { type: 'rebuild'; actor: 'user'; rationale: string }
+    requestedAt: string
+  }): Promise<{
+    state: WorkflowSessionState
+    notifications: Array<Record<string, unknown>>
   }>
   exitWorkflow(input: {
     state: WorkflowSessionState
@@ -90,7 +101,7 @@ async function makeService(input: {
   skillCatalog?: () => Promise<WorkflowPhaseSkillCatalogEntry[]>
   templateLoader?: (state: WorkflowSessionState) => Promise<WorkflowTemplate | null>
 } = {}): Promise<WorkflowRuntimeServiceContract> {
-  const mod = await import('./workflowRuntimeService.js')
+  const mod = await workflowRuntimeServiceModule
   return new mod.WorkflowRuntimeService(
     input.skillCatalog,
     input.templateLoader ?? (async (state: WorkflowSessionState) => state.templateSnapshot ?? null),
@@ -178,18 +189,37 @@ function completionSubmission(
   }
 }
 
+function readyRuntimeContract(phases: WorkflowSessionState['phases']) {
+  return {
+    schemaVersion: 1 as const,
+    migrationStatus: 'current' as const,
+    phaseStates: Object.fromEntries(phases.map((phase) => [phase.id, {
+      phaseId: phase.id,
+      workStatus: 'ready-for-review' as const,
+      eligibility: 'eligible' as const,
+      blockerReasons: [],
+      issues: [],
+      artifactRequirements: [],
+      checks: [],
+      taskSnapshots: [],
+      evaluatedAt: NOW,
+    }])),
+    audit: [],
+  }
+}
+
 function makeState(overrides: Partial<WorkflowSessionState> = {}): WorkflowSessionState {
   const template = makeTemplate()
-  return {
+  const state = {
     schemaVersion: 1,
     sessionId: SESSION_ID,
-    mode: 'workflow',
+    mode: 'workflow' as const,
     template: {
       id: template.id,
       version: String(template.version),
       source: template.source,
       snapshotId: 'snapshot-1',
-      sourceState: 'current',
+      sourceState: 'current' as const,
     },
     templateSnapshot: template,
     templateIdentity: {
@@ -199,23 +229,13 @@ function makeState(overrides: Partial<WorkflowSessionState> = {}): WorkflowSessi
       registryKey: 'builtin:requirements-to-implementation',
       contentHash: 'fixture-hash',
     },
-    sourceTemplateStatus: 'current',
-    status: 'created',
-    workflowStatus: 'created',
+    sourceTemplateStatus: 'current' as const,
+    status: 'created' as const,
+    workflowStatus: 'created' as const,
     activePhaseId: 'requirements',
     phases: [
-      {
-        id: 'requirements',
-        index: 0,
-        status: 'created',
-        artifactPointers: [],
-      },
-      {
-        id: 'implementation',
-        index: 1,
-        status: 'created',
-        artifactPointers: [],
-      },
+      { id: 'requirements', index: 0, status: 'created' as const, artifactPointers: [] },
+      { id: 'implementation', index: 1, status: 'created' as const, artifactPointers: [] },
     ],
     phaseRuns: [],
     transitionHistory: [],
@@ -226,6 +246,10 @@ function makeState(overrides: Partial<WorkflowSessionState> = {}): WorkflowSessi
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,
+  } as WorkflowSessionState
+  return {
+    ...state,
+    runtimeContract: overrides.runtimeContract ?? readyRuntimeContract(state.phases),
   }
 }
 
@@ -327,6 +351,59 @@ function recommendedSkillTemplateState(): WorkflowSessionState {
 }
 
 describe('WorkflowRuntimeService', () => {
+  test('rebuilds a completion contract against the authoritative current template without changing phase position', async () => {
+    const snapshot = makeTemplate({
+      phases: [{
+        ...makeTemplate().phases[0]!,
+        requiredArtifacts: [{
+          id: 'legacy-context',
+          kind: 'markdown',
+          description: 'Legacy session context',
+          required: true,
+        }],
+      }],
+    })
+    const current = makeTemplate({
+      phases: [{
+        ...makeTemplate().phases[0]!,
+        requiredArtifacts: [{
+          id: 'current-context',
+          kind: 'markdown',
+          description: 'Current canonical session context',
+          required: true,
+        }],
+      }],
+    })
+    const service = await makeService({ templateLoader: async () => current })
+    const state = makeState({
+      workflowStatus: 'running',
+      status: 'running',
+      activePhaseId: 'requirements',
+      templateSnapshot: snapshot,
+    })
+
+    const result = await service.updatePhaseProgress({
+      state,
+      phaseId: 'requirements',
+      stateVersion: state.stateVersion,
+      update: {
+        type: 'rebuild',
+        actor: 'user',
+        rationale: 'User requested a controlled completion-contract re-evaluation.',
+      },
+      requestedAt: NOW,
+    })
+
+    expect(result.state.activePhaseId).toBe('requirements')
+    expect(result.state.runtimeContract?.phaseStates.requirements?.artifactRequirements).toEqual([
+      expect.objectContaining({ id: 'current-context', status: 'pending' }),
+    ])
+    expect(result.state.runtimeContract?.audit).toContainEqual(expect.objectContaining({
+      type: 'runtime-contract-rebuilt',
+      summary: 'User requested a controlled completion-contract re-evaluation.',
+    }))
+  })
+
   test('falls back visibly from an unavailable requested phase model to the main session default', async () => {
     const service = await makeService()
 
@@ -1376,24 +1453,19 @@ describe('WorkflowRuntimeService', () => {
     expect(confirmed.state.pendingRoute).toBeNull()
     expect(confirmed.state.transitionHistory.at(-1)).toMatchObject({ action: 'confirmed' })
 
-    const autoRouted = await service.requestWorkflowRoute({
+    await expect(service.requestWorkflowRoute({
       state,
       requestedAt: NOW,
-      transitionId: 'auto-confirm-repaired-stage-4',
+      transitionId: 'forbidden-linear-advance',
       request: {
         phaseId: 'delegate-implement',
         stateVersion: state.stateVersion,
         intent: 'advance',
-        rationale: 'The user chose to continue to validation.',
+        rationale: 'Ordinary linear progression must use submit_phase_completion.',
         evidence: [{ kind: 'user-choice' }],
         requireUserConfirmation: false,
       },
-    })
-    expect(autoRouted.state.activePhaseId).toBe('scenario-review')
-    expect(autoRouted.state.pendingConfirmation).toBeNull()
-    expect(autoRouted.state.pendingRoute).toBeNull()
-    expect(autoRouted.requiresConfirmation).toBe(false)
-    expect(autoRouted.state.transitionHistory.at(-1)).toMatchObject({ action: 'confirmed' })
+    })).rejects.toMatchObject({ code: 'WORKFLOW_ROUTE_LINEAR_ADVANCE_FORBIDDEN' })
   })
 
   test('allows Stage 5 and Stage 6 jump routes when forbidden action prose only mentions non-workflow routes', async () => {
@@ -1546,7 +1618,7 @@ describe('WorkflowRuntimeService', () => {
     })).rejects.toMatchObject({ code: 'WORKFLOW_ROUTE_FORBIDDEN' })
   })
 
-  test('supports advance and rework_current_phase route intents after a pending completion', async () => {
+  test('rejects linear advance and keeps rework_current_phase as a user-confirmed route', async () => {
     const service = await makeService()
     const pendingState = () => makeState({
       workflowStatus: 'pending-confirmation',
@@ -1569,25 +1641,14 @@ describe('WorkflowRuntimeService', () => {
     })
 
     const advanceState = pendingState()
-    const advanceRoute = await service.requestWorkflowRoute({
+    await expect(service.requestWorkflowRoute({
       state: advanceState,
       requestedAt: NOW,
       request: {
         phaseId: 'requirements', stateVersion: advanceState.stateVersion,
         intent: 'advance', rationale: 'Proceed to implementation.', evidence: [],
       },
-    })
-    const advanced = await service.applyTransition({
-      state: advanceRoute.state,
-      requestedAt: NOW,
-      request: {
-        phaseId: 'requirements',
-        action: 'confirm',
-        confirmationId: advanceRoute.state.pendingConfirmation!.confirmationId,
-        stateVersion: advanceRoute.state.stateVersion,
-      },
-    })
-    expect(advanced.state.activePhaseId).toBe('implementation')
+    })).rejects.toMatchObject({ code: 'WORKFLOW_ROUTE_LINEAR_ADVANCE_FORBIDDEN' })
 
     const reworkState = pendingState()
     const reworkRoute = await service.requestWorkflowRoute({
@@ -1611,6 +1672,106 @@ describe('WorkflowRuntimeService', () => {
     expect(reworked.state.activePhaseId).toBe('requirements')
     expect(reworked.state.phases[0]?.status).toBe('running')
     expect(reworked.state.pendingConfirmation).toBeNull()
+  })
+
+  test('keeps pause and resume route requests pending until the user confirms', async () => {
+    const service = await makeService()
+    const state = makeState({
+      workflowStatus: 'running',
+      status: 'running',
+      runStatus: 'active',
+      phases: [
+        { id: 'requirements', index: 0, status: 'running', artifactPointers: [] },
+        { id: 'implementation', index: 1, status: 'created', artifactPointers: [] },
+      ],
+    })
+
+    await expect(service.requestWorkflowRoute({
+      state,
+      requestedAt: NOW,
+      request: {
+        phaseId: 'requirements',
+        stateVersion: state.stateVersion,
+        intent: 'pause',
+        rationale: 'A legacy caller attempted to bypass confirmation.',
+        evidence: [],
+        requireUserConfirmation: false,
+      },
+    })).rejects.toMatchObject({ code: 'WORKFLOW_ROUTE_CONFIRMATION_REQUIRED' })
+
+    const pauseRequested = await service.requestWorkflowRoute({
+      state,
+      requestedAt: NOW,
+      transitionId: 'request-pause',
+      request: {
+        phaseId: 'requirements',
+        stateVersion: state.stateVersion,
+        intent: 'pause',
+        rationale: 'Wait for the user to resume the work.',
+        evidence: [{ kind: 'user-request' }],
+      },
+    })
+    expect(pauseRequested.state.workflowStatus).toBe('pending-confirmation')
+    expect(pauseRequested.state.runStatus).toBe('waiting_for_user')
+    expect(pauseRequested.state.pendingConfirmation).toBeFalsy()
+    expect(pauseRequested.state.pendingRoute).toMatchObject({
+      routeId: 'request-pause',
+      intent: 'pause',
+      requiresConfirmation: true,
+      status: 'pending',
+    })
+
+    const paused = await service.applyTransition({
+      state: pauseRequested.state,
+      requestedAt: '2026-05-20T00:05:00.000Z',
+      request: {
+        phaseId: 'requirements',
+        action: 'confirm',
+        confirmationId: pauseRequested.state.pendingRoute!.routeId,
+        stateVersion: pauseRequested.state.stateVersion,
+      },
+    })
+    expect(paused.state.workflowStatus).toBe('running')
+    expect(paused.state.runStatus).toBe('paused')
+    expect(paused.state.pendingRoute).toBeNull()
+    expect(paused.state.pendingConfirmation).toBeNull()
+
+    const resumeRequested = await service.requestWorkflowRoute({
+      state: paused.state,
+      requestedAt: '2026-05-20T00:06:00.000Z',
+      transitionId: 'request-resume',
+      request: {
+        phaseId: 'requirements',
+        stateVersion: paused.state.stateVersion,
+        intent: 'resume',
+        rationale: 'The user asked to continue the workflow.',
+        evidence: [{ kind: 'user-request' }],
+      },
+    })
+    expect(resumeRequested.state.workflowStatus).toBe('pending-confirmation')
+    expect(resumeRequested.state.runStatus).toBe('waiting_for_user')
+    expect(resumeRequested.state.pendingConfirmation).toBeFalsy()
+    expect(resumeRequested.state.pendingRoute).toMatchObject({
+      routeId: 'request-resume',
+      intent: 'resume',
+      requiresConfirmation: true,
+      status: 'pending',
+    })
+
+    const resumed = await service.applyTransition({
+      state: resumeRequested.state,
+      requestedAt: '2026-05-20T00:07:00.000Z',
+      request: {
+        phaseId: 'requirements',
+        action: 'confirm',
+        confirmationId: resumeRequested.state.pendingRoute!.routeId,
+        stateVersion: resumeRequested.state.stateVersion,
+      },
+    })
+    expect(resumed.state.workflowStatus).toBe('running')
+    expect(resumed.state.runStatus).toBe('active')
+    expect(resumed.state.pendingRoute).toBeNull()
+    expect(resumed.state.pendingConfirmation).toBeNull()
   })
 
   test('allows a blocked phase to request and confirm a jump_to_phase recovery without a pending completion', async () => {
@@ -1786,7 +1947,7 @@ describe('WorkflowRuntimeService', () => {
     expect(confirmed.state.transitionHistory.at(-1)).toMatchObject({ action: 'route-recovery-confirmed' })
   })
 
-  test('keeps blocked recovery constrained to rework_current_phase or jump_to_phase', async () => {
+  test('rejects linear advance before applying blocked-recovery intent rules', async () => {
     const service = await makeService()
     const state = makeState({
       workflowStatus: 'running',
@@ -1812,10 +1973,10 @@ describe('WorkflowRuntimeService', () => {
         rationale: 'Advance must not bypass a blocked completion gate.',
         evidence: [],
       },
-    })).rejects.toMatchObject({ code: 'WORKFLOW_ROUTE_RECOVERY_INTENT_INVALID' })
+    })).rejects.toMatchObject({ code: 'WORKFLOW_ROUTE_LINEAR_ADVANCE_FORBIDDEN' })
   })
 
-  test('retains stale-version and target validation for blocked recovery routes', async () => {
+  test('allows an ineligible blocked phase to request structured recovery while retaining stale-version and target validation', async () => {
     const service = await makeService()
     const state = makeState({
       workflowStatus: 'running',
@@ -1830,6 +1991,11 @@ describe('WorkflowRuntimeService', () => {
       ],
       pendingConfirmation: null,
     })
+
+    const recoveryContract = state.runtimeContract!.phaseStates.requirements
+    recoveryContract.eligibility = 'ineligible'
+    recoveryContract.workStatus = 'interrupted'
+    recoveryContract.blockerReasons = ['A recorded validation defect requires a controlled implementation recovery route.']
 
     await expect(service.requestWorkflowRoute({
       state,
@@ -2125,7 +2291,7 @@ describe('WorkflowRuntimeService', () => {
       expect(result.state.pendingConfirmation?.submission?.status).toBe('needs_user')
     })
 
-    test('auto-advances a completed submission only when the current phase transition authority is auto', async () => {
+    test('keeps a legacy completed submission pending even when the phase transition authority is auto', async () => {
       const service = await makeService()
       const result = await service.submitPhaseCompletion({
         state: runningState(),
@@ -2134,12 +2300,19 @@ describe('WorkflowRuntimeService', () => {
         submission: completionSubmission({ status: 'completed' }),
       })
 
-      expect(result.status).toBe('recorded')
-      expect(result.state.activePhaseId).toBe('implementation')
-      expect(result.state.pendingConfirmation).toBeNull()
+      expect(result.status).toBe('pending')
+      expect(result.state.activePhaseId).toBe('requirements')
+      expect(result.state.workflowStatus).toBe('pending-confirmation')
+      expect(result.state.runStatus).toBe('waiting_for_user')
+      expect(result.state.pendingConfirmation).toMatchObject({
+        phaseId: 'requirements',
+        toPhaseId: 'implementation',
+        status: 'pending',
+        submission: expect.objectContaining({ status: 'completed' }),
+      })
       expect(result.state.transitionHistory).toContainEqual(expect.objectContaining({
         transitionId: 'submit-completed-auto-1',
-        action: 'auto-advance',
+        action: 'confirmation-requested',
       }))
     })
 

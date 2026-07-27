@@ -32,6 +32,12 @@ import {
   type WorkflowPhaseSkillCatalogEntry,
 } from './workflowPhaseSkillResolver.js'
 import { getWorkflowPhaseActionPolicy } from './workflowToolPolicy.js'
+import {
+  applyWorkflowPhaseProgress,
+  getWorkflowCompletionEligibility,
+  markWorkflowPhaseStarted,
+  migrateWorkflowRuntimeContract,
+} from './workflowCompletionGate.js'
 import { loadCurrentWorkflowTemplate } from './workflowRuntimeTemplateService.js'
 import {
   buildWorkflowRuntimePrompt,
@@ -464,6 +470,7 @@ const WORKFLOW_ROUTE_INTENT_ACTION_RULES: Record<WorkflowRouteIntent, ReadonlySe
     'return to phase',
   ]),
   jump_to_phase: new Set(['jump_to_phase', 'jump to phase']),
+  route_to_workflow: new Set(['route_to_workflow', 'route to workflow', 'workflow switch']),
   pause: new Set(['pause', 'pause_workflow', 'pause workflow']),
   resume: new Set(['resume', 'resume_workflow', 'resume workflow']),
   finish: new Set(['finish', 'finish_workflow', 'finish workflow']),
@@ -1043,6 +1050,28 @@ export class WorkflowRuntimeService {
     private readonly loadWorkflowTemplate: WorkflowRuntimeTemplateLoader = loadCurrentWorkflowTemplate,
   ) {}
 
+  async updatePhaseProgress(input: {
+    state: WorkflowSessionState
+    phaseId: string
+    stateVersion: number
+    update: import('./workflowCompletionGate.js').WorkflowPhaseProgressUpdate
+    requestedAt: string
+  }): Promise<RuntimeResult> {
+    const state = migrateWorkflowRuntimeContract(input.state, undefined, input.requestedAt)
+    assertFreshStateVersion(state, input.stateVersion)
+    if (state.activePhaseId !== input.phaseId) {
+      throw workflowError('WORKFLOW_PHASE_MISMATCH', 'Phase progress can only update the active workflow phase.')
+    }
+    const template = await this.loadWorkflowTemplate(state) ?? state.templateSnapshot ?? null
+    if (!template) return this.missingTemplateResult(state, input.requestedAt)
+    const updated = applyWorkflowPhaseProgress(state, input.phaseId, input.update, input.requestedAt, template)
+    const nextState = touchState(updated, input.requestedAt)
+    return {
+      state: nextState,
+      notifications: [stateNotification(nextState)],
+    }
+  }
+
   async exitWorkflow(input: {
     state: WorkflowSessionState
     requestedAt: string
@@ -1099,12 +1128,16 @@ export class WorkflowRuntimeService {
       return { state: input.state, notifications: [] }
     }
 
-    const state = cloneState(input.state)
-    const phase = activePhase(state)
-    if (!phase) return { state: input.state, notifications: [] }
-
+    let state = cloneState(input.state)
     const template = await this.loadWorkflowTemplate(state)
     if (!template) return this.missingTemplateResult(state, input.requestedAt)
+    state = markWorkflowPhaseStarted(
+      migrateWorkflowRuntimeContract(state, template, input.requestedAt),
+      state.activePhaseId ?? '',
+      input.requestedAt,
+    )
+    const phase = activePhase(state)
+    if (!phase) return { state: input.state, notifications: [] }
 
     const definition = phaseDefinition(template, phase.id)
     const requestedModel = definition?.requestedModel ?? phase.requestedModel
@@ -1285,6 +1318,10 @@ export class WorkflowRuntimeService {
   }
 
   async applyTransition(input: TransitionInput): Promise<RuntimeResult> {
+    input = {
+      ...input,
+      state: migrateWorkflowRuntimeContract(input.state, undefined, input.requestedAt),
+    }
     if (!isWorkflowState(input.state)) {
       return { state: input.state, notifications: [] }
     }
@@ -1327,18 +1364,24 @@ export class WorkflowRuntimeService {
   }
 
   async submitPhaseCompletion(input: SubmitPhaseCompletionInput): Promise<SubmitPhaseCompletionResult> {
-    const authority = completionTransitionAuthority(input.state, input.submission.phaseId)
-    const advanceReady = input.submission.status === 'completed' && authority === 'auto'
+    input = {
+      ...input,
+      state: migrateWorkflowRuntimeContract(input.state, undefined, input.requestedAt),
+    }
     return this.recordCompletionSubmission(input, {
-      readyLifecycleStatus: advanceReady ? 'accepted' : 'pending',
-      advanceReady,
-      readyAuthority: authority,
-      readyAction: advanceReady ? 'auto-advance' : 'confirmation-requested',
+      readyLifecycleStatus: 'pending',
+      advanceReady: false,
+      readyAuthority: 'user-confirmation',
+      readyAction: 'confirmation-requested',
       requestAction: 'retry',
     })
   }
 
   async submitManualCompletion(input: SubmitPhaseCompletionInput): Promise<SubmitPhaseCompletionResult> {
+    input = {
+      ...input,
+      state: migrateWorkflowRuntimeContract(input.state, undefined, input.requestedAt),
+    }
     return this.recordCompletionSubmission(input, {
       readyLifecycleStatus: 'accepted',
       advanceReady: true,
@@ -1360,7 +1403,7 @@ export class WorkflowRuntimeService {
       throw workflowError('WORKFLOW_ROUTE_INVALID', 'Workflow route evidence must be an array.')
     }
 
-    const state = cloneState(input.state)
+    let state = cloneState(input.state)
     const template = await this.loadWorkflowTemplate(state)
     if (!template) {
       const missing = this.missingTemplateResult(state, input.requestedAt)
@@ -1371,32 +1414,26 @@ export class WorkflowRuntimeService {
         requiresConfirmation: true,
       }
     }
+    state = migrateWorkflowRuntimeContract(state, template, input.requestedAt)
     const phaseId = input.request.phaseId ?? state.activePhaseId
     if (!phaseId) throw workflowError('WORKFLOW_PHASE_MISMATCH', 'Workflow has no active phase to route from.')
     const current = assertActivePhase(state, phaseId)
     isRouteAllowedForCurrentPhase(state, template, input.request.intent)
 
-    if ((input.request as { intent?: string }).intent === 'route_to_workflow') {
+    if (input.request.intent === 'route_to_workflow') {
+      if (!input.request.targetWorkflowId?.trim()) {
+        throw workflowError('WORKFLOW_ROUTE_TARGET_WORKFLOW_REQUIRED', 'route_to_workflow requires targetWorkflowId.')
+      }
       throw workflowError('WORKFLOW_ROUTE_UNSUPPORTED', 'Cross-workflow routing is not supported. Keep the current workflow active and select another workflow explicitly.')
     }
-    if (input.request.intent === 'pause' || input.request.intent === 'resume') {
-      const result = input.request.intent === 'pause'
-        ? await this.pauseTransition(state, {
-          requestedAt: input.requestedAt,
-          request: { phaseId: current.id, action: 'pause', transitionId: input.transitionId },
-        }, current)
-        : await this.resumeTransition(state, {
-          requestedAt: input.requestedAt,
-          request: { phaseId: current.id, action: 'resume', transitionId: input.transitionId },
-        }, current)
-      return {
-        ...result,
-        approvedTargetPhaseId: current.id,
-        routeReason: input.request.rationale,
-        requiresConfirmation: false,
-      }
+    if (input.request.intent === 'advance') {
+      throw workflowError('WORKFLOW_ROUTE_LINEAR_ADVANCE_FORBIDDEN', 'Use submit_phase_completion for ordinary linear progression; request_workflow_route is only for non-linear routing.')
+    }
+    if (input.request.requireUserConfirmation === false) {
+      throw workflowError('WORKFLOW_ROUTE_CONFIRMATION_REQUIRED', 'Workflow routes always require explicit user confirmation.')
     }
 
+    const isControlRoute = input.request.intent === 'pause' || input.request.intent === 'resume'
     const hasPendingCompletion = Boolean(
       state.pendingConfirmation
       && state.pendingConfirmation.phaseId === current.id
@@ -1407,18 +1444,28 @@ export class WorkflowRuntimeService {
       && !state.pendingConfirmation
       && current.blockedReason,
     )
-    if (!hasPendingCompletion && !isBlockedRecovery) {
+    if (!isControlRoute && !hasPendingCompletion && !isBlockedRecovery) {
       throw workflowError(
         'WORKFLOW_ROUTE_COMPLETION_REQUIRED',
         'Submit the current phase completion before requesting a workflow route.',
       )
     }
-    if (isBlockedRecovery && !['rework_current_phase', 'jump_to_phase'].includes(input.request.intent)) {
+    if (!isControlRoute && isBlockedRecovery && !['rework_current_phase', 'jump_to_phase'].includes(input.request.intent)) {
       throw workflowError(
         'WORKFLOW_ROUTE_RECOVERY_INTENT_INVALID',
         `Workflow route intent "${input.request.intent}" is not available while the current phase is blocked.`,
       )
     }
+    if (!isControlRoute && !isBlockedRecovery) {
+      const eligibility = getWorkflowCompletionEligibility(state)
+      if (eligibility.status !== 'eligible') {
+        throw workflowError(
+          'WORKFLOW_COMPLETION_INELIGIBLE',
+          'Current workflow phase is not completion-eligible: ' + eligibility.reasons.join(' '),
+        )
+      }
+    }
+
     if (state.pendingRoute?.status === 'pending') {
       throw workflowError('WORKFLOW_PENDING_CONFLICT', 'Workflow already has a pending route.')
     }
@@ -1434,27 +1481,9 @@ export class WorkflowRuntimeService {
     // of creating a second pending route for the exact same destination.
     if (
       hasPendingCompletion
-      && (input.request.intent === 'advance' || input.request.intent === 'jump_to_phase')
+      && input.request.intent === 'jump_to_phase'
       && targetPhaseId === state.pendingConfirmation?.toPhaseId
     ) {
-      const requiresConfirmation = input.request.requireUserConfirmation !== false
-      if (!requiresConfirmation) {
-        const confirmed = await this.confirmTransition(state, {
-          requestedAt: input.requestedAt,
-          request: {
-            phaseId: current.id,
-            action: 'confirm',
-            transitionId: `${input.transitionId ?? 'workflow-route'}-approved`,
-            expectedStateVersion: state.stateVersion,
-          },
-        }, current)
-        return {
-          ...confirmed,
-          approvedTargetPhaseId: targetPhaseId,
-          routeReason: input.request.rationale.trim(),
-          requiresConfirmation: false,
-        }
-      }
       return {
         state,
         notifications: [],
@@ -1464,7 +1493,7 @@ export class WorkflowRuntimeService {
       }
     }
 
-    const requiresConfirmation = input.request.requireUserConfirmation !== false
+    const requiresConfirmation = true
     state.pendingRoute = {
       routeId: input.transitionId ?? `workflow-route-${Date.now()}`,
       phaseId: current.id,
@@ -1477,11 +1506,15 @@ export class WorkflowRuntimeService {
       requiresConfirmation,
       approvedTargetPhaseId: targetPhaseId,
       status: 'pending',
-      ...(isBlockedRecovery ? { origin: 'blocked-recovery' as const } : {}),
+      ...(!isControlRoute && isBlockedRecovery ? { origin: 'blocked-recovery' as const } : {}),
     }
     state.workflowStatus = 'pending-confirmation'
     state.status = 'pending-confirmation'
     state.runStatus = 'waiting_for_user'
+    updateActiveWorkflowRun(state, input.requestedAt, {
+      status: 'waiting_for_user',
+      currentPhaseId: current.id,
+    })
     const nextState = touchState(state, input.requestedAt)
     const transition = transitionRecord({
       request: {
@@ -1498,24 +1531,6 @@ export class WorkflowRuntimeService {
       stateVersion: nextState.stateVersion,
     })
     nextState.transitionHistory.push(transition)
-
-    if (!requiresConfirmation) {
-      const confirmed = await this.confirmTransition(nextState, {
-        requestedAt: input.requestedAt,
-        request: {
-          phaseId: current.id,
-          action: 'confirm',
-          transitionId: `${input.transitionId ?? 'workflow-route'}-approved`,
-          expectedStateVersion: nextState.stateVersion,
-        },
-      }, current)
-      return {
-        ...confirmed,
-        approvedTargetPhaseId: targetPhaseId,
-        routeReason: input.request.rationale.trim(),
-        requiresConfirmation: false,
-      }
-    }
 
     return {
       state: nextState,
@@ -1564,6 +1579,10 @@ export class WorkflowRuntimeService {
     input: SubmitPhaseCompletionInput,
     options: RecordCompletionSubmissionOptions,
   ): SubmitPhaseCompletionResult {
+    input = {
+      ...input,
+      state: migrateWorkflowRuntimeContract(input.state, undefined, input.requestedAt),
+    }
     if (!isWorkflowState(input.state)) {
       throw workflowError('WORKFLOW_TOOL_UNAVAILABLE', 'Workflow completion is available only in workflow sessions.')
     }
@@ -1581,6 +1600,15 @@ export class WorkflowRuntimeService {
     }
 
     validateCompletionSubmission(input.state, input.submission)
+    if (isReadyCompletionStatus(input.submission.status)) {
+      const eligibility = getWorkflowCompletionEligibility(input.state)
+      if (eligibility.status !== 'eligible') {
+        throw workflowError(
+          'WORKFLOW_COMPLETION_INELIGIBLE',
+          'Current workflow phase is not completion-eligible: ' + eligibility.reasons.join(' '),
+        )
+      }
+    }
     if (
       isReadyCompletionStatus(input.submission.status)
       && input.state.pendingConfirmation?.status === 'pending'
@@ -1828,7 +1856,7 @@ export class WorkflowRuntimeService {
     const isBlockedRecoveryRoute = route?.origin === 'blocked-recovery'
     if (
       (!pending || pending.phaseId !== current.id || pending.status !== 'pending')
-      && !isBlockedRecoveryRoute
+      && !route
     ) {
       return this.blockTransition(state, input, 'Workflow confirmation is not pending.')
     }
@@ -1843,6 +1871,38 @@ export class WorkflowRuntimeService {
         route?.intent === 'rework_current_phase' ? 'superseded' : 'accepted',
       )
       : []
+    if (route?.intent === 'pause' || route?.intent === 'resume') {
+      route.status = 'approved'
+      state.pendingRoute = null
+      state.pendingConfirmation = null
+      state.workflowStatus = 'running'
+      state.status = 'running'
+      if (route.intent === 'pause') {
+        state.runStatus = 'paused'
+        state.lastPausedAt = input.requestedAt
+        updateActiveWorkflowRun(state, input.requestedAt, { status: 'paused', currentPhaseId: current.id })
+      } else {
+        state.runStatus = 'active'
+        state.lastResumeAt = input.requestedAt
+        updateActiveWorkflowRun(state, input.requestedAt, { status: 'active', currentPhaseId: current.id })
+      }
+      const nextState = touchState(state, input.requestedAt)
+      const transition = transitionRecord({
+        request: input.request,
+        fromPhaseId: current.id,
+        toPhaseId: current.id,
+        authority: 'user-choice',
+        action: 'route-confirmed',
+        result: 'accepted',
+        requestedAt: input.requestedAt,
+        stateVersion: nextState.stateVersion,
+      })
+      nextState.transitionHistory.push(transition)
+      return {
+        state: nextState,
+        notifications: [transitionNotification(transition), stateNotification(nextState)],
+      }
+    }
     if (route?.intent === 'rework_current_phase') {
       route.status = 'approved'
       current.status = 'running'
