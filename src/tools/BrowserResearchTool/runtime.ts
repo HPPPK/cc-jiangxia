@@ -1,5 +1,5 @@
 ﻿import { existsSync, readdirSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { cp, mkdir } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { join } from 'node:path'
 import { getAppStoragePath } from '../../utils/appIdentity.js'
@@ -26,6 +26,19 @@ export async function ensureBrowserResearchRuntimeDir(): Promise<string> {
   const runtimeDir = getBrowserResearchRuntimeDir()
   await mkdir(runtimeDir, { recursive: true })
   return runtimeDir
+}
+
+export async function seedBundledBrowserResearchRuntime(
+  configDir = getClaudeConfigHomeDir(),
+  bundledRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR,
+): Promise<boolean> {
+  const runtimeDir = getBrowserResearchRuntimeDir(configDir)
+  if (getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir)) return false
+  if (!bundledRuntimeDir || !getBrowserResearchExecutablePathFromRuntimeDir(bundledRuntimeDir)) return false
+
+  await mkdir(runtimeDir, { recursive: true })
+  await cp(bundledRuntimeDir, runtimeDir, { recursive: true, force: true })
+  return getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir) !== null
 }
 
 function isPrivateIpv4(hostname: string): boolean {
@@ -68,8 +81,7 @@ export function getUnsafeBrowserResearchUrlReason(rawUrl: string): string | null
   return null
 }
 
-export function getBrowserResearchExecutablePath(configDir = getClaudeConfigHomeDir()): string | null {
-  const runtimeDir = getBrowserResearchRuntimeDir(configDir)
+function getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir: string): string | null {
   if (!existsSync(runtimeDir)) return null
 
   try {
@@ -80,6 +92,10 @@ export function getBrowserResearchExecutablePath(configDir = getClaudeConfigHome
   } catch {
     return null
   }
+}
+
+export function getBrowserResearchExecutablePath(configDir = getClaudeConfigHomeDir()): string | null {
+  return getBrowserResearchExecutablePathFromRuntimeDir(getBrowserResearchRuntimeDir(configDir))
 }
 
 export function isBrowserResearchRuntimeInstalled(configDir = getClaudeConfigHomeDir()): boolean {

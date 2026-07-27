@@ -11,6 +11,7 @@ import {
 import {
   ensureBrowserResearchRuntimeDir,
   getBrowserResearchExecutablePath,
+  seedBundledBrowserResearchRuntime,
   getBrowserResearchScreenshotDir,
   getUnsafeBrowserResearchUrlReason,
   isBrowserResearchRuntimeInstalled,
@@ -386,6 +387,7 @@ export const BrowserResearchTool = buildTool({
         message: `BrowserResearch refused this URL: ${issue}`,
         errorCode: 1,
       };
+    await seedBundledBrowserResearchRuntime()
     if (!isBrowserResearchRuntimeInstalled())
       return {
         result: false as const,

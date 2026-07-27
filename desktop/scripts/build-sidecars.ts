@@ -1,3 +1,4 @@
+import { existsSync, readdirSync } from 'node:fs'
 import { cp, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -26,6 +27,7 @@ if (scanExit !== 0) {
 
 await mkdir(binariesDir, { recursive: true })
 await buildBundledExpertPacks()
+await buildBundledBrowserRuntime()
 await copyBundledWorkflowPacks()
 await copyBundledSkills()
 
@@ -52,6 +54,52 @@ async function buildBundledExpertPacks() {
   if (exitCode !== 0) throw new Error(`[build-sidecars] build-expert-packs failed (exit ${exitCode})`)
 }
 
+async function buildBundledBrowserRuntime() {
+  const platform = getPlaywrightHostPlatform(targetTriple)
+  const cacheDir = path.join(desktopRoot, '.playwright-browsers', platform)
+  const targetDir = path.join(binariesDir, 'browser-runtime', 'playwright')
+
+  if (!hasManagedBrowserExecutable(cacheDir)) {
+    await rm(cacheDir, { recursive: true, force: true })
+    await mkdir(cacheDir, { recursive: true })
+    const proc = Bun.spawn(['bunx', 'playwright', 'install', 'chromium-headless-shell'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PLAYWRIGHT_BROWSERS_PATH: cacheDir,
+        PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: platform,
+      },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    const exitCode = await proc.exited
+    if (exitCode !== 0) throw new Error(`[build-sidecars] playwright chromium install failed (exit ${exitCode})`)
+  }
+
+  await rm(targetDir, { recursive: true, force: true })
+  await mkdir(path.dirname(targetDir), { recursive: true })
+  await cp(cacheDir, targetDir, { recursive: true })
+  if (!hasManagedBrowserExecutable(targetDir)) {
+    throw new Error(`[build-sidecars] managed Chromium runtime was not produced at ${targetDir}`)
+  }
+  console.log(`[build-sidecars] Copied managed Chromium runtime -> ${targetDir}`)
+}
+
+function getPlaywrightHostPlatform(triple: string): string {
+  if (triple === 'x86_64-pc-windows-msvc') return 'win64'
+  if (triple === 'aarch64-apple-darwin') return 'mac14-arm64'
+  if (triple === 'x86_64-apple-darwin') return 'mac14'
+  throw new Error(`[build-sidecars] Unsupported platform for bundled Chromium: ${triple}`)
+}
+
+function hasManagedBrowserExecutable(runtimeDir: string): boolean {
+  if (!existsSync(runtimeDir)) return false
+  try {
+    return readdirSync(runtimeDir, { recursive: true }).some((entry) => /(?:headless_shell|chrome-headless-shell|chrome)(?:\.exe)?$/i.test(entry.replaceAll('\\', '/')))
+  } catch {
+    return false
+  }
+}
 async function copyBundledWorkflowPacks() {
   const sourceDir = path.join(repoRoot, 'src', 'server', 'packs')
   const targetDir = path.join(binariesDir, 'packs')

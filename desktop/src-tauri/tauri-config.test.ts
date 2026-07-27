@@ -31,7 +31,7 @@ describe('tauri security config', () => {
     expect(cargoToml).toContain('features = ["system-proxy"]')
   })
 
-  it('packages default workflow ZIP resources for first-run seeding', () => {
+  it('packages default workflow ZIPs and the managed Chromium runtime for first-run seeding', () => {
     const config = JSON.parse(
       readFileSync(join(currentDir, 'tauri.conf.json'), 'utf8'),
     ) as {
@@ -39,6 +39,7 @@ describe('tauri security config', () => {
     }
 
     expect(config.bundle?.resources ?? []).toContain('binaries/packs')
+    expect(config.bundle?.resources ?? []).toContain('binaries/browser-runtime')
   })
 
   it('checks the maintained fork release channel for desktop updates', () => {

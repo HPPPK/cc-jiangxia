@@ -55,6 +55,7 @@
                    "resources":  [
                                      "../dist",
                                      "binaries/packs",
+                                     "binaries/browser-runtime",
                                      "binaries/skills"
                                  ],
                    "icon":  [

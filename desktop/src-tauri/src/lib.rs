@@ -1605,6 +1605,15 @@ fn select_bundled_expert_packs_dir(resource_dir: Option<&Path>) -> Option<PathBu
     })
 }
 
+fn select_bundled_browser_runtime_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let resource_dir = resource_dir?;
+    let runtime_dir = resource_dir
+        .join("binaries")
+        .join("browser-runtime")
+        .join("playwright");
+    runtime_dir.is_dir().then_some(runtime_dir)
+}
+
 
 fn is_application_control_block(error: &str) -> bool {
     error.contains("Application Control")
@@ -1705,6 +1714,8 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
         .map(|path| path.to_string_lossy().to_string());
     let bundled_expert_packs_dir = select_bundled_expert_packs_dir(resource_dir.as_deref())
         .map(|path| path.to_string_lossy().to_string());
+    let bundled_browser_runtime_dir = select_bundled_browser_runtime_dir(resource_dir.as_deref())
+        .map(|path| path.to_string_lossy().to_string());
 
     let sidecar_args = vec![
         "server".to_string(),
@@ -1724,6 +1735,9 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     }
     if let Some(expert_packs_dir) = bundled_expert_packs_dir {
         sidecar_environment.push(("CLAUDE_EXPERT_PACKS_DIR", expert_packs_dir));
+    }
+    if let Some(browser_runtime_dir) = bundled_browser_runtime_dir {
+        sidecar_environment.push(("CLAUDE_BROWSER_RUNTIME_DIR", browser_runtime_dir));
     }
     let envs = base_sidecar_environment(&app_root, &sidecar_environment);
 
@@ -1997,7 +2011,7 @@ mod tests {
         decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
         has_meaningful_intersection, is_persistable_window_state, normalize_terminal_bash_path,
         parse_env_block, resolve_desktop_terminal_shell, run_notification_bridge,
-        select_bundled_expert_packs_dir, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
+        select_bundled_browser_runtime_dir, select_bundled_expert_packs_dir, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
         TerminalHostPlatform, SERVER_BIND_HOST, SERVER_CONTROL_HOST, SERVER_STARTUP_TIMEOUT_SECS,
     };
     use std::{collections::HashMap, fs};
@@ -2251,6 +2265,19 @@ mod tests {
         fs::create_dir_all(&expert_packs_dir).expect("create bundled expert packs dir");
 
         assert_eq!(select_bundled_expert_packs_dir(Some(&resource_dir)), Some(expert_packs_dir));
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
+
+    #[test]
+    fn bundled_browser_runtime_dir_uses_the_packaged_resource_directory_when_present() {
+        let root = std::env::temp_dir().join(format!("cchh-bundled-browser-runtime-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        let browser_runtime_dir = resource_dir.join("binaries").join("browser-runtime").join("playwright");
+
+        fs::create_dir_all(&browser_runtime_dir).expect("create bundled browser runtime dir");
+
+        assert_eq!(select_bundled_browser_runtime_dir(Some(&resource_dir)), Some(browser_runtime_dir));
 
         fs::remove_dir_all(root).expect("remove temp app tree");
     }

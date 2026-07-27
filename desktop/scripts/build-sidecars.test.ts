@@ -48,6 +48,15 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(source).toContain("path.join(binariesDir, 'packs')")
   })
 
+  it('downloads the target-platform managed Chromium runtime next to the compiled sidecar', () => {
+    const source = readBuildScript()
+
+    expect(source).toContain('buildBundledBrowserRuntime')
+    expect(source).toContain("path.join(binariesDir, 'browser-runtime', 'playwright')")
+    expect(source).toContain('PLAYWRIGHT_BROWSERS_PATH')
+    expect(source).toContain("'playwright', 'install', 'chromium-headless-shell'")
+  })
+
   it('copies bundled skill resources next to the compiled sidecar', () => {
     const source = readBuildScript()
 
