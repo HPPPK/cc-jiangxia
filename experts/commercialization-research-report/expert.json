@@ -1,8 +1,8 @@
 {
   "id": "commercialization-research-report",
   "name": "新品商业化调研报告专家",
-  "description": "基于可编辑 AGENTS.md 业务规则与经典 HTML 母版的新品商业化调研专家。按字段研究并用 Write 输出 HTML；Bash 仅用于必要的本地报告校验。资料不足时如实标注，不把业务规则当作市场证据。",
-  "statusLabel": "分章节子代理 + 证据复核 + 来源图谱 BrowserResearch + Write/Bash v1.0.5-local",
+  "description": "基于可编辑 AGENTS.md 业务规则与经典 HTML 母版的新品商业化调研专家。按字段研究，以多源渠道证据包支撑 SEO/SEM/内容渠道判断，并用 Write 输出 HTML；Bash 仅用于必要的本地报告校验。资料不足时如实标注，不把业务规则当作市场证据。",
+  "statusLabel": "分章节子代理 + 多源渠道证据包 + 证据复核 + 来源图谱 BrowserResearch + Write/Bash v1.0.6-local",
   "promptPaths": {
     "system": "experts/commercialization-research-report/prompts/system.md"
   },
@@ -14,6 +14,7 @@
     "commercialization-research-method",
     "source-graph-research",
     "external-demand-evidence",
+    "channel-acquisition-evidence",
     "identify-assumptions-new",
     "prioritize-assumptions",
     "brainstorm-experiments-new",

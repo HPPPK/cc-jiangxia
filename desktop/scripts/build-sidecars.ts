@@ -19,6 +19,12 @@ const MANAGED_GIT_ARCHIVE = `PortableGit-${MANAGED_GIT_VERSION}-64-bit.7z.exe`
 const MANAGED_GIT_URL = `https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/${MANAGED_GIT_ARCHIVE}`
 const MANAGED_GIT_SHA256 = 'ab00566336b5472120f9a52d34f2e79c5406535792acb0548001ffd0bd090e5d'
 
+const MANAGED_NODE_VERSION = '22.23.1'
+const MANAGED_NODE_DIRECTORY = `node-v${MANAGED_NODE_VERSION}-win-x64`
+const MANAGED_NODE_ARCHIVE = `${MANAGED_NODE_DIRECTORY}.zip`
+const MANAGED_NODE_URL = `https://nodejs.org/dist/v${MANAGED_NODE_VERSION}/${MANAGED_NODE_ARCHIVE}`
+const MANAGED_NODE_SHA256 = '7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29'
+
 // 编译前先扫一遍 src/ 把所有缺失的 ant-internal 模块在磁盘上 stub 出来。
 // 见 desktop/scripts/scan-missing-imports.ts。
 console.log('[build-sidecars] scanning for missing imports...')
@@ -34,6 +40,7 @@ if (scanExit !== 0) {
 await mkdir(binariesDir, { recursive: true })
 await buildBundledExpertPacks()
 await buildBundledGitRuntime()
+await buildBundledNodeRuntime()
 await buildBundledBrowserRuntime()
 await copyBundledWorkflowPacks()
 await copyBundledSkills()
@@ -183,6 +190,64 @@ async function waitForManagedGitRuntime(runtimeDir: string): Promise<void> {
   throw new Error(`[build-sidecars] Portable Git extraction did not produce cmd/git.exe and bin/bash.exe within ${timeoutMs}ms`)
 }
 
+async function buildBundledNodeRuntime() {
+  const resourceDir = path.join(binariesDir, 'node-runtime')
+  if (targetTriple !== 'x86_64-pc-windows-msvc') {
+    // Keep the configured resource path present for macOS builds without shipping a Windows runtime.
+    await mkdir(resourceDir, { recursive: true })
+    await writeFile(path.join(resourceDir, '.keep'), '')
+    return
+  }
+
+  const cacheRoot = path.join(desktopRoot, '.managed-node-runtime', 'win-x64')
+  const cacheDir = path.join(cacheRoot, MANAGED_NODE_DIRECTORY)
+  const archivePath = path.join(cacheRoot, MANAGED_NODE_ARCHIVE)
+  const targetDir = path.join(resourceDir, MANAGED_NODE_DIRECTORY)
+
+  if (!hasManagedNodeRuntime(cacheDir)) {
+    await rm(cacheDir, { recursive: true, force: true })
+    await mkdir(cacheRoot, { recursive: true })
+
+    let archiveBytes: Uint8Array
+    if (existsSync(archivePath)) {
+      archiveBytes = await readFile(archivePath)
+    } else {
+      const response = await fetch(MANAGED_NODE_URL)
+      if (!response.ok) throw new Error(`[build-sidecars] Node runtime download failed: ${response.status} ${response.statusText}`)
+      archiveBytes = new Uint8Array(await response.arrayBuffer())
+      await writeFile(archivePath, archiveBytes)
+    }
+
+    const actualSha256 = createHash('sha256').update(archiveBytes).digest('hex')
+    if (actualSha256 !== MANAGED_NODE_SHA256) {
+      await rm(archivePath, { force: true })
+      throw new Error(`[build-sidecars] Node runtime checksum mismatch: expected ${MANAGED_NODE_SHA256}, got ${actualSha256}`)
+    }
+
+    const escapePowerShellLiteral = (value: string) => value.replaceAll("'", "''")
+    const proc = Bun.spawn(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath '${escapePowerShellLiteral(archivePath)}' -DestinationPath '${escapePowerShellLiteral(cacheRoot)}' -Force`,
+    ], {
+      cwd: repoRoot,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    const exitCode = await proc.exited
+    if (exitCode !== 0) throw new Error(`[build-sidecars] Node runtime extraction failed (exit ${exitCode})`)
+  }
+
+  await rm(targetDir, { recursive: true, force: true })
+  await mkdir(path.dirname(targetDir), { recursive: true })
+  await cp(cacheDir, targetDir, { recursive: true })
+  if (!hasManagedNodeRuntime(targetDir)) {
+    throw new Error(`[build-sidecars] managed Node runtime was not produced at ${targetDir}`)
+  }
+  console.log(`[build-sidecars] Copied managed Node runtime -> ${targetDir}`)
+}
+
+function hasManagedNodeRuntime(runtimeDir: string): boolean {
+  return ['node.exe', 'npm.cmd', 'npx.cmd'].every(entry => existsSync(path.join(runtimeDir, entry)))
+}
 async function copyBundledWorkflowPacks() {
   const sourceDir = path.join(repoRoot, 'src', 'server', 'packs')
   const targetDir = path.join(binariesDir, 'packs')

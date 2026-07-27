@@ -83,6 +83,7 @@ describe('buildBundledExpertPacks', () => {
     const manifest = JSON.parse(await zip.readText('manifest.json'))
     const expert = JSON.parse(await zip.readText('experts/commercialization-research-report/expert.json'))
     const skillPath = 'skills/external-demand-evidence/SKILL.md'
+    const channelSkillPath = 'skills/channel-acquisition-evidence/SKILL.md'
     const systemPrompt = await zip.readText('experts/commercialization-research-report/prompts/system.md')
 
     expect(manifest.version).toBe('0.10.9-local')
@@ -98,7 +99,15 @@ describe('buildBundledExpertPacks', () => {
     }
     expect(zip.has('skills/commercialization-research-method/SKILL.md')).toBe(true)
     expect(zip.has(skillPath)).toBe(true)
+    expect(zip.has(channelSkillPath)).toBe(true)
     expect(await zip.readText(skillPath)).toContain('BrowserResearch')
+    expect(await zip.readText(channelSkillPath)).toContain('渠道证据包')
     expect(systemPrompt).toContain('external-demand-evidence')
+    expect(systemPrompt).toContain('channel-acquisition-evidence')
+    expect(systemPrompt).toContain('来源集中')
+    expect(systemPrompt).toContain('品牌不同不等于外部用户/内容证据')
+    expect(systemPrompt).toContain('不是证据缺口标签')
+    expect(await zip.readText(channelSkillPath)).toContain('均是第一方产品事实')
+    expect(await zip.readText(channelSkillPath)).toContain('负向观察结论')
   })
 })

@@ -41,6 +41,7 @@ describe('tauri security config', () => {
     expect(config.bundle?.resources ?? []).toContain('binaries/packs')
     expect(config.bundle?.resources ?? []).toContain('binaries/browser-runtime')
     expect(config.bundle?.resources ?? []).toContain('binaries/git-runtime')
+    expect(config.bundle?.resources ?? []).toContain('binaries/node-runtime')
   })
 
   it('checks the maintained fork release channel for desktop updates', () => {

@@ -73,6 +73,20 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(source).toContain("'-y', `-o${cacheDir}`")
   })
 
+  it('downloads a pinned Windows Node runtime so generated projects do not need a system Node install', () => {
+    const source = readBuildScript()
+
+    expect(source).toContain('buildBundledNodeRuntime')
+    expect(source).toContain("path.join(binariesDir, 'node-runtime')")
+    expect(source).toContain("const MANAGED_NODE_VERSION = '22.23.1'")
+    expect(source).toContain('MANAGED_NODE_ARCHIVE = `${MANAGED_NODE_DIRECTORY}.zip`')
+    expect(source).toContain('7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29')
+    expect(source).toContain("'node.exe'")
+    expect(source).toContain("'npm.cmd'")
+    expect(source).toContain("'npx.cmd'")
+    expect(source.indexOf('await buildBundledNodeRuntime()')).toBeLessThan(source.indexOf('await compileExecutable('))
+  })
+
   it('copies bundled skill resources next to the compiled sidecar', () => {
     const source = readBuildScript()
 

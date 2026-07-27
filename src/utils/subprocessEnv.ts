@@ -1,3 +1,5 @@
+import path from 'node:path'
+
 import { isEnvTruthy } from './envUtils.js'
 
 /**
@@ -61,6 +63,31 @@ const GHA_SUBPROCESS_SCRUB = [
  * automatically when `allowed_non_write_users` is configured — the flag that
  * exposes a workflow to untrusted content (prompt injection surface).
  */
+/**
+ * Makes the packaged Node runtime available to shell-launched project commands
+ * without installing Node globally or changing the operating-system PATH.
+ */
+export function withBundledNodeRuntimePath(
+  env: NodeJS.ProcessEnv,
+  platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform !== 'win32') return env
+
+  const nodeExecutable = env.CLAUDE_BUNDLED_NODE_EXECUTABLE
+  if (!nodeExecutable) return env
+
+  const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH'
+  const nodeDir = path.win32.dirname(nodeExecutable)
+  const separator = ';'
+  const entries = (env[pathKey] ?? '').split(separator).filter(Boolean)
+  if (entries.some(entry => entry.toLowerCase() === nodeDir.toLowerCase())) return env
+
+  return {
+    ...env,
+    [pathKey]: [nodeDir, ...entries].join(separator),
+  }
+}
+
 // Registered by init.ts after the upstreamproxy module is dynamically imported
 // in CCR sessions. Stays undefined in non-CCR startups so we never pull in the
 // upstreamproxy module graph (upstreamproxy.ts + relay.ts) via a static import.
@@ -84,11 +111,12 @@ export function subprocessEnv(): NodeJS.ProcessEnv {
   const proxyEnv = _getUpstreamProxyEnv?.() ?? {}
 
   if (!isEnvTruthy(process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB)) {
-    return Object.keys(proxyEnv).length > 0
+    const env = Object.keys(proxyEnv).length > 0
       ? { ...process.env, ...proxyEnv }
       : process.env
+    return withBundledNodeRuntimePath(env)
   }
-  const env = { ...process.env, ...proxyEnv }
+  const env = withBundledNodeRuntimePath({ ...process.env, ...proxyEnv })
   for (const k of GHA_SUBPROCESS_SCRUB) {
     delete env[k]
     // GitHub Actions auto-creates INPUT_<NAME> for `with:` inputs, duplicating

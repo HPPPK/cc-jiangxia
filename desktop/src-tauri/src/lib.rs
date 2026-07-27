@@ -1648,6 +1648,21 @@ fn select_bundled_git_bash_executable(resource_dir: Option<&Path>) -> Option<Pat
 fn select_bundled_git_bash_executable(_resource_dir: Option<&Path>) -> Option<PathBuf> {
     None
 }
+#[cfg(target_os = "windows")]
+fn select_bundled_node_executable(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let resource_dir = resource_dir?;
+    let node_executable = resource_dir
+        .join("binaries")
+        .join("node-runtime")
+        .join("node-v22.23.1-win-x64")
+        .join("node.exe");
+    node_executable.is_file().then_some(node_executable)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn select_bundled_node_executable(_resource_dir: Option<&Path>) -> Option<PathBuf> {
+    None
+}
 
 fn is_application_control_block(error: &str) -> bool {
     error.contains("Application Control")
@@ -1754,6 +1769,8 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
         .map(|path| path.to_string_lossy().to_string());
     let bundled_git_bash_executable = select_bundled_git_bash_executable(resource_dir.as_deref())
         .map(|path| path.to_string_lossy().to_string());
+    let bundled_node_executable = select_bundled_node_executable(resource_dir.as_deref())
+        .map(|path| path.to_string_lossy().to_string());
 
     let sidecar_args = vec![
         "server".to_string(),
@@ -1782,6 +1799,9 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     }
     if let Some(git_bash_executable) = bundled_git_bash_executable {
         sidecar_environment.push(("CLAUDE_BUNDLED_GIT_BASH_PATH", git_bash_executable));
+    }
+    if let Some(node_executable) = bundled_node_executable {
+        sidecar_environment.push(("CLAUDE_BUNDLED_NODE_EXECUTABLE", node_executable));
     }
     let envs = base_sidecar_environment(&app_root, &sidecar_environment);
 
@@ -2055,7 +2075,7 @@ mod tests {
         decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
         has_meaningful_intersection, is_persistable_window_state, normalize_terminal_bash_path,
         parse_env_block, resolve_desktop_terminal_shell, run_notification_bridge,
-        select_bundled_browser_runtime_dir, select_bundled_expert_packs_dir, select_bundled_git_bash_executable, select_bundled_git_executable, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
+        select_bundled_browser_runtime_dir, select_bundled_node_executable, select_bundled_expert_packs_dir, select_bundled_git_bash_executable, select_bundled_git_executable, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
         TerminalHostPlatform, SERVER_BIND_HOST, SERVER_CONTROL_HOST, SERVER_STARTUP_TIMEOUT_SECS,
     };
     use std::{collections::HashMap, fs};
@@ -2326,6 +2346,20 @@ mod tests {
         fs::remove_dir_all(root).expect("remove temp app tree");
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn bundled_node_executable_uses_the_packaged_resource_when_present() {
+        let root = std::env::temp_dir().join(format!("cchh-bundled-node-runtime-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        let node_executable = resource_dir.join("binaries").join("node-runtime").join("node-v22.23.1-win-x64").join("node.exe");
+
+        fs::create_dir_all(node_executable.parent().expect("node executable parent")).expect("create bundled Node dir");
+        fs::write(&node_executable, "").expect("write bundled Node executable marker");
+
+        assert_eq!(select_bundled_node_executable(Some(&resource_dir)), Some(node_executable));
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
     #[cfg(target_os = "windows")]
     #[test]
     fn bundled_git_executable_uses_the_packaged_resource_when_present() {

@@ -57,6 +57,7 @@
                                      "binaries/packs",
                                      "binaries/browser-runtime",
                                      "binaries/git-runtime",
+                                     "binaries/node-runtime",
                                      "binaries/skills"
                                  ],
                    "icon":  [
