@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "primaryOutput": {
+    "kind": "html",
+    "templatePath": "experts/commercialization-research-report/templates/commercialization-research-report-template.html",
+    "writeTool": "Write",
+    "destination": "Only the user-confirmed output folder and filename."
+  },
+  "requiredBeforeWrite": [
+    "All report claims are marked as verified, inference, hypothesis, or evidence gap.",
+    "A candidate-and-access ledger records every BrowserResearch URL with date, source type, target field, result or access limitation, and whether the final report uses it.",
+    "Every final HTML claim, number, observation, access limitation, or no-result statement maps to at least one BrowserResearch-opened URL or user-provided material.",
+    "Every URL actually used by the final HTML is listed in the final sources table with a source type, date, and field coverage; accessed but unused URLs remain only in the research ledger.",
+    "The evidence-review subagent has completed claim-by-claim and source-coverage review.",
+    "The user has confirmed the output path.",
+    "The original HTML template structure, CSS, chapter order, and table headers are preserved."
+  ],
+  "supportingArtifacts": [
+    "Candidate-and-access ledger: candidate or discovered URL, source type, discovery method, BrowserResearch status, date, field coverage, result or limitation, and final-report usage.",
+    "Claim-to-source map: final claim or table row -> source number -> BrowserResearch-opened URL or user-provided material.",
+    "Evidence-review findings and unresolved evidence gaps."
+  ]
+}

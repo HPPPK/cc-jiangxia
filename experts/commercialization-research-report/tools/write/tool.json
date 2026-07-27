@@ -1,0 +1,14 @@
+{
+  "id": "write",
+  "name": "写入 HTML 报告",
+  "type": "hostBuiltinRef",
+  "purpose": "仅在用户确认目标路径后，创建或另存为本次商业化调研 HTML 报告。",
+  "hostToolId": "Write",
+  "network": "none",
+  "permissions": [
+    {
+      "id": "write-user-confirmed-report",
+      "description": "仅在用户确认输出路径后写入最终 HTML 报告。"
+    }
+  ]
+}

@@ -106,4 +106,25 @@ describe('ExpertRuntimeService', () => {
 
     expect(analysis.material.usedTools[0]).toEqual(expect.objectContaining({ result: 'rejected-by-sandbox', exitStatus: 'rejected' }))
   })
+  it('loads a declared output template from the selected expert ZIP', async () => {
+    const root = await makeTempRoot('expert-runtime-config-')
+    const entries = customPackEntries()
+    entries['experts/custom/expert.json'] = JSON.stringify({
+      id: 'custom-runtime-expert',
+      name: 'Runtime Expert',
+      description: 'ZIP-defined expert',
+      promptPaths: { system: 'experts/custom/prompts/system.md' },
+      outputTemplatePath: 'experts/custom/templates/report.html',
+      skillIds: ['custom-guide'],
+    })
+    entries['experts/custom/templates/report.html'] = '<html><body>{{REPORT_TITLE}}</body></html>'
+    await importPack(root, entries)
+
+    const context = await new ExpertRuntimeService().loadContext('custom-runtime-expert')
+    expect(context.outputTemplate).toEqual({
+      path: 'experts/custom/templates/report.html',
+      content: '<html><body>{{REPORT_TITLE}}</body></html>',
+    })
+  })
+
 })

@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   getRecentProjects: vi.fn(),
   runRepoHealthCheck: vi.fn(),
   listExperts: vi.fn(),
+  listCategories: vi.fn(),
   listPacks: vi.fn(),
   enterSessionExpertMode: vi.fn(),
   exitSessionExpertMode: vi.fn(),
@@ -64,8 +65,10 @@ vi.mock('../../api/filesystem', () => ({
 }))
 
 vi.mock('../../api/experts', () => ({
+  resolveExpertCategoryId: (expert?: { id?: string; categoryId?: string }) => expert?.categoryId ?? (expert?.id === 'repo-health-check' ? 'development' : expert?.id === 'product-brief-intake' ? 'product' : 'uncategorized'),
   expertsApi: {
     listExperts: mocks.listExperts,
+    listCategories: mocks.listCategories,
     listPacks: mocks.listPacks,
     enterSessionExpertMode: mocks.enterSessionExpertMode,
     exitSessionExpertMode: mocks.exitSessionExpertMode,
@@ -301,6 +304,7 @@ describe('ChatInput file mentions', () => {
     mocks.getMessages.mockResolvedValue({ messages: [] })
     mocks.getChatStatus.mockResolvedValue({ state: 'idle' })
     mocks.getSlashCommands.mockResolvedValue({ commands: [] })
+    mocks.listCategories.mockResolvedValue({ categories: [] })
     mocks.listExperts.mockResolvedValue({
       experts: [
         {
@@ -1202,7 +1206,7 @@ describe('ChatInput file mentions', () => {
     expect(within(strategyDialog).getByRole('button', { name: 'Open in new session' })).toBeInTheDocument()
   })
 
-  it('opens the expert panel from the plus menu and enters expert Mode without starting a workflow', async () => {
+  it('opens the expert panel and sends a public kickoff that starts the hidden expert runtime', async () => {
     render(<ChatInput compact />)
 
     fireEvent.click(screen.getByLabelText('Open composer tools'))
@@ -1210,11 +1214,12 @@ describe('ChatInput file mentions', () => {
 
     const expertDialog = await screen.findByTestId('expert-selection-dialog')
     const expertList = within(expertDialog).getByRole('region', { name: '专家列表' })
-    expect(within(expertDialog).getByRole('heading', { name: '专家' })).toBeInTheDocument()
-    expect(within(expertDialog).getByText(/导入或查看专家包也不会运行包内代码/)).toBeInTheDocument()
+    expect(within(expertDialog).getByRole('heading', { name: '专家广场' })).toBeInTheDocument()
+    expect(within(expertDialog).getByRole('button', { name: '全部' })).toBeInTheDocument()
     expect(within(expertList).getByRole('heading', { name: '项目体检' })).toBeInTheDocument()
     expect(within(expertList).getByRole('heading', { name: '需求梳理' })).toBeInTheDocument()
 
+    fireEvent.click(within(expertDialog).getByRole('button', { name: /项目体检/ }))
     fireEvent.click(within(expertDialog).getByRole('button', { name: '进入专家 Mode' }))
 
     await waitFor(() => {
@@ -1227,6 +1232,19 @@ describe('ChatInput file mentions', () => {
       status: 'active',
     })
     expect(useSessionStore.getState().sessions[0]?.workflow).toBeUndefined()
+    expect(useChatStore.getState().getSession(sessionId).messages).toEqual([
+      expect.objectContaining({ id: 'existing', type: 'assistant_text', content: 'ready' }),
+      expect.objectContaining({
+        type: 'user_text',
+        content: '介绍一下「项目体检」，你可以帮我做什么？',
+      }),
+    ])
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+      type: 'user_message',
+      content: '介绍一下「项目体检」，你可以帮我做什么？',
+      attachments: undefined,
+    }))
+    expect(useSessionStore.getState().sessions[0]?.title).toBe('Project')
     expect(mocks.create).not.toHaveBeenCalled()
     expect(mocks.startLinkedWorkflowSession).not.toHaveBeenCalled()
     expect(mocks.runRepoHealthCheck).not.toHaveBeenCalled()

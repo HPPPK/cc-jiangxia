@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   fetchAll: vi.fn(),
   restoreTabs: vi.fn(),
   connectToSession: vi.fn(),
+  useScheduledTaskDesktopNotifications: vi.fn(),
   setActiveTab: vi.fn(),
   tabState: {
     activeTabId: null as string | null,
@@ -32,6 +33,10 @@ vi.mock('../../stores/settingsStore', () => ({
 
 vi.mock('../../hooks/useMobileViewport', () => ({
   useMobileViewport: () => mocks.isMobile,
+}))
+
+vi.mock('../../hooks/useScheduledTaskDesktopNotifications', () => ({
+  useScheduledTaskDesktopNotifications: mocks.useScheduledTaskDesktopNotifications,
 }))
 
 vi.mock('../../stores/tabStore', () => {
@@ -123,6 +128,22 @@ describe('AppShell boot flow', () => {
     mocks.tabState.tabs = []
     useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
     useUIStore.setState({ sidebarOpen: true })
+  })
+
+  it('starts scheduled-task polling only after the desktop server bootstrap is ready', async () => {
+    let resolveServerUrl: ((url: string) => void) | undefined
+    mocks.initializeDesktopServerUrl.mockImplementationOnce(() => new Promise<string>((resolve) => {
+      resolveServerUrl = resolve
+    }))
+
+    render(<AppShell />)
+
+    expect(mocks.useScheduledTaskDesktopNotifications).toHaveBeenLastCalledWith(false)
+
+    resolveServerUrl?.('http://127.0.0.1:53018')
+
+    await screen.findByText('sidebar loaded')
+    expect(mocks.useScheduledTaskDesktopNotifications).toHaveBeenLastCalledWith(true)
   })
 
   it('renders the desktop chrome after server and settings bootstrap', async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { act } from 'react'
+import { ApiError } from '../api/client'
 
 const viewportMocks = vi.hoisted(() => ({
   isMobile: false,
@@ -28,6 +29,8 @@ const tauriDialogMocks = vi.hoisted(() => ({
 
 const expertApiMocks = vi.hoisted(() => ({
   downloadMaterialPackage: vi.fn(),
+  getProfile: vi.fn(async () => ({ schemaVersion: 1, expertId: 'test-expert', profile: {}, updatedAt: '2026-07-22T00:00:00.000Z' })),
+  updateProfile: vi.fn(async (expertId: string, profile: Record<string, unknown>) => ({ schemaVersion: 1, expertId, profile, updatedAt: '2026-07-22T00:00:00.000Z' })),
 }))
 
 vi.mock('../hooks/useMobileViewport', () => ({
@@ -54,6 +57,8 @@ vi.mock('../api/sessions', () => ({
 vi.mock('../api/experts', () => ({
   expertsApi: {
     downloadMaterialPackage: expertApiMocks.downloadMaterialPackage,
+    getProfile: expertApiMocks.getProfile,
+    updateProfile: expertApiMocks.updateProfile,
   },
 }))
 
@@ -657,7 +662,7 @@ describe('ActiveSession task polling', () => {
 
 
 
-  it('keeps Expert Mode chat-first while exposing optional intake and downloadable materials', async () => {
+  it('renders one expert session header without retired intake or material controls', async () => {
     const sessionId = 'expert-session'
     const expert = {
       mode: 'expert' as const,
@@ -779,71 +784,24 @@ describe('ActiveSession task polling', () => {
     render(<ActiveSession />)
 
     const messageList = screen.getByTestId('message-list')
-    expect(screen.getByTestId('expert-mode-strip')).toBeInTheDocument()
+    expect(screen.queryByTestId('expert-mode-strip')).not.toBeInTheDocument()
     expect(within(messageList).queryByTestId('expert-intake-card')).not.toBeInTheDocument()
     expect(screen.queryByTestId('expert-mode-banner')).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '新建会话' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '补充结构化信息' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /专家产物/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('0 份材料')).not.toBeInTheDocument()
     expect(screen.getAllByRole('heading', { name: /项目体检/ }).length).toBeGreaterThan(0)
-
-    fireEvent.click(screen.getByRole('button', { name: '补充结构化信息' }))
-    const expertIntakeCard = within(messageList).getByTestId('expert-intake-card')
-    expect(within(expertIntakeCard).getByTestId('expert-intake-flow')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '选择文件夹' })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: '选择文件' })).toHaveLength(2)
-    expect(screen.getByRole('button', { name: '添加路径' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }))
-    expect(await screen.findByText('当前环境不能打开系统选择器，请直接粘贴路径。')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '怎么运行' }))
-    fireEvent.change(screen.getByLabelText(/项目目录/), { target: { value: '/workspace/project-from-form' } })
-    fireEvent.change(screen.getByLabelText(/参考文件/), { target: { value: '/workspace/project/README.md' } })
-    fireEvent.change(screen.getByLabelText(/附件路径/), { target: { value: '/workspace/project/a.md\n/workspace/project/b.md' } })
-
-    Object.defineProperty(window, '__TAURI__', { value: {}, configurable: true })
-    tauriDialogMocks.open.mockResolvedValueOnce(['/workspace/project/c.md', '/workspace/project/a.md'])
-    const fileButtons = screen.getAllByRole('button', { name: '选择文件' })
-    const addFileListButton = fileButtons[1]
-    expect(addFileListButton).toBeDefined()
-    fireEvent.click(addFileListButton!)
-    await waitFor(() => expect(tauriDialogMocks.open).toHaveBeenCalledWith(expect.objectContaining({
-      directory: false,
-      multiple: true,
-      title: '选择文件',
-    })))
-    expect(await screen.findByText('已添加 2 个路径。')).toBeInTheDocument()
-    expect(screen.getByLabelText(/附件路径/)).toHaveValue('/workspace/project/a.md\n/workspace/project/b.md\n/workspace/project/c.md')
-
-    fireEvent.change(screen.getByLabelText(/补充说明/), { target: { value: '请优先整理启动命令。' } })
-    fireEvent.click(screen.getByRole('button', { name: '生成材料包' }))
-
-    await waitFor(() => expect(runExpertAgent).toHaveBeenCalledTimes(1))
-    expect(submitIntakeStep).toHaveBeenCalledWith(sessionId, expect.objectContaining({
-      answers: expect.objectContaining({
-        focus: 'run',
-        projectRoot: '/workspace/project-from-form',
-        briefFile: '/workspace/project/README.md',
-        materialPaths: ['/workspace/project/a.md', '/workspace/project/b.md', '/workspace/project/c.md'],
-        notes: '请优先整理启动命令。',
-      }),
+    const exitExpertMode = vi.fn().mockRejectedValue(new ApiError(404, {
+      error: 'NOT_FOUND',
+      message: `Expert mode not active for session: ${sessionId}`,
     }))
-    expect(runExpertAgent).toHaveBeenCalledWith(sessionId, expect.objectContaining({
-      notes: '请优先整理启动命令。',
-      projectRoot: '/workspace/project-from-form',
-    }))
-    expect(apiMocks.startWorkflowFollowUpRun).not.toHaveBeenCalled()
+    useExpertStore.setState({ exitExpertMode })
 
-    expertApiMocks.downloadMaterialPackage.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer)
-    const createObjectURL = vi.fn().mockReturnValue('blob:expert-material')
-    const revokeObjectURL = vi.fn()
-    Object.assign(URL, { createObjectURL, revokeObjectURL })
-    const downloadClick = vi.spyOn(window.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    fireEvent.click(screen.getByRole('button', { name: /专家产物/ }))
-    expect(screen.getByTestId('expert-material-expert-run-1')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '下载材料包' }))
-    await waitFor(() => expect(expertApiMocks.downloadMaterialPackage).toHaveBeenCalledWith(sessionId, 'expert-run-1'))
-    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
-    expect(downloadClick).toHaveBeenCalled()
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:expert-material')
+    fireEvent.click(screen.getByRole('button', { name: '退出专家 Mode' }))
+
+    await waitFor(() => expect(useSessionStore.getState().sessions[0]?.expert).toBeUndefined())
+    expect(exitExpertMode).toHaveBeenCalledWith(sessionId)
+    expect(screen.queryByRole('button', { name: '退出专家 Mode' })).not.toBeInTheDocument()
   })
 
   it('exits a workflow without deleting the session history', async () => {

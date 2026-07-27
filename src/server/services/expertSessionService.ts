@@ -3,9 +3,10 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { ApiError } from '../middleware/errorHandler.js'
 import { sessionService } from './sessionService.js'
+import { conversationService } from './conversationService.js'
 import { ExpertPackRegistryService, type ExpertIntakeState, type ExpertMaterialRef, type ExpertSessionMetadata } from './expertPackRegistryService.js'
 import { ExpertRuntimeService } from './expertRuntimeService.js'
-import { createExpertRuntimeBinding } from './expertRuntimeBindingService.js'
+import { createExpertRuntimeBinding, hasActiveExpertRuntime } from './expertRuntimeBindingService.js'
 
 const registry = new ExpertPackRegistryService()
 const runtime = new ExpertRuntimeService()
@@ -36,7 +37,19 @@ export class ExpertSessionService {
       workDir: session.workDir || session.projectRoot || session.projectPath,
       expert: metadata,
     })
-    return metadata
+    const persistedExpert = (await sessionService.getSession(sessionId))?.expert
+    if (
+      !persistedExpert ||
+      persistedExpert.expertId !== metadata.expertId ||
+      persistedExpert.status !== 'active' ||
+      !hasActiveExpertRuntime(persistedExpert)
+    ) {
+      throw new ApiError(500, `Failed to persist Expert Mode for session: ${sessionId}`, 'EXPERT_MODE_PERSISTENCE_FAILED')
+    }
+    // This precise session may already be backed by a CLI with an ordinary
+    // tool pool. The next turn must start a new CLI with the expert deny list.
+    await conversationService.stopSessionAndWait(sessionId)
+    return persistedExpert
   }
 
   async exitExpertMode(sessionId: string): Promise<ExpertSessionMetadata> {
@@ -55,6 +68,8 @@ export class ExpertSessionService {
       workDir: session.workDir || session.projectRoot || session.projectPath,
       expert: metadata,
     })
+    // Exit has to remove the prior expert deny list before normal chat resumes.
+    await conversationService.stopSessionAndWait(sessionId)
     return metadata
   }
 

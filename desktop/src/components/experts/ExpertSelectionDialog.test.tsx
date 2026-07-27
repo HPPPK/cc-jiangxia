@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
-import { expertsApi, type ExpertDefinition, type ExpertPackImportPreview, type ExpertPackSummary, type ExpertToolManifest } from '../../api/experts'
+import type { ExpertDefinition, ExpertPackSummary, ExpertToolManifest } from '../../api/experts'
 import { useExpertStore } from '../../stores/expertStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { ExpertSelectionDialog } from './ExpertSelectionDialog'
@@ -10,22 +10,16 @@ import { ExpertSelectionDialog } from './ExpertSelectionDialog'
 const hostQuestionTool = {
   id: 'AskUserQuestion',
   name: 'AskUserQuestion',
-  purpose: '向你确认关键选择',
-}
-
-const writerTool = {
-  id: 'ExpertMaterialWriter',
-  name: 'ExpertMaterialWriter',
-  purpose: '保存专家材料',
+  purpose: 'Ask the user to confirm a key choice',
 }
 
 const localExecutableTool: ExpertToolManifest = {
   id: 'migration-draft',
   name: 'migration-draft',
   type: 'packageLocalExecutable',
-  purpose: '生成迁移评估草稿',
+  purpose: 'Generate a migration assessment draft',
   entrypoint: 'tools/migration-draft.json',
-  permissions: [{ id: 'project-read', description: '读取你选择的项目资料' }],
+  permissions: [{ id: 'project-read', description: 'Read the project material you selected' }],
   command: 'node draft.js',
   network: 'none',
 }
@@ -33,24 +27,29 @@ const localExecutableTool: ExpertToolManifest = {
 function makeExpert(overrides: Partial<ExpertDefinition> = {}): ExpertDefinition {
   return {
     id: 'repo-health-check',
-    name: '项目体检专家',
-    description: '整理项目现状并生成报告',
-    statusLabel: '可使用',
+    name: 'Project health expert',
+    description: 'Summarize the current project and turn it into an actionable report.',
+    statusLabel: 'Ready',
+    categoryId: 'development',
+    tags: ['Architecture', 'Quality'],
+    profile: {
+      avatar: '🧭',
+      tagline: 'See the project clearly before changing it.',
+      soul: { whoIAm: 'I turn an unfamiliar codebase into a safe plan.', howITalk: 'Clear and concise.', boundaries: ['Do not change code automatically'] },
+      starterPrompts: ['Help me understand this project.', 'Find the riskiest part of this repository.'],
+    },
     packId: 'builtin-experts',
-    packName: '内置专家基础包',
+    packName: 'Built-in expert basics',
     packVersion: '1.0.0',
     entrypoint: 'experts/repo-health-check/expert.json',
     promptPaths: {},
     formPaths: ['forms/repo-health.json'],
     skillIds: ['repo-health', 'report-writer'],
-    hostTools: [hostQuestionTool, writerTool],
-    permissions: [{ id: 'project-read', description: '读取你选择的项目资料' }],
+    hostTools: [hostQuestionTool],
+    permissions: [{ id: 'project-read', description: 'Read the project material you selected' }],
     tools: [],
     portable: true,
-    intakeFlow: {
-      version: 1,
-      steps: [{ type: 'form', id: 'materials', title: '请补充材料', fields: [{ id: 'notes', kind: 'textarea', label: '补充说明' }] }],
-    },
+    intakeFlow: undefined,
     ...overrides,
   }
 }
@@ -58,9 +57,9 @@ function makeExpert(overrides: Partial<ExpertDefinition> = {}): ExpertDefinition
 function makePack(experts: ExpertDefinition[], overrides: Partial<ExpertPackSummary> = {}): ExpertPackSummary {
   return {
     packId: experts[0]?.packId ?? 'builtin-experts',
-    name: experts[0]?.packName ?? '内置专家基础包',
+    name: experts[0]?.packName ?? 'Built-in expert basics',
     version: experts[0]?.packVersion ?? '1.0.0',
-    description: '内置专家集合',
+    description: 'Built-in expert collection',
     storage: { kind: 'zip', path: 'builtin-experts.zip' },
     experts,
     tools: [],
@@ -69,7 +68,7 @@ function makePack(experts: ExpertDefinition[], overrides: Partial<ExpertPackSumm
   }
 }
 
-describe('ExpertSelectionDialog package management', () => {
+describe('ExpertSelectionDialog marketplace', () => {
   const initialExpertState = useExpertStore.getInitialState()
   const initialSessionState = useSessionStore.getInitialState()
 
@@ -85,55 +84,78 @@ describe('ExpertSelectionDialog package management', () => {
     useSessionStore.setState(initialSessionState, true)
   })
 
-  it('shows installed expert package details in plain Chinese copy', () => {
-    const primaryExpert = makeExpert()
-    const secondExpert = makeExpert({
-      id: 'product-brief',
-      name: '需求梳理专家',
-      formPaths: [],
-      skillIds: ['product-brief'],
-      hostTools: [hostQuestionTool],
-      permissions: [],
-      intakeFlow: undefined,
-    })
-    const loadExperts = vi.fn().mockResolvedValue(undefined)
-
+  it('renders an expert marketplace without import controls', () => {
+    const expert = makeExpert()
     useExpertStore.setState({
-      experts: [primaryExpert, secondExpert],
-      packs: [makePack([primaryExpert, secondExpert])],
-      loadExperts,
+      experts: [expert],
+      packs: [makePack([expert])],
+      categories: [{ id: 'development', name: 'Development' }],
+      loadExperts: vi.fn().mockResolvedValue(undefined),
+      exportPack: vi.fn().mockResolvedValue(undefined),
+    })
+
+    const { container } = render(<ExpertSelectionDialog open onClose={vi.fn()} projectRoot="C:/repo" />)
+
+    expect(screen.getByTestId('expert-marketplace')).toBeInTheDocument()
+    const dialogShell = screen.getByTestId('expert-selection-dialog').firstElementChild
+    expect(dialogShell).toHaveClass('w-[1150px]', 'h-[680px]')
+    expect(screen.getByRole('heading', { name: '专家广场' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Development' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Project health expert' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '导入专家包' })).not.toBeInTheDocument()
+    expect(container.querySelector('input[type="file"]')).toBeNull()
+  })
+
+  it('filters marketplace cards by category and search text', () => {
+    const productExpert = makeExpert({ id: 'product-research', name: 'Product research expert', categoryId: 'product', tags: ['Commercial'] })
+    const developmentExpert = makeExpert({ id: 'repo-health-check', name: 'Development review expert', categoryId: 'development', tags: ['Code'] })
+    useExpertStore.setState({
+      experts: [productExpert, developmentExpert],
+      packs: [makePack([productExpert]), makePack([developmentExpert])],
+      categories: [{ id: 'product', name: 'Product' }, { id: 'development', name: 'Development' }],
+      loadExperts: vi.fn().mockResolvedValue(undefined),
       exportPack: vi.fn().mockResolvedValue(undefined),
     })
 
     render(<ExpertSelectionDialog open onClose={vi.fn()} projectRoot="C:/repo" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Product' }))
+    expect(screen.getByRole('heading', { name: 'Product research expert' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Development review expert' })).not.toBeInTheDocument()
 
-    expect(screen.getByText('已安装专家包详情')).toBeInTheDocument()
-    expect(screen.getByText(/包含 2 个专家、3 项技能和 2 个材料表单/)).toBeInTheDocument()
-    expect(screen.getByText(/可移植：可随 ZIP 一起备份或迁移/)).toBeInTheDocument()
-    expect(screen.getByText('工具和权限')).toBeInTheDocument()
-    expect(screen.getByText(/向你提问并等待选择/)).toBeInTheDocument()
-    expect(screen.getByText(/保存专家生成的材料/)).toBeInTheDocument()
-    expect(screen.getAllByText(/第一阶段不会运行包内代码/).length).toBeGreaterThan(0)
-
-    const visibleCopy = screen.getByTestId('expert-selection-dialog').textContent ?? ''
-    expect(visibleCopy).not.toMatch(/registry|schema|adapter|capability/i)
-    expect(visibleCopy).not.toContain('AskUserQuestion')
+    fireEvent.click(screen.getByRole('button', { name: '全部' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索专家' }), { target: { value: 'Code' } })
+    expect(screen.getByRole('heading', { name: 'Development review expert' })).toBeInTheDocument()
   })
 
-  it('keeps selections independent when two listed experts share an expert ID', () => {
-    const firstExpert = makeExpert({
-      id: 'shared-expert',
-      name: 'First shared expert',
-      packId: 'first-pack',
-      packName: 'First package',
-    })
-    const secondExpert = makeExpert({
-      id: 'shared-expert',
-      name: 'Replacement shared expert',
-      packId: 'replacement-pack',
-      packName: 'Replacement package',
+  it('opens a detail page where add enters expert mode and share exports the selected package', async () => {
+    const expert = makeExpert({ tools: [localExecutableTool] })
+    const exportPack = vi.fn().mockResolvedValue({ format: 'zip-pack' })
+    const onEnterExpert = vi.fn().mockResolvedValue(undefined)
+    useExpertStore.setState({
+      experts: [expert],
+      packs: [makePack([expert], { tools: [localExecutableTool] })],
+      loadExperts: vi.fn().mockResolvedValue(undefined),
+      exportPack,
     })
 
+    render(<ExpertSelectionDialog open onClose={vi.fn()} projectRoot="C:/repo" onEnterExpert={onEnterExpert} />)
+    fireEvent.click(screen.getByRole('button', { name: /Project health expert/ }))
+
+    const detail = screen.getByTestId('expert-detail')
+    expect(detail).toHaveTextContent('See the project clearly before changing it.')
+    expect(detail).toHaveTextContent('Generate a migration assessment draft')
+    expect(detail).toHaveTextContent('Read the project material you selected')
+
+    fireEvent.click(screen.getByRole('button', { name: '导出这个专家包' }))
+    await waitFor(() => expect(exportPack).toHaveBeenCalledWith('builtin-experts'))
+
+    fireEvent.click(screen.getByRole('button', { name: '进入专家 Mode' }))
+    await waitFor(() => expect(onEnterExpert).toHaveBeenCalledWith(expert))
+  })
+
+  it('keeps package identity when experts share an expert id', () => {
+    const firstExpert = makeExpert({ id: 'shared-expert', name: 'First shared expert', packId: 'first-pack', packName: 'First package' })
+    const secondExpert = makeExpert({ id: 'shared-expert', name: 'Second shared expert', packId: 'replacement-pack', packName: 'Replacement package' })
     useExpertStore.setState({
       experts: [firstExpert, secondExpert],
       packs: [makePack([firstExpert]), makePack([secondExpert])],
@@ -142,77 +164,8 @@ describe('ExpertSelectionDialog package management', () => {
     })
 
     render(<ExpertSelectionDialog open onClose={vi.fn()} projectRoot="C:/repo" />)
+    fireEvent.click(screen.getByRole('button', { name: /Second shared expert/ }))
 
-    const firstCard = screen.getByRole('button', { name: /First shared expert/ })
-    const secondCard = screen.getByRole('button', { name: /Replacement shared expert/ })
-    expect(firstCard).toHaveClass('shadow-sm')
-    expect(secondCard).not.toHaveClass('shadow-sm')
-
-    fireEvent.click(secondCard)
-
-    expect(firstCard).not.toHaveClass('shadow-sm')
-    expect(secondCard).toHaveClass('shadow-sm')
-  })
-
-  it('previews and imports zip packages without exposing technical package words', async () => {
-    const installedExpert = makeExpert()
-    const importedExpert = makeExpert({
-      id: 'migration-refactor',
-      name: '迁移评估专家',
-      packId: 'migration-pack',
-      packName: '迁移专家包',
-      packVersion: '2.0.0',
-      formPaths: [],
-      skillIds: ['migration-plan'],
-      hostTools: [hostQuestionTool],
-      permissions: [],
-      tools: [localExecutableTool],
-      portable: true,
-      intakeFlow: undefined,
-    })
-    const preview: ExpertPackImportPreview = {
-      pack: makePack([importedExpert], {
-        packId: 'migration-pack',
-        name: '迁移专家包',
-        version: '2.0.0',
-        description: '帮助评估迁移方案',
-        storage: { kind: 'zip', path: '' },
-        tools: [localExecutableTool],
-      }),
-      experts: [importedExpert],
-      summary: '这个专家包包含 1 个专家、1 个技能、0 个表单。',
-      warnings: ['schema capability adapter registry'],
-      canImport: true,
-    }
-    const loadExperts = vi.fn().mockResolvedValue(undefined)
-    vi.spyOn(expertsApi, 'previewImport').mockResolvedValue(preview)
-    vi.spyOn(expertsApi, 'importPack').mockResolvedValue(preview)
-
-    useExpertStore.setState({
-      experts: [installedExpert],
-      packs: [makePack([installedExpert])],
-      loadExperts,
-      exportPack: vi.fn().mockResolvedValue(undefined),
-    })
-
-    const { container } = render(<ExpertSelectionDialog open onClose={vi.fn()} projectRoot="C:/repo" />)
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement
-
-    fireEvent.change(input, { target: { files: [new File(['demo'], 'experts.zip', { type: 'application/zip' })] } })
-
-    expect(await screen.findByText('准备导入：迁移专家包')).toBeInTheDocument()
-    expect(screen.getByText(/这个文件包含 1 个专家、1 项技能和 0 个材料表单/)).toBeInTheDocument()
-    expect(screen.getByText(/包内可运行工具：生成迁移评估草稿/)).toBeInTheDocument()
-    expect(screen.getAllByText(/读取你选择的项目资料/).length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/第一阶段不会运行包内代码/).length).toBeGreaterThan(0)
-
-    const previewCopy = screen.getByTestId('expert-selection-dialog').textContent ?? ''
-    expect(previewCopy).not.toMatch(/registry|schema|adapter|capability/i)
-
-    fireEvent.click(screen.getByRole('button', { name: '确认导入' }))
-
-    await waitFor(() => expect(expertsApi.importPack).toHaveBeenCalledWith('ZGVtbw=='))
-    expect(loadExperts).toHaveBeenCalled()
-    expect(await screen.findByText('已导入「迁移专家包」，现在可以在列表里选择。')).toBeInTheDocument()
+    expect(screen.getByTestId('expert-detail')).toHaveTextContent('Replacement package')
   })
 })

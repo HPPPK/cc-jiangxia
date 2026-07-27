@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { ExpertPackRegistryService, getExpertPackStorageDir, resetExpertPackRegistryForTests } from './expertPackRegistryService.js'
@@ -8,6 +8,7 @@ import { ZipPackAdapter } from './zipPackAdapter.js'
 const adapter = new ZipPackAdapter()
 const tempRoots: string[] = []
 const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+const previousBundledPacksDir = process.env.CLAUDE_EXPERT_PACKS_DIR
 
 function validPackEntries(overrides: Record<string, unknown> = {}) {
   const manifest = {
@@ -46,6 +47,7 @@ async function makeService() {
   const root = await mkdtemp(path.join(tmpdir(), 'expert-pack-registry-'))
   tempRoots.push(root)
   process.env.CLAUDE_CONFIG_DIR = root
+  process.env.CLAUDE_EXPERT_PACKS_DIR = path.join(root, 'bundled')
   resetExpertPackRegistryForTests()
   return new ExpertPackRegistryService()
 }
@@ -62,6 +64,47 @@ describe('ExpertPackRegistryService', () => {
 
     expect(await service.listExperts()).toEqual([])
     expect(getExpertPackStorageDir()).toBe(path.join(process.env.CLAUDE_CONFIG_DIR!, 'cc-jiangxia', 'experts', 'packs'))
+  })
+
+  it('loads a bundled Expert ZIP without copying it into user configuration, then creates a local override on edit', async () => {
+    const service = await makeService()
+    const bundleDir = await mkdtemp(path.join(tmpdir(), 'bundled-expert-pack-'))
+    tempRoots.push(bundleDir)
+    await mkdir(bundleDir, { recursive: true })
+    await writeFile(path.join(bundleDir, 'custom-expert-pack.zip'), await adapter.write(validPackEntries()))
+    process.env.CLAUDE_EXPERT_PACKS_DIR = bundleDir
+    resetExpertPackRegistryForTests()
+
+    expect(await service.getExpert('custom-expert')).toEqual(expect.objectContaining({ id: 'custom-expert' }))
+    expect(await service.readPackText('custom-expert-pack', 'experts/custom/prompts/system.md')).toContain('Custom Expert')
+    expect(await service.exportExpertPackZip('custom-expert-pack')).toEqual(expect.objectContaining({ filename: 'custom-expert-pack.zip' }))
+
+    await service.updateExpertPack('custom-expert-pack', { name: 'Local override' })
+    expect((await service.listPacks()).find((pack) => pack.packId === 'custom-expert-pack')).toEqual(expect.objectContaining({
+      name: 'Local override',
+      storage: expect.objectContaining({ source: 'stored' }),
+    }))
+  })
+
+  it('exposes and updates portable expert category metadata from the ZIP manifest', async () => {
+    const service = await makeService()
+    await service.importExpertPackZip(await adapter.write(validPackEntries({
+      catalog: { categoryId: 'product', tags: ['research', 'commercialization'] },
+    })))
+
+    expect(await service.getExpert('custom-expert')).toEqual(expect.objectContaining({
+      categoryId: 'product',
+      tags: ['research', 'commercialization'],
+    }))
+
+    await service.updateExpertPack('custom-expert-pack', {
+      catalog: { categoryId: 'development', tags: ['migration'] },
+    })
+
+    expect(await service.getExpert('custom-expert')).toEqual(expect.objectContaining({
+      categoryId: 'development',
+      tags: ['migration'],
+    }))
   })
 
   it('imports and exports the same ZIP-backed expert package without extraction', async () => {
@@ -254,4 +297,25 @@ describe('ExpertPackRegistryService', () => {
     const zipData = await adapter.write({ ...validPackEntries(), '../evil.txt': 'unsafe' }, { validatePaths: false })
     await expect(service.previewExpertPackZip(zipData)).rejects.toThrow(/Unsafe ZIP entry path/)
   })
+  it('loads an optional declared output template from a self-contained ZIP', async () => {
+    const service = await makeService()
+    const entries = validPackEntries()
+    entries['experts/custom/expert.json'] = JSON.stringify({
+      id: 'custom-expert',
+      name: 'Custom expert',
+      description: 'Custom expert package',
+      promptPaths: { system: 'experts/custom/prompts/system.md' },
+      outputTemplatePath: 'experts/custom/templates/report.html',
+      skillIds: ['custom-guide'],
+      formPaths: [],
+    })
+    entries['experts/custom/templates/report.html'] = '<html>{{REPORT_TITLE}}</html>'
+
+    const preview = await service.previewExpertPackZip(await adapter.write(entries))
+    expect(preview.experts[0]).toEqual(expect.objectContaining({
+      outputTemplatePath: 'experts/custom/templates/report.html',
+      outputTemplateContent: '<html>{{REPORT_TITLE}}</html>',
+    }))
+  })
+
 })

@@ -48,3 +48,14 @@ describe('built-in agents', () => {
     expect(getBuiltInAgents()).toEqual([])
   })
 })
+
+
+test('includes the read-only Expert evidence research role', () => {
+  const agent = getBuiltInAgents().find((candidate) => candidate.agentType === 'expert-evidence-researcher')
+  expect(agent?.tools).toEqual(['BrowserResearch', 'Read'])
+})
+
+test('includes the independent Expert evidence review role', () => {
+  const agent = getBuiltInAgents().find((candidate) => candidate.agentType === 'expert-evidence-reviewer')
+  expect(agent?.tools).toEqual(['BrowserResearch', 'Read'])
+})

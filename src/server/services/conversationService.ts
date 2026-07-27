@@ -6,6 +6,7 @@
  * to the server over its own client WebSocket.
  */
 
+import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -39,6 +40,7 @@ const MAX_CAPTURED_SDK_MESSAGES = 40
 const MAX_CAPTURED_SDK_SUMMARY = 20
 const CONTROL_READY_POLL_MS = 50
 const AUTO_MEMORY_DIRNAME = 'memory'
+const RUNTIME_PROMPT_DIRECTORY_NAME = 'cc-jiangxia-runtime-prompts'
 
 type AttachmentRef = {
   type: 'file' | 'image'
@@ -64,6 +66,7 @@ type SessionProcess = {
   outputDrain: Promise<void>
   sdkMessages: any[]
   initMessage: any | null
+  runtimePromptFilePath?: string
   pendingPermissionRequests: Map<
     string,
     {
@@ -85,9 +88,39 @@ type SessionStartOptions = {
   disallowedTools?: string[]
   workflowSessionId?: string
   workflowSystemPrompt?: string
+  expertSystemPrompt?: string
+  appendSystemPromptFile?: string
+  expertOutputTemplateWriteGuard?: string
 }
 
 type RuntimeEnvironmentVariables = Record<string, string | null>
+
+export async function writeSessionRuntimePromptFile(
+  sessionId: string,
+  content: string,
+  directory = path.join(os.tmpdir(), RUNTIME_PROMPT_DIRECTORY_NAME),
+): Promise<string> {
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'session'
+  await fs.promises.mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `${safeSessionId}-${randomUUID()}.md`)
+  await fs.promises.writeFile(filePath, content, {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  })
+  return filePath
+}
+
+export async function removeSessionRuntimePromptFile(filePath: string | undefined): Promise<void> {
+  if (!filePath) return
+  try {
+    await fs.promises.unlink(filePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`[ConversationService] Failed to remove runtime prompt file: ${filePath}`)
+    }
+  }
+}
 
 export class ConversationStartupError extends Error {
   constructor(
@@ -145,9 +178,7 @@ export class ConversationService {
       ...(shouldResume ? ['--resume', sessionId] : ['--session-id', sessionId]),
       ...worktreeArgs,
       '--replay-user-messages',
-      ...(options?.workflowSystemPrompt
-        ? ['--append-system-prompt', options.workflowSystemPrompt]
-        : []),
+      ...this.getSystemPromptArgs(options),
       ...this.getRuntimeArgs(options),
       ...this.getDisallowedToolArgs(options?.disallowedTools),
       ...this.getPermissionArgs(options?.permissionMode, dangerousMode),
@@ -226,11 +257,33 @@ export class ConversationService {
       )
     }
 
+    const systemPrompt = this.getSystemPromptContent(options)
+    let runtimePromptFilePath: string | undefined
+    if (systemPrompt) {
+      try {
+        runtimePromptFilePath = await writeSessionRuntimePromptFile(sessionId, systemPrompt)
+      } catch (error) {
+        throw new ConversationStartupError(
+          `Failed to prepare hidden runtime prompt for ${sessionId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          'CLI_START_FAILED',
+        )
+      }
+    }
+    const launchOptions = runtimePromptFilePath
+      ? {
+          ...options,
+          workflowSystemPrompt: undefined,
+          expertSystemPrompt: undefined,
+          appendSystemPromptFile: runtimePromptFilePath,
+        }
+      : options
     const args = this.buildSessionCliArgs(
       sessionId,
       sdkUrl,
       shouldResume,
-      options,
+      launchOptions,
       launchRepository,
     )
 
@@ -248,7 +301,13 @@ export class ConversationService {
     // 工作目录就变成 `/`。把 CALLER_DIR / PWD 显式覆盖成 workDir，preload.ts
     // chdir 后落到正确目录。
     //
-    const childEnv = await this.buildChildEnv(launchWorkDir, sdkUrl, options)
+    let childEnv: Record<string, string>
+    try {
+      childEnv = await this.buildChildEnv(launchWorkDir, sdkUrl, launchOptions)
+    } catch (error) {
+      await removeSessionRuntimePromptFile(runtimePromptFilePath)
+      throw error
+    }
 
     let proc: ReturnType<typeof Bun.spawn>
     try {
@@ -260,6 +319,7 @@ export class ConversationService {
         stderr: 'pipe',
       })
     } catch (spawnErr) {
+      await removeSessionRuntimePromptFile(runtimePromptFilePath)
       void diagnosticsService.recordEvent({
         type: 'cli_spawn_failed',
         severity: 'error',
@@ -296,6 +356,7 @@ export class ConversationService {
       outputDrain: Promise.resolve(),
       sdkMessages: [],
       initMessage: null,
+      runtimePromptFilePath,
       pendingPermissionRequests: new Map(),
     }
     this.sessions.set(sessionId, session)
@@ -322,6 +383,7 @@ export class ConversationService {
       await this.waitForProcessOutputDrain(session)
       const startupError = this.buildStartupError(sessionId, startupExitCode)
       this.sessions.delete(sessionId)
+      await removeSessionRuntimePromptFile(session.runtimePromptFilePath)
 
       if (this.clearStaleLock(sessionId)) {
         console.log(
@@ -769,6 +831,7 @@ export class ConversationService {
     if (session) {
       session.proc.kill()
       this.sessions.delete(sessionId)
+      void removeSessionRuntimePromptFile(session.runtimePromptFilePath)
     }
   }
 
@@ -784,6 +847,7 @@ export class ConversationService {
       new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
     ])
     await this.waitForProcessOutputDrain(session, timeoutMs)
+    await removeSessionRuntimePromptFile(session.runtimePromptFilePath)
   }
 
   markSessionDeleted(sessionId: string): void {
@@ -924,6 +988,7 @@ export class ConversationService {
         })
       }
       this.sessions.delete(sessionId)
+      await removeSessionRuntimePromptFile(activeSession.runtimePromptFilePath)
     }
   }
 
@@ -942,6 +1007,20 @@ export class ConversationService {
 
     const args = ['--permission-mode', resolvedMode]
     return args
+  }
+
+  private getSystemPromptContent(options: SessionStartOptions | undefined): string | null {
+    const prompts = [options?.workflowSystemPrompt, options?.expertSystemPrompt]
+      .filter((prompt): prompt is string => typeof prompt === 'string' && prompt.trim().length > 0)
+    return prompts.length > 0 ? prompts.join('\n\n') : null
+  }
+
+  private getSystemPromptArgs(options: SessionStartOptions | undefined): string[] {
+    if (options?.appendSystemPromptFile) {
+      return ['--append-system-prompt-file', options.appendSystemPromptFile]
+    }
+    const prompt = this.getSystemPromptContent(options)
+    return prompt ? ['--append-system-prompt', prompt] : []
   }
 
   private getRuntimeArgs(options: SessionStartOptions | undefined): string[] {
@@ -1005,6 +1084,7 @@ export class ConversationService {
     delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN
     delete cleanEnv.CC_JIANGXIA_WORKFLOW_SESSION_ID
     delete cleanEnv.CC_HAHA_WORKFLOW_SESSION_ID
+    delete cleanEnv.CC_JIANGXIA_EXPERT_OUTPUT_TEMPLATE_GUARD
     if (this.shouldStripInheritedProviderEnv(options?.providerId)) {
       for (const key of PROVIDER_ENV_KEYS) {
         delete cleanEnv[key]
@@ -1073,6 +1153,9 @@ export class ConversationService {
       setJiangxiaEnvAliases(childEnv, 'DESKTOP_AWAIT_MCP_TIMEOUT_MS', '5000')
       if (options?.workflowSessionId) {
         setJiangxiaEnvAliases(childEnv, 'WORKFLOW_SESSION_ID', options.workflowSessionId)
+      }
+      if (options?.expertOutputTemplateWriteGuard) {
+        childEnv.CC_JIANGXIA_EXPERT_OUTPUT_TEMPLATE_GUARD = options.expertOutputTemplateWriteGuard
       }
     }
     if (desktopServerUrl) {

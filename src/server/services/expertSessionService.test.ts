@@ -49,6 +49,13 @@ describe('ExpertSessionService', () => {
     expect(entered.expertId).toBe('session-expert')
     expect(entered.runtimeBinding).toMatchObject({ schemaVersion: 1, expertId: 'session-expert', active: true })
     expect(entered.runtimeBinding?.promptSnapshot).toContain('Session package prompt')
+    expect(expertSession?.expert).toMatchObject({
+      mode: 'expert',
+      expertId: 'session-expert',
+      status: 'active',
+    })
+    expect(expertSession?.expert?.runtimeBinding?.active).toBe(true)
+    expect(expertSession?.expert).not.toHaveProperty('researchLedger')
     expect(expertSession?.workflow).toBeUndefined()
 
     const written = await service.writeMaterialPackage(sessionId, { title: 'Session result' })
@@ -65,4 +72,31 @@ describe('ExpertSessionService', () => {
     expect(exited.runtimeBinding).toBeUndefined()
     expect(exited.materialRefs[0]?.runId).toBe(written.materialRef.runId)
   })
+
+  it('fails expert entry when the metadata cannot be read back from the session', async () => {
+    const configRoot = await makeTempRoot('expert-session-readback-config-')
+    const projectRoot = await makeTempRoot('expert-session-readback-project-')
+    await installExpert(configRoot)
+    const service = new ExpertSessionService()
+    const { sessionId } = await sessionService.createSession(projectRoot)
+    const originalGetSession = sessionService.getSession.bind(sessionService)
+    let reads = 0
+    sessionService.getSession = async (targetSessionId: string) => {
+      reads += 1
+      const session = await originalGetSession(targetSessionId)
+      return reads === 2 && session && session.expert
+        ? { ...session, expert: { ...session.expert, runtimeBinding: undefined } }
+        : session
+    }
+
+    try {
+      await expect(service.enterExpertMode(sessionId, 'session-expert')).rejects.toMatchObject({
+        statusCode: 500,
+        code: 'EXPERT_MODE_PERSISTENCE_FAILED',
+      })
+    } finally {
+      sessionService.getSession = originalGetSession
+    }
+  })
+
 })

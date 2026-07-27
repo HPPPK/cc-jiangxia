@@ -32,6 +32,14 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(externalModules).not.toContain('dingtalk-stream')
   })
 
+  it('builds bundled Expert Pack ZIPs before copying pack resources', () => {
+    const source = readBuildScript()
+
+    expect(source).toContain('buildBundledExpertPacks')
+    expect(source).toContain("path.join(repoRoot, 'scripts', 'build-expert-packs.ts')")
+    expect(source.indexOf('await buildBundledExpertPacks()')).toBeLessThan(source.indexOf('await copyBundledWorkflowPacks()'))
+  })
+
   it('copies workflow packs next to the compiled sidecar', () => {
     const source = readBuildScript()
 

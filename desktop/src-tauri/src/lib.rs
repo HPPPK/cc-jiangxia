@@ -218,6 +218,9 @@ mod macos_notifications {
 }
 
 const SERVER_STARTUP_LOG_LIMIT: usize = 80;
+// Cold starts can require unpacking/loading the bundled sidecar before it binds.
+const SERVER_STARTUP_TIMEOUT_SECS: u64 = 30;
+const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(SERVER_STARTUP_TIMEOUT_SECS);
 const SERVER_BIND_HOST: &str = "0.0.0.0";
 const SERVER_CONTROL_HOST: &str = "127.0.0.1";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -1498,7 +1501,7 @@ fn wait_for_server(url_host: &str, port: u16) -> Result<(), String> {
     let addr: SocketAddr = format!("{url_host}:{port}")
         .parse()
         .map_err(|err| format!("parse server address: {err}"))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + SERVER_STARTUP_TIMEOUT;
 
     while Instant::now() < deadline {
         if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
@@ -1507,9 +1510,14 @@ fn wait_for_server(url_host: &str, port: u16) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(150));
     }
 
-    Err(format!(
-        "desktop server did not start listening on {url_host}:{port} within 10 seconds"
-    ))
+    Err(server_startup_timeout_error(url_host, port))
+}
+
+fn server_startup_timeout_error(url_host: &str, port: u16) -> String {
+    format!(
+        "desktop server did not start listening on {url_host}:{port} within {} seconds",
+        SERVER_STARTUP_TIMEOUT_SECS
+    )
 }
 
 fn push_server_startup_log(logs: &Arc<Mutex<VecDeque<String>>>, line: String) {
@@ -1967,10 +1975,19 @@ mod tests {
         decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
         has_meaningful_intersection, is_persistable_window_state, normalize_terminal_bash_path,
         parse_env_block, resolve_desktop_terminal_shell, run_notification_bridge,
-        select_h5_dist_dir, DesktopTerminalConfig, StoredWindowState, TerminalHostPlatform,
-        SERVER_BIND_HOST, SERVER_CONTROL_HOST,
+        select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
+        TerminalHostPlatform, SERVER_BIND_HOST, SERVER_CONTROL_HOST, SERVER_STARTUP_TIMEOUT_SECS,
     };
     use std::{collections::HashMap, fs};
+
+    #[test]
+    fn server_startup_timeout_error_uses_the_configured_cold_start_window() {
+        assert_eq!(SERVER_STARTUP_TIMEOUT_SECS, 30);
+        assert_eq!(
+            server_startup_timeout_error("127.0.0.1", 53018),
+            "desktop server did not start listening on 127.0.0.1:53018 within 30 seconds"
+        );
+    }
 
     #[test]
     fn window_state_rejects_too_small_sizes() {

@@ -25,6 +25,7 @@ function entries() {
       id: 'api-expert',
       name: 'API Expert',
       description: 'API test expert',
+      profile: { tagline: 'Packaged tagline', workflow: [{ id: 'audit', title: 'Audit' }] },
       promptPaths: { system: 'experts/api/system.md' },
       skillIds: ['api-skill'],
     }),
@@ -47,6 +48,21 @@ describe('experts API', () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
   })
 
+  it('lists and updates expert categories before the generic resource fallback', async () => {
+    await setup()
+
+    const listed = await handleExpertsApi(new Request('http://localhost/api/experts/categories'), new URL('http://localhost'), ['api', 'experts', 'categories'])
+    expect(listed.status).toBe(200)
+    expect((await listed.json()).categories.map((category: { id: string }) => category.id)).toEqual(['product', 'development', 'design', 'uncategorized'])
+
+    const updated = await handleExpertsApi(new Request('http://localhost/api/experts/categories', {
+      method: 'PUT',
+      body: JSON.stringify({ categories: [{ id: 'research', name: '市场研究' }] }),
+    }), new URL('http://localhost'), ['api', 'experts', 'categories'])
+    expect(updated.status).toBe(200)
+    expect((await updated.json()).categories.map((category: { id: string }) => category.id)).toEqual(['research', 'uncategorized'])
+  })
+
   it('imports, updates, copies, and deletes only ZIP-backed expert packages', async () => {
     await setup()
     const dataBase64 = Buffer.from(await adapter.write(entries())).toString('base64')
@@ -62,5 +78,46 @@ describe('experts API', () => {
 
     const deleted = await handleExpertsApi(new Request('http://localhost/api/experts/packs/api-pack', { method: 'DELETE' }), new URL('http://localhost'), ['api', 'experts', 'packs', 'api-pack'])
     expect(deleted.status).toBe(204)
+  })
+  it('reads the packaged profile and stores editable profile overrides locally', async () => {
+    await setup()
+    const dataBase64 = Buffer.from(await adapter.write(entries())).toString('base64')
+    await handleExpertsApi(new Request('http://localhost/api/experts/packs/import', { method: 'POST', body: JSON.stringify({ dataBase64 }) }), new URL('http://localhost'), ['api', 'experts', 'packs', 'import'])
+
+    const initial = await handleExpertsApi(new Request('http://localhost/api/experts/profiles/api-expert'), new URL('http://localhost'), ['api', 'experts', 'profiles', 'api-expert'])
+    expect(initial.status).toBe(200)
+    expect((await initial.json()).profile.tagline).toBe('Packaged tagline')
+
+    const updated = await handleExpertsApi(new Request('http://localhost/api/experts/profiles/api-expert', {
+      method: 'PUT',
+      body: JSON.stringify({ profile: { tagline: 'Local tagline', memories: [{ id: 'm1', content: 'Use brand terminology.', createdAt: '2026-07-22T00:00:00.000Z' }] } }),
+    }), new URL('http://localhost'), ['api', 'experts', 'profiles', 'api-expert'])
+    expect(updated.status).toBe(200)
+    const body = await updated.json()
+    expect(body.profile.tagline).toBe('Local tagline')
+    expect(body.profile.workflow[0].title).toBe('Audit')
+  })
+
+
+  it('rejects unknown online Skill discovery sources before a provider is contacted', async () => {
+    const response = await handleExpertsApi(
+      new Request('http://localhost/api/experts/discovery?query=research&source=unknown'),
+      new URL('http://localhost/api/experts/discovery?query=research&source=unknown'),
+      ['api', 'experts', 'discovery'],
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'BAD_REQUEST', message: 'Skill discovery source must be web, qclaw, or all.' })
+  })
+
+  it('validates online Skill discovery requests before a provider is contacted', async () => {
+    const response = await handleExpertsApi(
+      new Request('http://localhost/api/experts/discovery?query='),
+      new URL('http://localhost/api/experts/discovery?query='),
+      ['api', 'experts', 'discovery'],
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'BAD_REQUEST', message: 'A skill discovery query is required.' })
   })
 })

@@ -1161,31 +1161,20 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
         : session),
     }))
 
-    // 构造专家激活消息，发送给 Claude 开始对话式引导
-    const skillContent = expert.skillContents
-      ? Object.values(expert.skillContents).join('\n\n---\n\n')
-      : ''
-    const activationMsg = [
-      `[系统指令] 你现在作为「${expert.name}」专家角色工作。`,
-      expert.systemPromptContent ? `\n## 专家 System Prompt\n${expert.systemPromptContent}` : '',
-      skillContent ? `\n## 专家技能指令\n${skillContent}` : '',
-      `\n## 交互规则（必须遵守）`,
-      `- 所有用户交互使用 AskUserQuestion tool，不要让用户在聊天框打字`,
-      `- 需要项目路径时用 AskUserQuestion（type: 'path'），让用户选择文件夹`,
-      `- 需要确认分析重点时用 AskUserQuestion，提供选项让用户选择`,
-      `- 需要文件时用 AskUserQuestion（type: 'file'），让用户选择文件`,
-      `- 永远不要让用户直接在聊天框输入回复`,
-      `\n## 工作规则`,
-      `- 材料足够后自动整理分析，流式输出结果`,
-      `- 使用 ExpertMaterialWriter tool 保存材料包`,
-      `- 不使用 ExpertIntakeForm tool`,
-      `\n请现在开始：用 AskUserQuestion tool 向用户打招呼，询问需要什么帮助，并提供选项。`,
-    ].filter(Boolean).join('\n')
+    // Expert prompts, skills, and output templates are server-managed runtime
+    // context. Never send them as a visible user message or transcript entry.
+    // Send only this public, QClaw-style kickoff question. Its normal user turn
+    // starts the CLI, which receives the hidden expert runtime on the server.
+    sendMessage(
+      activeTabId,
+      `介绍一下「${expert.name}」，你可以帮我做什么？`,
+      undefined,
+      { suppressSessionTitle: true },
+    )
 
-    useChatStore.getState().sendMessage(activeTabId, activationMsg)
     useUIStore.getState().addToast({
       type: 'success',
-      message: `已进入「${expert.name}」专家 Mode`,
+      message: `已进入「${expert.name}」专家 Mode。请直接输入产品方向或上传资料开始。`,
     })
   }
 

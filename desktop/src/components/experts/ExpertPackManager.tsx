@@ -1,16 +1,24 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
-import { expertsApi, type ExpertPackCreateInput, type ExpertPackSummary, type ExpertPackUpdateInput } from '../../api/experts'
+import { expertsApi, fallbackExpertCategories, resolveExpertCategoryId, type ExpertCategory, type ExpertPackCreateInput, type ExpertPackSummary, type ExpertPackUpdateInput } from '../../api/experts'
 import { useTranslation } from '../../i18n'
 import { useUIStore } from '../../stores/uiStore'
 import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { ExpertImportExportDialog } from './ExpertImportExportDialog'
 import { ExpertPackEditor } from './ExpertPackEditor'
+import { SkillDiscoveryDialog } from './SkillDiscoveryDialog'
 
 export function ExpertPackManager() {
   const t = useTranslation()
   const addToast = useUIStore((state) => state.addToast)
   const [packs, setPacks] = useState<ExpertPackSummary[]>([])
+  const [categories, setCategories] = useState<ExpertCategory[]>([])
+  const [activeCategoryId, setActiveCategoryId] = useState('all')
+  const [query, setQuery] = useState('')
+  const [categoryEditorOpen, setCategoryEditorOpen] = useState(false)
+  const [categoryDraft, setCategoryDraft] = useState<ExpertCategory[]>([])
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [categorySaving, setCategorySaving] = useState(false)
   const [selectedPackIds, setSelectedPackIds] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -21,6 +29,7 @@ export function ExpertPackManager() {
   const [editorMode, setEditorMode] = useState<'create' | 'edit'>('create')
   const [editorPack, setEditorPack] = useState<ExpertPackSummary | null>(null)
   const [dialogMode, setDialogMode] = useState<'import' | 'export' | null>(null)
+  const [skillDiscoveryOpen, setSkillDiscoveryOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ExpertPackSummary | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
 
@@ -29,7 +38,9 @@ export function ExpertPackManager() {
     setError(null)
     try {
       const response = await expertsApi.listPacks()
+      const categoryResponse = await expertsApi.listCategories().catch(() => ({ categories: fallbackExpertCategories }))
       setPacks(response.packs)
+      setCategories(categoryResponse.categories)
       setSelectedPackIds((current) => {
         const available = new Set(response.packs.map((pack) => pack.packId))
         const next = current.filter((packId) => available.has(packId))
@@ -38,6 +49,7 @@ export function ExpertPackManager() {
     } catch (cause) {
       setError(errorMessage(cause))
       setPacks([])
+      setCategories([])
       setSelectedPackIds([])
     } finally {
       setLoading(false)
@@ -48,7 +60,13 @@ export function ExpertPackManager() {
     void loadPacks()
   }, [])
 
-  const sortedPacks = useMemo(() => [...packs].sort((a, b) => a.name.localeCompare(b.name)), [packs])
+  const sortedPacks = useMemo(() => [...packs].filter((pack) => {
+    const expert = pack.experts[0]
+    const categoryMatches = activeCategoryId === 'all' || resolveExpertCategoryId(expert) === activeCategoryId
+    const normalizedQuery = query.trim().toLowerCase()
+    const text = [pack.name, pack.description, expert?.name ?? '', expert?.description ?? '', ...(expert?.tags ?? [])].join(' ').toLowerCase()
+    return categoryMatches && (!normalizedQuery || text.includes(normalizedQuery))
+  }).sort((a, b) => a.name.localeCompare(b.name)), [activeCategoryId, packs, query])
   const selectedSet = useMemo(() => new Set(selectedPackIds), [selectedPackIds])
 
   const openCreateEditor = () => {
@@ -128,18 +146,50 @@ export function ExpertPackManager() {
     }
   }
 
+  const openCategoryEditor = () => {
+    setCategoryDraft(categories)
+    setNewCategoryName('')
+    setCategoryEditorOpen(true)
+  }
+
+  const addCategory = () => {
+    const name = newCategoryName.trim()
+    if (!name) return
+    const base = name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'category'
+    let id = base
+    let suffix = 2
+    while (categoryDraft.some((category) => category.id === id)) id = base + '-' + suffix++
+    setCategoryDraft((current) => [...current, { id, name }])
+    setNewCategoryName('')
+  }
+
+  const saveCategories = async () => {
+    setCategorySaving(true)
+    setActionError(null)
+    try {
+      const response = await expertsApi.updateCategories(categoryDraft)
+      setCategories(response.categories)
+      setCategoryEditorOpen(false)
+    } catch (cause) {
+      setActionError(errorMessage(cause))
+    } finally {
+      setCategorySaving(false)
+    }
+  }
   const toggleSelected = (packId: string) => {
     setSelectedPackIds((current) => current.includes(packId) ? current.filter((id) => id !== packId) : [...current, packId])
   }
 
   return (
-    <section data-testid="expert-pack-manager" aria-hidden={editorOpen || dialogMode !== null || pendingDelete !== null ? true : undefined} className="flex w-full min-w-0 flex-col gap-3">
+    <section data-testid="expert-pack-manager" aria-hidden={editorOpen || dialogMode !== null || pendingDelete !== null || skillDiscoveryOpen ? true : undefined} className="flex w-full min-w-0 flex-col gap-3">
       <div className="flex min-w-0 items-center justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.experts.manager.title')}</h3>
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t('settings.experts.manager.description')}</p>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <Button variant="secondary" onClick={openCategoryEditor} disabled={loading || saving}>管理分类</Button>
+          <Button variant="secondary" onClick={() => setSkillDiscoveryOpen(true)} disabled={loading || saving}>搜索在线 Skill</Button>
           <Button variant="secondary" onClick={() => void loadPacks()} disabled={loading || saving}>{t('settings.experts.manager.refresh')}</Button>
           <Button variant="secondary" onClick={() => { setActionError(null); setDialogMode('import') }} disabled={loading || saving}>{t('settings.experts.manager.import')}</Button>
           <Button variant="secondary" onClick={() => { setActionError(null); setDialogMode('export') }} disabled={loading || saving || selectedPackIds.length === 0}>{t('settings.experts.manager.exportSelected')}</Button>
@@ -147,6 +197,23 @@ export function ExpertPackManager() {
         </div>
       </div>
 
+      <div className="rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-3">
+        <div className="flex flex-wrap gap-2" aria-label="专家分类">
+          <SettingsCategoryFilter label="全部" active={activeCategoryId === 'all'} onClick={() => setActiveCategoryId('all')} />
+          {categories.map((category) => <SettingsCategoryFilter key={category.id} label={category.name} active={activeCategoryId === category.id} onClick={() => setActiveCategoryId(category.id)} />)}
+        </div>
+        <label className="relative mt-3 block max-w-md">
+          <span className="sr-only">搜索专家包</span>
+          <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[17px] text-[var(--color-text-tertiary)]" aria-hidden="true">search</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索专家、专家包或标签" className="h-9 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] pl-9 pr-3 text-sm outline-none focus:border-[var(--color-brand)]" />
+        </label>
+      </div>
+
+      {categoryEditorOpen ? <section className="rounded-[10px] border border-[#d8c1b1] bg-[#fffaf4] p-4" aria-label="管理专家分类">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h4 className="text-sm font-semibold text-[var(--color-text-primary)]">管理专家分类</h4><p className="mt-1 text-xs text-[var(--color-text-secondary)]">分类名称、顺序和空分类会保存为本地专家目录；ZIP 仍只保存稳定的分类 ID。</p></div><div className="flex gap-2"><Button variant="secondary" onClick={() => setCategoryEditorOpen(false)} disabled={categorySaving}>取消</Button><Button onClick={() => void saveCategories()} loading={categorySaving} disabled={categorySaving}>保存分类</Button></div></div>
+        <div className="mt-3 space-y-2">{categoryDraft.map((category, index) => <div key={category.id} className="grid gap-2 rounded-lg border border-[#eadfd7] bg-white p-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]"><div className="flex gap-1"><button type="button" aria-label={'上移 ' + category.name} disabled={index === 0} onClick={() => setCategoryDraft((current) => current.map((item, itemIndex) => itemIndex === index ? current[index - 1]! : itemIndex === index - 1 ? current[index]! : item))} className="rounded border border-[#eadfd7] px-2 disabled:opacity-40">↑</button><button type="button" aria-label={'下移 ' + category.name} disabled={index === categoryDraft.length - 1} onClick={() => setCategoryDraft((current) => current.map((item, itemIndex) => itemIndex === index ? current[index + 1]! : itemIndex === index + 1 ? current[index]! : item))} className="rounded border border-[#eadfd7] px-2 disabled:opacity-40">↓</button></div><label className="min-w-0 text-xs text-[var(--color-text-secondary)]"><span className="sr-only">{category.id} 分类名称</span><input value={category.name} onChange={(event) => setCategoryDraft((current) => current.map((item) => item.id === category.id ? { ...item, name: event.target.value } : item))} className="h-8 w-full rounded border border-[#eadfd7] px-2 text-sm text-[var(--color-text-primary)]" /></label><div className="flex items-center gap-2"><code className="text-[11px] text-[var(--color-text-tertiary)]">{category.id}</code>{category.id !== 'uncategorized' ? <button type="button" onClick={() => setCategoryDraft((current) => current.filter((item) => item.id !== category.id))} className="text-xs text-[var(--color-error)]">移除</button> : null}</div></div>)}</div>
+        <div className="mt-3 flex max-w-md gap-2"><input value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCategory() } }} placeholder="新增一个分类，例如：运营" className="h-9 min-w-0 flex-1 rounded-lg border border-[#eadfd7] bg-white px-3 text-sm" /><Button variant="secondary" onClick={addCategory}>新增分类</Button></div>
+      </section> : null}
       {error ? <p role="alert" className="rounded-[7px] border border-[var(--color-error)]/30 bg-[var(--color-error)]/8 px-3 py-2 text-xs text-[var(--color-error)]">{error}</p> : null}
       {actionError ? <p role="alert" className="rounded-[7px] border border-[var(--color-error)]/30 bg-[var(--color-error)]/8 px-3 py-2 text-xs text-[var(--color-error)]">{actionError}</p> : null}
       {loading ? <p className="rounded-[8px] border border-[var(--color-border)] px-3 py-4 text-sm text-[var(--color-text-tertiary)]">{t('settings.experts.manager.loading')}</p> : null}
@@ -188,7 +255,8 @@ export function ExpertPackManager() {
         </div>
       ) : null}
 
-      <ExpertPackEditor open={editorOpen} mode={editorMode} pack={editorPack} saving={saving} onSave={handleSave} onClose={() => setEditorOpen(false)} />
+      <SkillDiscoveryDialog open={skillDiscoveryOpen} onClose={() => setSkillDiscoveryOpen(false)} />
+      <ExpertPackEditor open={editorOpen} mode={editorMode} pack={editorPack} categories={categories} saving={saving} onSave={handleSave} onClose={() => setEditorOpen(false)} />
       <ExpertImportExportDialog
         open={dialogMode !== null}
         mode={dialogMode ?? 'import'}
@@ -209,6 +277,10 @@ export function ExpertPackManager() {
       />
     </section>
   )
+}
+
+function SettingsCategoryFilter({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return <button type="button" onClick={onClick} className={`rounded-full px-3 py-1 text-xs font-medium transition ${active ? 'bg-[var(--color-brand)] text-white' : 'bg-[var(--color-surface-container-lowest)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'}`}>{label}</button>
 }
 
 function ActionButton({ label, ariaLabel, danger = false, disabled = false, onClick }: { label: string; ariaLabel: string; danger?: boolean; disabled?: boolean; onClick: () => void }) {

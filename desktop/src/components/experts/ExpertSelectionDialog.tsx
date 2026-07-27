@@ -3,9 +3,8 @@ import { useExpertStore } from '../../stores/expertStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useCLITaskStore } from '../../stores/cliTaskStore'
-import { expertsApi, type ExpertDefinition, type ExpertPackImportPreview, type ExpertPackSummary, type ExpertToolManifest } from '../../api/experts'
+import { resolveExpertCategoryId, type ExpertDefinition, type ExpertPackSummary, type ExpertToolManifest } from '../../api/experts'
 import type { ExpertSessionSummary } from '../../types/session'
-
 
 const EXPERT_SWITCH_CONFIRMATION_STATUSES: ExpertSessionSummary['status'][] = ['active', 'collecting', 'running']
 
@@ -48,6 +47,7 @@ type ExpertSelectionDialogProps = {
 export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, onEnterExpert }: ExpertSelectionDialogProps) {
   const experts = useExpertStore((state) => state.experts)
   const packs = useExpertStore((state) => state.packs)
+  const categories = useExpertStore((state) => state.categories)
   const loading = useExpertStore((state) => state.loadingExperts)
   const error = useExpertStore((state) => state.expertsError)
   const loadExperts = useExpertStore((state) => state.loadExperts)
@@ -55,17 +55,15 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
   const exitExpertMode = useExpertStore((state) => state.exitExpertMode)
   const exportPack = useExpertStore((state) => state.exportPack)
   const sessionExpert = useSessionStore((state) => sessionId ? state.sessions.find((session) => session.id === sessionId)?.expert ?? null : null)
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [activeCategoryId, setActiveCategoryId] = useState('all')
+  const [expertQuery, setExpertQuery] = useState('')
+  const [detailKey, setDetailKey] = useState<string | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
   const [entering, setEntering] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
-  const [importPreview, setImportPreview] = useState<ExpertPackImportPreview | null>(null)
-  const [importDataBase64, setImportDataBase64] = useState<string | null>(null)
-  const [importBusy, setImportBusy] = useState(false)
-  const [importError, setImportError] = useState<string | null>(null)
   const [localMessage, setLocalMessage] = useState<string | null>(null)
   const [exportBusy, setExportBusy] = useState(false)
   const [pendingSwitchExpert, setPendingSwitchExpert] = useState<ExpertDefinition | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const loadedRef = useRef(false)
 
   useEffect(() => {
@@ -75,58 +73,41 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
   }, [loadExperts, open])
 
   useEffect(() => {
-    if (experts.length === 0) {
-      if (selectedKey) setSelectedKey(null)
-      return
+    if (!open) setDetailOpen(false)
+  }, [open])
+
+  const visibleExperts = useMemo(() => {
+    const query = expertQuery.trim().toLowerCase()
+    return experts.filter((expert) => {
+      const categoryMatches = activeCategoryId === 'all' || resolveExpertCategoryId(expert) === activeCategoryId
+      const text = [expert.name, expert.description, expert.packName, ...(expert.tags ?? [])].join(' ').toLowerCase()
+      return categoryMatches && (!query || text.includes(query))
+    })
+  }, [activeCategoryId, expertQuery, experts])
+
+  useEffect(() => {
+    if (detailKey && !experts.some((expert) => expertSelectionKey(expert) === detailKey)) {
+      setDetailKey(null)
+      setDetailOpen(false)
     }
-    if (!selectedKey || !experts.some((expert) => expertSelectionKey(expert) === selectedKey)) {
-      setSelectedKey(expertSelectionKey(experts[0]!))
-    }
-  }, [experts, selectedKey])
+  }, [detailKey, experts])
 
   if (!open) return null
 
-  const selected = experts.find((expert) => expertSelectionKey(expert) === selectedKey) ?? experts[0] ?? null
-  const selectedPack = selected ? packs.find((pack) => pack.packId === selected.packId) : null
+  const selected = experts.find((expert) => expertSelectionKey(expert) === detailKey) ?? null
+  const selectedPack = selected ? packs.find((pack) => pack.packId === selected.packId) : undefined
 
-  const handleSelectImportFile = async (file: File | null) => {
-    if (!file) return
-    setImportBusy(true)
-    setImportError(null)
-    setLocalError(null)
-    setLocalMessage(null)
-    setImportPreview(null)
-    setImportDataBase64(null)
-    try {
-      const dataBase64 = await readFileAsBase64(file)
-      const preview = await expertsApi.previewImport(dataBase64)
-      setImportPreview(preview)
-      setImportDataBase64(dataBase64)
-    } catch (error) {
-      setImportError(toUserImportError(error, '专家包预览失败，请确认选择的是 ZIP 文件。'))
-    } finally {
-      setImportBusy(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
+  const handleClose = () => {
+    setDetailOpen(false)
+    setPendingSwitchExpert(null)
+    onClose()
   }
 
-  const handleConfirmImport = async () => {
-    if (!importDataBase64 || importBusy) return
-    setImportBusy(true)
-    setImportError(null)
+  const openDetail = (expert: ExpertDefinition) => {
+    setDetailKey(expertSelectionKey(expert))
     setLocalError(null)
     setLocalMessage(null)
-    try {
-      const result = await expertsApi.importPack(importDataBase64)
-      await loadExperts()
-      setImportPreview(null)
-      setImportDataBase64(null)
-      setLocalMessage(`已导入「${result.pack.name}」，现在可以在列表里选择。`)
-    } catch (error) {
-      setImportError(toUserImportError(error, '导入专家包失败，请换一个由江夏导出的 ZIP 文件。'))
-    } finally {
-      setImportBusy(false)
-    }
+    setDetailOpen(true)
   }
 
   const enterSelectedExpert = async (expert: ExpertDefinition) => {
@@ -140,7 +121,6 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
     }
   }
 
-
   const handleExportSelectedPack = async () => {
     if (!selected || exportBusy) return
     setExportBusy(true)
@@ -148,9 +128,7 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
     setLocalMessage(null)
     try {
       const exported = await exportPack(selected.packId)
-      if (exported) {
-        setLocalMessage(`已保存「${selectedPack?.name ?? selected.packName}」专家包。`)
-      }
+      if (exported) setLocalMessage(`已保存「${selectedPack?.name ?? selected.packName}」专家包。`)
     } catch (error) {
       setLocalError(error instanceof Error ? `导出专家包失败：${error.message}` : '导出专家包失败，请稍后再试。')
     } finally {
@@ -170,7 +148,7 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
     setLocalError(null)
     try {
       await enterSelectedExpert(selected)
-      onClose()
+      handleClose()
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : '进入专家 Mode 失败')
     } finally {
@@ -189,7 +167,7 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
       writeSessionExpertSummary(sessionId, exitedExpert)
       await enterSelectedExpert(pendingSwitchExpert)
       setPendingSwitchExpert(null)
-      onClose()
+      handleClose()
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : '切换专家 Mode 失败')
     } finally {
@@ -198,116 +176,58 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
   }
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/35 px-4 py-6" role="dialog" aria-modal="true" aria-label="专家" data-testid="expert-selection-dialog">
-      <div className="max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-[#eadfd7] bg-[#fffaf4] shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-[#eadfd7] px-6 py-5">
-          <div>
-            <h2 className="text-xl font-semibold text-[var(--color-text-primary)]">专家</h2>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--color-text-secondary)]">
-              选择一个专家来帮你整理材料、分析项目或生成参考报告。专家不会自动改代码，也不会自动启动工作流。导入或查看专家包也不会运行包内代码。
-            </p>
-            {projectRoot ? <p className="mt-1 break-all text-xs text-[var(--color-text-tertiary)]">当前项目：{projectRoot}</p> : null}
-          </div>
-          <button type="button" onClick={onClose} className="rounded-full p-2 text-[var(--color-text-tertiary)] transition-colors hover:bg-white hover:text-[var(--color-text-primary)]" aria-label="关闭专家选择">
-            <span className="material-symbols-outlined text-[20px]">close</span>
-          </button>
-        </div>
-
-        <div className="grid max-h-[calc(88vh-112px)] grid-cols-1 overflow-y-auto lg:grid-cols-[320px_1fr]">
-          <aside className="border-b border-[#eadfd7] p-4 lg:border-b-0 lg:border-r">
-            <div className="mb-4 rounded-xl border border-[#eadfd7] bg-white/70 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">专家包</h3>
-                  <p className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)]">选择 ZIP 文件后会先预览，确认前不会导入，也不会运行里面的内容。</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={importBusy}
-                  className="rounded-lg border border-[#eadfd7] bg-white px-3 py-1.5 text-xs font-medium text-[#8a4a28] transition-colors hover:bg-[#fff7ee] disabled:opacity-60"
-                >
-                  {importBusy ? '处理中…' : '导入专家包'}
-                </button>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".zip,application/zip,application/x-zip-compressed"
-                className="hidden"
-                onChange={(event) => { void handleSelectImportFile(event.target.files?.[0] ?? null) }}
-              />
-              {importPreview ? (
-                <ImportPreviewCard
-                  preview={importPreview}
-                  busy={importBusy}
-                  onConfirm={handleConfirmImport}
-                  onCancel={() => { setImportPreview(null); setImportDataBase64(null) }}
-                />
-              ) : null}
-              {importError ? <p className="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700">{importError}</p> : null}
-            </div>
-            {loading ? <p className="px-2 py-4 text-sm text-[var(--color-text-secondary)]">正在加载已安装专家…</p> : null}
-            {error ? <p className="px-2 py-4 text-sm text-[var(--color-danger)]">{error}</p> : null}
-            <div className="space-y-2" role="region" aria-label="专家列表">
-              {experts.map((expert) => (
-                <ExpertCard
-                  key={expertSelectionKey(expert)}
-                  expert={expert}
-                  selected={selected ? expertSelectionKey(expert) === expertSelectionKey(selected) : false}
-                  onSelect={() => setSelectedKey(expertSelectionKey(expert))}
-                />
-              ))}
-            </div>
-          </aside>
-
-          <main className="p-6">
-            {selected ? (
-              <div className="space-y-5">
-                <section>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">{selected.name}</h3>
-                    <span className="rounded-full bg-[#f4eadf] px-2.5 py-1 text-xs font-medium text-[#8a4a28]">{selected.statusLabel}</span>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-[var(--color-text-secondary)]">专家 Mode</span>
-                  </div>
-                  <p className="mt-3 text-sm leading-6 text-[var(--color-text-secondary)]">{selected.description}</p>
-                </section>
-
-
-
-                <PackageDetails expert={selected} pack={selectedPack ?? undefined} />
-
-                {localMessage ? <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{localMessage}</p> : null}
-
-                {localError ? <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{localError}</p> : null}
-
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#eadfd7] pt-4">
-                  <button
-                    type="button"
-                    onClick={() => void handleExportSelectedPack()}
-                    disabled={exportBusy}
-                    className="rounded-lg border border-[#eadfd7] bg-white px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[#fff7ee] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {exportBusy ? '正在准备下载…' : '导出这个专家包'}
-                  </button>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:bg-white">取消</button>
-                    <button
-                      type="button"
-                      onClick={handleEnter}
-                      disabled={entering}
-                      className="rounded-lg bg-[#9a542f] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#7d4325] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {entering ? '正在进入…' : '进入专家 Mode'}
-                    </button>
-                  </div>
-                </div>
-              </div>
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="专家广场" data-testid="expert-selection-dialog">
+      <div className="flex h-[680px] w-[1150px] flex-none flex-col overflow-hidden rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl">
+        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] px-6 py-4">
+          <div className="min-w-0">
+            {detailOpen ? (
+              <button type="button" onClick={() => setDetailOpen(false)} className="inline-flex items-center gap-1 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]">
+                <span className="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_back</span>
+                返回专家广场
+              </button>
             ) : (
-              <p className="text-sm text-[var(--color-text-secondary)]">还没有安装可用专家。</p>
+              <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">专家广场</h2>
             )}
-          </main>
-        </div>
+            {detailOpen ? <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">查看专家能力与使用范围，然后添加到当前会话。</p> : projectRoot ? <p className="mt-1 truncate text-xs text-[var(--color-text-tertiary)]">当前项目：{projectRoot}</p> : null}
+          </div>
+          <button type="button" onClick={handleClose} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]" aria-label="关闭专家选择">
+            <span className="material-symbols-outlined text-[19px]" aria-hidden="true">close</span>
+          </button>
+        </header>
+
+        {detailOpen && selected ? (
+          <ExpertDetail
+            expert={selected}
+            pack={selectedPack}
+            entering={entering}
+            exportBusy={exportBusy}
+            message={localMessage}
+            error={localError}
+            onAdd={() => { void handleEnter() }}
+            onShare={() => { void handleExportSelectedPack() }}
+          />
+        ) : (
+          <section data-testid="expert-marketplace" className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pb-1" role="tablist" aria-label="专家分类">
+                <CategoryFilter label="全部" active={activeCategoryId === 'all'} onClick={() => setActiveCategoryId('all')} />
+                {categories.map((category) => <CategoryFilter key={category.id} label={category.name} active={activeCategoryId === category.id} onClick={() => setActiveCategoryId(category.id)} />)}
+              </div>
+              <label className="relative block w-full shrink-0 lg:w-64">
+                <span className="sr-only">搜索专家</span>
+                <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[17px] text-[var(--color-text-tertiary)]" aria-hidden="true">search</span>
+                <input value={expertQuery} onChange={(event) => setExpertQuery(event.target.value)} placeholder="搜索专家" className="h-10 w-full rounded-full border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] pl-9 pr-3 text-sm text-[var(--color-text-primary)] outline-none transition focus:border-[var(--color-brand)] focus:ring-2 focus:ring-[var(--color-brand)]/20" />
+              </label>
+            </div>
+
+            {loading ? <p className="py-10 text-sm text-[var(--color-text-secondary)]">正在加载已安装专家…</p> : null}
+            {error ? <p className="mt-5 rounded-[10px] border border-[var(--color-danger)]/40 bg-[var(--color-surface-container-low)] px-4 py-3 text-sm text-[var(--color-danger)]">{error}</p> : null}
+            {!loading && !error && visibleExperts.length === 0 ? <p className="mt-8 rounded-[12px] border border-dashed border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-8 text-center text-sm text-[var(--color-text-secondary)]">没有符合条件的专家。</p> : null}
+            <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" role="region" aria-label="专家列表">
+              {visibleExperts.map((expert) => <ExpertMarketCard key={expertSelectionKey(expert)} expert={expert} onOpen={() => openDetail(expert)} />)}
+            </div>
+          </section>
+        )}
       </div>
 
       {pendingSwitchExpert && sessionExpert ? (
@@ -317,15 +237,153 @@ export function ExpertSelectionDialog({ open, onClose, projectRoot, sessionId, o
           nextExpertName={pendingSwitchExpert.name}
           busy={entering}
           error={localError}
-          onContinue={() => {
-            setPendingSwitchExpert(null)
-            onClose()
-          }}
+          onContinue={handleClose}
           onSwitch={() => { void handleSwitchExpert() }}
           onCancel={() => setPendingSwitchExpert(null)}
         />
       ) : null}
     </div>
+  )
+}
+
+function CategoryFilter({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return <button type="button" aria-pressed={active} onClick={onClick} className={`shrink-0 rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${active ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]'}`}>{label}</button>
+}
+
+function ExpertMarketCard({ expert, onOpen }: { expert: ExpertDefinition; onOpen: () => void }) {
+  const category = resolveExpertCategoryId(expert)
+  return (
+    <button type="button" onClick={onOpen} className="group flex min-h-56 flex-col rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-4 text-left transition-[border-color,background-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-[var(--color-brand)] hover:bg-[var(--color-surface)] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/40">
+      <div className="flex items-start justify-between gap-3">
+        <ExpertAvatar expert={expert} size="lg" />
+        <span className="material-symbols-outlined text-[20px] text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true">arrow_outward</span>
+      </div>
+      <div className="mt-4 min-w-0">
+        <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{expert.name}</h3>
+        <p className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--color-text-secondary)]">{expert.profile?.tagline || expert.description}</p>
+      </div>
+      <div className="mt-auto flex items-center justify-between gap-2 pt-4 text-xs text-[var(--color-text-tertiary)]">
+        <span className="inline-flex min-w-0 items-center gap-1.5 truncate"><span className="material-symbols-outlined text-[15px]" aria-hidden="true">local_library</span>{expert.packName}</span>
+        <span className="shrink-0 rounded-full bg-[var(--color-surface-container)] px-2 py-0.5 text-[11px] text-[var(--color-text-secondary)]">{category === 'uncategorized' ? expert.statusLabel : category}</span>
+      </div>
+    </button>
+  )
+}
+
+function ExpertDetail({
+  expert,
+  pack,
+  entering,
+  exportBusy,
+  message,
+  error,
+  onAdd,
+  onShare,
+}: {
+  expert: ExpertDefinition
+  pack?: ExpertPackSummary
+  entering: boolean
+  exportBusy: boolean
+  message: string | null
+  error: string | null
+  onAdd: () => void
+  onShare: () => void
+}) {
+  const profile = expert.profile
+  const skillLabels = safeArray(expert.skillIds)
+  const toolLabels = getToolLabels([expert], pack?.tools)
+  const permissionLabels = getPermissionLabels([expert], pack?.tools)
+
+  return (
+    <div data-testid="expert-detail" className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_320px]">
+      <main className="min-w-0 bg-[var(--color-surface)] px-6 py-6 lg:border-r lg:border-[var(--color-border)]">
+        <section className="rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">Expert profile</p>
+          <h2 className="mt-2 text-xl font-semibold text-[var(--color-text-primary)]">{expert.name}</h2>
+          <p className="mt-3 text-sm leading-7 text-[var(--color-text-secondary)]">{profile?.tagline || expert.description}</p>
+        </section>
+
+        <section className="mt-6">
+          <h3 className="text-base font-semibold text-[var(--color-text-primary)]">简介</h3>
+          <p className="mt-3 text-sm leading-7 text-[var(--color-text-secondary)]">{profile?.soul?.whoIAm || expert.description}</p>
+        </section>
+
+        {profile?.starterPrompts?.length ? (
+          <section className="mt-6 border-t border-[var(--color-border)] pt-6">
+            <h3 className="text-base font-semibold text-[var(--color-text-primary)]">可以这样开始</h3>
+            <div className="mt-3 space-y-2">
+              {profile.starterPrompts.slice(0, 3).map((prompt) => <p key={prompt} className="rounded-[10px] bg-[var(--color-surface-container-low)] px-4 py-3 text-sm leading-6 text-[var(--color-text-secondary)]">{prompt}</p>)}
+            </div>
+          </section>
+        ) : null}
+
+        <section className="mt-6 border-t border-[var(--color-border)] pt-6">
+          <h3 className="text-base font-semibold text-[var(--color-text-primary)]">能力与边界</h3>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <DetailList title="技能" items={skillLabels.length ? skillLabels : ['此专家未声明额外技能']} />
+            <DetailList title="可用工具" items={toolLabels.length ? toolLabels : ['向你提问、收集材料、整理输出']} />
+            <DetailList title="授权说明" items={permissionLabels.length ? permissionLabels : ['仅在你确认后调用所需能力']} />
+            <DetailList title="专家包" items={[`${pack?.name ?? expert.packName} · v${pack?.version ?? expert.packVersion}`, expert.portable ? '可随 ZIP 一起备份或迁移' : '在本机环境中使用']} />
+          </div>
+        </section>
+      </main>
+
+      <aside className="bg-[var(--color-surface-container-low)] px-5 py-6">
+        <div className="flex items-center gap-3">
+          <ExpertAvatar expert={expert} size="md" />
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-semibold text-[var(--color-text-primary)]">{expert.name}</h3>
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{expert.statusLabel} · v{expert.packVersion}</p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          <button type="button" onClick={onAdd} disabled={entering} aria-label="进入专家 Mode" className="inline-flex h-10 items-center justify-center gap-1.5 rounded-full bg-[var(--color-brand)] px-3 text-sm font-semibold text-[var(--color-on-primary)] transition-colors hover:bg-[var(--color-brand-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+            <span className="material-symbols-outlined text-[17px]" aria-hidden="true">add</span>
+            {entering ? '正在添加…' : '添加'}
+          </button>
+          <button type="button" onClick={onShare} disabled={exportBusy} aria-label="导出这个专家包" className="inline-flex h-10 items-center justify-center gap-1.5 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 text-sm font-medium text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+            <span className="material-symbols-outlined text-[17px]" aria-hidden="true">ios_share</span>
+            {exportBusy ? '准备中…' : '分享'}
+          </button>
+        </div>
+
+        {message ? <p className="mt-4 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">{message}</p> : null}
+        {error ? <p className="mt-4 rounded-[10px] border border-[var(--color-danger)]/40 bg-[var(--color-surface-container-lowest)] px-3 py-2 text-xs leading-5 text-[var(--color-danger)]">{error}</p> : null}
+
+        <section className="mt-6 border-t border-[var(--color-border)] pt-5">
+          <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">擅长处理</h4>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {safeArray(expert.tags).length ? safeArray(expert.tags).map((tag) => <span key={tag} className="rounded-full bg-[var(--color-surface-container-high)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)]">{tag}</span>) : <span className="text-xs text-[var(--color-text-tertiary)]">暂未设置标签</span>}
+          </div>
+        </section>
+
+        <section className="mt-6 border-t border-[var(--color-border)] pt-5">
+          <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">专家包信息</h4>
+          <dl className="mt-3 space-y-3 text-sm">
+            <div><dt className="text-xs text-[var(--color-text-tertiary)]">专家包</dt><dd className="mt-1 break-words text-[var(--color-text-secondary)]">{pack?.name ?? expert.packName}</dd></div>
+            <div><dt className="text-xs text-[var(--color-text-tertiary)]">版本</dt><dd className="mt-1 text-[var(--color-text-secondary)]">{pack?.version ?? expert.packVersion}</dd></div>
+            <div><dt className="text-xs text-[var(--color-text-tertiary)]">材料表单</dt><dd className="mt-1 text-[var(--color-text-secondary)]">{expert.formPaths.length} 项</dd></div>
+          </dl>
+        </section>
+      </aside>
+    </div>
+  )
+}
+
+function ExpertAvatar({ expert, size }: { expert: ExpertDefinition; size: 'md' | 'lg' }) {
+  const avatar = expert.profile?.avatar?.trim()
+  const sizeClass = size === 'lg' ? 'h-12 w-12 text-xl' : 'h-11 w-11 text-lg'
+  if (avatar && /^(https?:|data:image)/.test(avatar)) return <img src={avatar} alt="" className={`${sizeClass} shrink-0 rounded-[12px] border border-[var(--color-border)] object-cover`} />
+  return <span className={`inline-flex ${sizeClass} shrink-0 items-center justify-center rounded-[12px] bg-[var(--color-surface-container-high)] text-[var(--color-brand)]`}>{avatar || <span className="material-symbols-outlined text-[22px]" aria-hidden="true">support_agent</span>}</span>
+}
+
+function DetailList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <section className="rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-3">
+      <h4 className="text-xs font-semibold text-[var(--color-text-primary)]">{title}</h4>
+      <ul className="mt-2 space-y-1.5 text-xs leading-5 text-[var(--color-text-secondary)]">{items.map((item) => <li key={item}>— {item}</li>)}</ul>
+    </section>
   )
 }
 
@@ -349,139 +407,19 @@ function ExpertSwitchConfirmation({
   onCancel: () => void
 }) {
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/30 px-4">
-      <section
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="expert-switch-confirmation-title"
-        className="w-full max-w-lg rounded-2xl border border-[#eadfd7] bg-[#fffaf4] p-5 shadow-2xl"
-        data-testid="expert-switch-confirmation"
-      >
-        <div className="flex items-start gap-3">
-          <span className="material-symbols-outlined mt-0.5 text-[#9a542f]" aria-hidden="true">published_with_changes</span>
-          <div>
-            <h3 id="expert-switch-confirmation-title" className="text-base font-semibold text-[var(--color-text-primary)]">切换专家 Mode？</h3>
-            <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-              当前会话正在使用「{currentExpertName}」专家（{currentStatusLabel}）。如果切换到「{nextExpertName}」，会先退出当前专家，再进入新专家。
-            </p>
-            <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-              这只会切换专家 Mode，不会创建 workflow，也不会改动 workflow state。
-            </p>
-          </div>
-        </div>
-        {error ? <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 px-4">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="expert-switch-confirmation-title" className="w-full max-w-lg rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-2xl" data-testid="expert-switch-confirmation">
+        <h3 id="expert-switch-confirmation-title" className="text-base font-semibold text-[var(--color-text-primary)]">切换专家</h3>
+        <p className="mt-3 text-sm leading-6 text-[var(--color-text-secondary)]">当前会话正在使用「{currentExpertName}」（{currentStatusLabel}）。切换到「{nextExpertName}」会先退出当前专家，但不会创建或改动工作流。</p>
+        {error ? <p className="mt-3 rounded-[8px] border border-[var(--color-danger)]/40 bg-[var(--color-surface-container-low)] px-3 py-2 text-sm text-[var(--color-danger)]">{error}</p> : null}
         <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <button
-            type="button"
-            onClick={onContinue}
-            disabled={busy}
-            className="rounded-lg border border-[#eadfd7] bg-white px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[#fff7ee] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            继续当前专家
-          </button>
-          <button
-            type="button"
-            onClick={onSwitch}
-            disabled={busy}
-            className="rounded-lg bg-[#9a542f] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#7d4325] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? '切换中…' : '退出并切换'}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            取消
-          </button>
+          <button type="button" onClick={onCancel} disabled={busy} className="rounded-[8px] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-60">取消</button>
+          <button type="button" onClick={onContinue} disabled={busy} className="rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-sm font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-60">继续当前专家</button>
+          <button type="button" onClick={onSwitch} disabled={busy} className="rounded-[8px] bg-[var(--color-brand)] px-3 py-2 text-sm font-semibold text-[var(--color-on-primary)] hover:bg-[var(--color-brand-hover)] disabled:opacity-60">{busy ? '正在切换…' : '退出并切换'}</button>
         </div>
       </section>
     </div>
   )
-}
-
-function ExpertCard({ expert, selected, onSelect }: { expert: ExpertDefinition; selected: boolean; onSelect: () => void }) {
-  return (
-    <button className={`w-full rounded-xl border p-4 text-left transition ${selected ? 'border-[#9a542f] bg-white shadow-sm' : 'border-[#eadfd7] bg-white/70 hover:bg-white'}`} type="button" onClick={onSelect}>
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold text-[var(--color-text-primary)]">{expert.name}</h3>
-        <span className="rounded-full bg-[#f4eadf] px-2 py-0.5 text-xs text-[#8a4a28]">{expert.statusLabel}</span>
-      </div>
-      <p className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--color-text-secondary)]">{expert.description}</p>
-    </button>
-  )
-}
-
-function ImportPreviewCard({ preview, busy, onConfirm, onCancel }: { preview: ExpertPackImportPreview; busy: boolean; onConfirm: () => void; onCancel: () => void }) {
-  const metrics = getPackMetrics(preview.pack, preview.experts)
-  const toolLabels = getToolLabels(preview.experts, preview.pack.tools)
-  const permissionLabels = getPermissionLabels(preview.experts, preview.pack.tools)
-
-  return (
-    <div className="mt-3 rounded-lg border border-[#eadfd7] bg-[#fffaf4] p-3 text-xs leading-5 text-[var(--color-text-secondary)]">
-      <p className="font-semibold text-[var(--color-text-primary)]">准备导入：{preview.pack.name}</p>
-      {preview.pack.packId ? <p>专家 ID：{preview.pack.packId}</p> : null}
-      <p>这个文件包含 {metrics.expertCount} 个专家、{metrics.skillCount} 项技能和 {metrics.formCount} 个材料表单。</p>
-      <p>{metrics.portable ? '可移植：可随 ZIP 一起备份或迁移。' : '可移植性：需要在这台电脑上额外确认。'}</p>
-      <p>工具和权限：{toolLabels.slice(0, 3).join('；') || '向你提问、收集材料、保存专家报告'}。</p>
-      {permissionLabels.length ? <p>授权说明：{permissionLabels.slice(0, 3).join('；')}。</p> : null}
-      <p className="font-medium text-[var(--color-text-primary)]">导入和查看只会保存说明文件，第一阶段不会运行包内代码。</p>
-      {preview.overwrite ? (
-        <p className="mt-1 font-semibold text-[#92400e]">⚠ 已存在同名专家（ID: {preview.expertId || preview.pack.packId}），导入将覆盖旧版本。</p>
-      ) : null}
-      {preview.warnings.length ? <p className="text-[#92400e]">{preview.warnings.map(toPlainWarning).join('；')}</p> : null}
-      <div className="mt-2 flex gap-2">
-        <button type="button" onClick={onConfirm} disabled={busy || !preview.canImport} className="rounded bg-[#9a542f] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-60">{preview.canImport ? (preview.overwrite ? '确认覆盖' : '确认导入') : '暂不能导入'}</button>
-        <button type="button" onClick={onCancel} className="rounded border border-[#eadfd7] bg-white px-2.5 py-1 text-xs">取消</button>
-      </div>
-    </div>
-  )
-}
-
-function PackageDetails({ expert, pack }: { expert: ExpertDefinition; pack?: ExpertPackSummary }) {
-  const packExperts = useMemo(() => (pack?.experts.length ? pack.experts : [expert]), [expert, pack?.experts])
-  const metrics = useMemo(() => getPackMetrics(pack, packExperts), [pack, packExperts])
-  const toolLabels = useMemo(() => getToolLabels(packExperts, pack?.tools), [packExperts, pack?.tools])
-  const permissionLabels = useMemo(() => getPermissionLabels(packExperts, pack?.tools), [packExperts, pack?.tools])
-  const packageName = pack?.name || expert.packName
-
-  return (
-    <section className="rounded-xl border border-[#eadfd7] bg-white/75 p-4">
-      <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">已安装专家包详情</h4>
-      <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-        「{packageName}」包含 {metrics.expertCount} 个专家、{metrics.skillCount} 项技能和 {metrics.formCount} 个材料表单。
-      </p>
-      <div className="mt-3 grid gap-3 text-sm text-[var(--color-text-secondary)] md:grid-cols-2">
-        <InfoList title="包信息" items={[`版本 ${expert.packVersion}`, metrics.portable ? '可移植：可随 ZIP 一起备份或迁移' : '可移植性：需要在这台电脑上额外确认']} />
-        <InfoList title="专家和技能" items={[`${metrics.expertCount} 个专家`, `${metrics.skillCount} 项技能`]} />
-        <InfoList title="工具和权限" items={toolLabels.length ? toolLabels : ['向你提问、收集材料、保存专家报告']} />
-        <InfoList title="授权说明" items={permissionLabels.length ? permissionLabels : ['仅在你确认后使用专家所需的基础功能']} />
-      </div>
-      <p className="mt-3 rounded-lg bg-[#fff7ee] px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
-        导入、导出和查看详情只处理专家包说明文件；第一阶段不会运行包内代码。
-      </p>
-    </section>
-  )
-}
-
-function InfoList({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div className="rounded-lg bg-[#fffaf4] px-3 py-2">
-      <h5 className="text-xs font-semibold text-[var(--color-text-primary)]">{title}</h5>
-      <ul className="mt-1 space-y-1 text-xs leading-5 text-[var(--color-text-secondary)]">
-        {items.map((item) => <li key={item}>- {item}</li>)}
-      </ul>
-    </div>
-  )
-}
-
-function getPackMetrics(pack: ExpertPackSummary | undefined, experts: ExpertDefinition[]) {
-  const expertList = experts.length ? experts : pack?.experts ?? []
-  const skillCount = new Set(expertList.flatMap((candidate) => safeArray(candidate.skillIds))).size
-  const formCount = expertList.reduce((count, candidate) => count + safeArray(candidate.formPaths).length + (candidate.intakeFlow?.steps.filter((step) => step.type === 'form').length ?? 0), 0)
-  const portable = expertList.length > 0 ? expertList.every((candidate) => candidate.portable) : true
-  return { expertCount: expertList.length, skillCount, formCount, portable }
 }
 
 function getToolLabels(experts: ExpertDefinition[], packTools: ExpertToolManifest[] = []): string[] {
@@ -505,48 +443,14 @@ function safeArray<T>(items: T[] | null | undefined): T[] {
 }
 
 function plainHostToolLabel(id: string, name: string, purpose: string): string {
-  const known: Record<string, string> = {
-    AskUserQuestion: '向你提问并等待选择',
-    ExpertIntakeForm: '显示材料收集表单',
-    ExpertMaterialWriter: '保存专家生成的材料',
-    FilePicker: '让你手动选择文件或文件夹',
-  }
-  return ((known[id] ?? known[name] ?? purpose) || name)
+  if (id === 'AskUserQuestion') return '向你提问并等待选择'
+  return purpose || name || id
 }
 
 function plainPackageToolLabel(tool: ExpertToolManifest): string {
-  if (tool.hostToolId) return plainHostToolLabel(tool.hostToolId, tool.name, tool.purpose)
-  if (tool.type === 'packageLocalExecutable') return `包内可运行工具：${tool.purpose || '需要你确认后才会运行'}`
-  if (tool.type === 'packageLocalDeclarative') return `包内说明工具：${tool.purpose || '提供专家处理说明'}`
-  return tool.purpose || tool.name
+  return tool.purpose || tool.name || tool.id
 }
 
-function uniqueNonEmpty(items: string[]): string[] {
-  return [...new Set(items.map((item) => item.trim()).filter(Boolean))]
-}
-
-function toPlainWarning(warning: string): string {
-  return warning
-    .replace(/schemaVersion|schema|manifest|registry|adapter|capability/gi, '文件说明')
-    .replace(/host tool|hostTool|tool/gi, '工具')
-}
-
-function toUserImportError(error: unknown, fallback: string): string {
-  if (!(error instanceof Error)) return fallback
-  if (/schema|manifest|registry|adapter|capability/i.test(error.message)) return fallback
-  return error.message || fallback
-}
-
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : ''
-      const [, base64 = ''] = result.split(',')
-      if (!base64) reject(new Error('无法读取这个专家包文件。'))
-      else resolve(base64)
-    }
-    reader.onerror = () => reject(reader.error ?? new Error('读取专家包文件失败。'))
-    reader.readAsDataURL(file)
-  })
+function uniqueNonEmpty(items: Array<string | null | undefined>): string[] {
+  return [...new Set(items.map((item) => item?.trim()).filter((item): item is string => Boolean(item)))]
 }

@@ -25,6 +25,7 @@ const zhSidebar = [
       { text: '全局使用', link: '/guide/global-usage' },
       { text: '常见问题', link: '/guide/faq' },
       { text: '贡献与质量门禁', link: '/guide/contributing' },
+      { text: '专家 Mode', link: '/guide/expert-mode' },
     ],
   },
   {
@@ -114,6 +115,7 @@ const enSidebar = [
       { text: 'Global Usage', link: '/en/guide/global-usage' },
       { text: 'FAQ', link: '/en/guide/faq' },
       { text: 'Contributing', link: '/en/guide/contributing' },
+      { text: 'Expert Mode', link: '/en/guide/expert-mode' },
     ],
   },
   {

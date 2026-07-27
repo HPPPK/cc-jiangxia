@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { expertsApi } from '../../api/experts'
@@ -8,8 +8,11 @@ import { useUIStore } from '../../stores/uiStore'
 import { ExpertPackManager } from './ExpertPackManager'
 
 vi.mock('../../api/experts', () => ({
+  fallbackExpertCategories: [{ id: 'product', name: '产品经理' }, { id: 'development', name: '开发' }, { id: 'design', name: 'UI 设计' }, { id: 'uncategorized', name: '未分类' }],
+  resolveExpertCategoryId: (expert?: { id?: string; categoryId?: string }) => expert?.categoryId ?? (expert?.id === 'commercialization-research-report' ? 'product' : expert?.id === 'repo-health-check' ? 'development' : 'uncategorized'),
   expertsApi: {
     listPacks: vi.fn(),
+    listCategories: vi.fn(),
     previewImport: vi.fn(),
     importPack: vi.fn(),
     updatePack: vi.fn(),
@@ -48,12 +51,28 @@ const pack = {
   }],
 }
 
+const packWithZipTool = {
+  ...pack,
+  experts: pack.experts.map((expert) => ({
+    ...expert,
+    tools: [{
+      id: 'local-tool',
+      name: 'Local Tool',
+      purpose: 'Stored with this expert ZIP',
+      type: 'packageLocalDeclarative' as const,
+      entrypoint: 'tools/local/tool.json',
+      permissions: [],
+    }],
+  })),
+}
+
 describe('ExpertPackManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useSettingsStore.setState({ locale: 'en' })
     useUIStore.setState({ toasts: [] })
     vi.mocked(expertsApi.listPacks).mockResolvedValue({ packs: [pack] })
+    vi.mocked(expertsApi.listCategories).mockResolvedValue({ categories: [{ id: 'product', name: '产品经理' }, { id: 'development', name: '开发' }, { id: 'design', name: 'UI 设计' }, { id: 'uncategorized', name: '未分类' }] })
     vi.mocked(expertsApi.copyPack).mockResolvedValue({ pack, experts: pack.experts, summary: '', warnings: [], canImport: true })
     vi.mocked(expertsApi.deletePack).mockResolvedValue(undefined)
     vi.mocked(expertsApi.updatePack).mockResolvedValue(pack)
@@ -88,6 +107,32 @@ describe('ExpertPackManager', () => {
     })))
   })
 
+  it('shows ZIP tools in one full-width panel without a user delete control', async () => {
+    vi.mocked(expertsApi.listPacks).mockResolvedValue({ packs: [packWithZipTool] })
+    render(<ExpertPackManager />)
+
+    await screen.findByText('Custom Pack')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Custom Pack' }))
+
+    const panel = await screen.findByTestId('expert-zip-tools-panel')
+    expect(panel).toHaveClass('w-full')
+    expect(within(panel).getByText('Local Tool')).toBeInTheDocument()
+    expect(screen.queryByText('全局运行工具')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+  })
+
+  it('filters packages by category navigation and search terms', async () => {
+    render(<ExpertPackManager />)
+    await screen.findByText('Custom Pack')
+
+    fireEvent.click(screen.getByRole('button', { name: 'UI 设计' }))
+    expect(screen.queryByTestId('expert-pack-row-custom-pack')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '全部' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索专家包' }), { target: { value: 'custom work' } })
+    expect(screen.getByTestId('expert-pack-row-custom-pack')).toBeInTheDocument()
+  })
+
   it('copies into the editor framework and confirms deletion before deleting', async () => {
     render(<ExpertPackManager />)
     await screen.findByText('Custom Pack')
@@ -102,6 +147,16 @@ describe('ExpertPackManager', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(expertsApi.deletePack).toHaveBeenCalledWith('custom-pack'))
+  })
+
+  it('opens the online Skill discovery dialog without importing remote content', async () => {
+    render(<ExpertPackManager />)
+    await screen.findByText('Custom Pack')
+
+    fireEvent.click(screen.getByRole('button', { name: '搜索在线 Skill' }))
+
+    expect(await screen.findByRole('dialog', { name: '搜索在线 Skill' })).toBeInTheDocument()
+    expect(screen.getByText(/不会自动导入或执行远程 Skill/)).toBeInTheDocument()
   })
 
   it('opens workflow-style import and export dialogs', async () => {

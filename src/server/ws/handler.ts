@@ -50,8 +50,12 @@ import {
 } from '../../constants/xml.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
 import {
+  buildExpertOutputTemplateWriteGuard,
   buildExpertRuntimeTurnInstruction,
   buildNormalRuntimeResetInstruction,
+  ExpertRuntimeBindingError,
+  hasActiveExpertRuntime,
+  resolveExpertRuntimeToolPolicy,
 } from '../services/expertRuntimeBindingService.js'
 import { setSessionChatState } from '../api/conversations.js'
 
@@ -535,11 +539,17 @@ async function handleUserMessage(
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     const code =
-      err instanceof ConversationStartupError ? err.code : 'CLI_START_FAILED'
-    console.error(`[WS] CLI start failed for ${sessionId}: ${errMsg}`)
+      err instanceof ExpertRuntimeBindingError
+        ? err.code
+        : err instanceof ConversationStartupError
+          ? err.code
+          : 'CLI_START_FAILED'
+    console.error('[WS] CLI start failed for ' + sessionId + ': ' + errMsg)
     sendMessage(ws, {
       type: 'error',
-      message: await buildSessionStartupDiagnosticMessage(sessionId, errMsg),
+      message: err instanceof ExpertRuntimeBindingError
+        ? errMsg
+        : await buildSessionStartupDiagnosticMessage(sessionId, errMsg),
       code,
       retryable:
         err instanceof ConversationStartupError ? err.retryable : false,
@@ -740,16 +750,17 @@ async function resolveSessionRuntimeUserMessage(
   }
 
   const session = await sessionService.getSession(sessionId).catch(() => null)
-  const expertInstruction = buildExpertRuntimeTurnInstruction(session?.expert)
-  if (expertInstruction) {
-    return [
-      expertInstruction,
-      '<expert-user-request>',
-      content,
-      '</expert-user-request>',
-    ].join('\n\n')
+  if (session?.expert?.mode === 'expert' && session.expert.status === 'active' && !hasActiveExpertRuntime(session.expert)) {
+    sendMessage(ws, {
+      type: 'error',
+      message: new ExpertRuntimeBindingError().message,
+      code: 'EXPERT_RUNTIME_BINDING_MISSING',
+    })
+    return null
   }
 
+  // Expert runtime is attached as a hidden CLI system prompt when the session
+  // starts. Never prepend it to a visible user turn or transcript entry.
   const resetInstruction = buildNormalRuntimeResetInstruction(session?.expert)
   return resetInstruction
     ? [resetInstruction, content].join('\n\n')
@@ -3305,17 +3316,49 @@ async function getRuntimeSettingsWithWorkflowPolicy(
 ): Promise<RuntimeSettings> {
   const settings = runtimeSettings ?? await getRuntimeSettings(sessionId)
   const workflowState = state ?? await loadWorkflowStateForWebSocket(sessionId)
-  const disallowedTools = getWorkflowPhaseDisallowedTools(workflowState)
+  const workflowDisallowedTools = getWorkflowPhaseDisallowedTools(workflowState)
+  const workflowIsActive = getWorkflowScopedToolNames(workflowState).length > 0
+
+  // Workflow and Expert Mode have independent runtime contracts. A persisted
+  // Expert record may coexist with a workflow session for history/UI purposes,
+  // but it must never contribute a prompt or tool restriction to the CLI while
+  // the workflow is active. Otherwise an unrelated Expert can silently hide a
+  // workflow-required tool or give the model contradictory instructions.
+  const expert = workflowIsActive
+    ? undefined
+    : (await sessionService.getSession(sessionId).catch(() => null))?.expert
+  if (expert?.mode === 'expert' && expert.status === 'active' && !hasActiveExpertRuntime(expert)) {
+    throw new ExpertRuntimeBindingError()
+  }
+  const expertToolPolicy = workflowIsActive
+    ? { disallowedTools: [] }
+    : resolveExpertRuntimeToolPolicy(expert, { modelId: settings.model })
+  const expertSystemPrompt = workflowIsActive
+    ? null
+    : buildExpertRuntimeTurnInstruction(expert, { modelId: settings.model })
+  const expertOutputTemplateWriteGuard = workflowIsActive
+    ? null
+    : buildExpertOutputTemplateWriteGuard(expert)
+  const disallowedTools = [...new Set([
+    ...workflowDisallowedTools,
+    ...expertToolPolicy.disallowedTools,
+  ])]
   const workflowSystemPrompt = buildWorkflowRuntimeBindingInstruction(sessionId, workflowState)
-  const workflowSettings = getWorkflowScopedToolNames(workflowState).length > 0
+  const workflowSettings = workflowIsActive
     ? {
         workflowSessionId: sessionId,
         ...(workflowSystemPrompt ? { workflowSystemPrompt } : {}),
       }
     : {}
+  const expertSettings = expertSystemPrompt
+    ? {
+        expertSystemPrompt,
+        ...(expertOutputTemplateWriteGuard ? { expertOutputTemplateWriteGuard } : {}),
+      }
+    : {}
   return disallowedTools.length > 0
-    ? { ...settings, ...workflowSettings, disallowedTools }
-    : { ...settings, ...workflowSettings }
+    ? { ...settings, ...workflowSettings, ...expertSettings, disallowedTools }
+    : { ...settings, ...workflowSettings, ...expertSettings }
 }
 
 function buildWorkflowRuntimeBindingInstruction(

@@ -6,6 +6,7 @@ import { UpdateChecker } from '../shared/UpdateChecker'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useUIStore, type SettingsTab } from '../../stores/uiStore'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
+import { useScheduledTaskDesktopNotifications } from '../../hooks/useScheduledTaskDesktopNotifications'
 import {
   H5ConnectionRequiredError,
   initializeDesktopServerUrl,
@@ -37,6 +38,7 @@ export function AppShell() {
   const [h5StartupError, setH5StartupError] = useState<H5ConnectionRequiredError | null>(null)
   const [bootstrapNonce, setBootstrapNonce] = useState(0)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  useScheduledTaskDesktopNotifications(ready)
   const t = useTranslation()
   const tauriRuntime = isTauriRuntime()
   const isMobileShell = useMobileViewport() && !tauriRuntime

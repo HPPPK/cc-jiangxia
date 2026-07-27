@@ -38,10 +38,10 @@ import {
 } from '../components/workflow/WorkflowComponents'
 import { WorkflowTransitionControls } from '../components/workflow/WorkflowTransitionControls'
 import { formatWorkflowPhaseSummary } from '../components/workflow/workflowPhaseDisplay'
-import { sessionsApi } from '../api/sessions'
-import { expertsApi, type ExpertDefinition } from '../api/experts'
+import { ExpertInfoSidebar } from '../components/experts/ExpertInfoSidebar'
+import { sessionsApi, type WorkflowCompletionProgressUpdate } from '../api/sessions'
+import { ApiError } from '../api/client'
 import type {
-  ExpertMaterialRef,
   SessionListItem,
   WorkflowGitCheckpointListResponse,
   WorkflowRunSummary,
@@ -69,6 +69,12 @@ const FOLLOW_UP_TEMPLATE_KIND_BY_BUTTON: Record<WorkflowFollowUpButtonKind, 'deb
   debug: 'debug-repair',
   feature: 'feature-extension',
   development: 'development',
+}
+
+function isMissingServerExpertMode(error: unknown): error is ApiError {
+  return error instanceof ApiError &&
+    error.status === 404 &&
+    error.message.startsWith('Expert mode not active for session:')
 }
 
 function isSessionTabState(activeTabId: string | null, activeTabType: TabType | null | undefined) {
@@ -224,448 +230,6 @@ function BackgroundAgentPanel({
 }
 
 
-
-function ExpertModeStrip({
-  expert,
-  definition,
-  intakeOpen,
-  materialsOpen,
-  busy,
-  downloadingRunId,
-  onToggleIntake,
-  onToggleMaterials,
-  onDownload,
-  onExit,
-}: {
-  expert: NonNullable<SessionListItem['expert']>
-  definition?: ExpertDefinition | null
-  intakeOpen: boolean
-  materialsOpen: boolean
-  busy: boolean
-  downloadingRunId: string | null
-  onToggleIntake: () => void
-  onToggleMaterials: () => void
-  onDownload: (material: ExpertMaterialRef) => void
-  onExit: () => void
-}) {
-  const skillCount = definition?.skillIds.length ?? 0
-  const toolCount = definition?.tools.length ?? 0
-
-  return (
-    <section
-      data-testid="expert-mode-strip"
-      className="shrink-0 border-b border-[#eadfd7] bg-[#fffaf5] px-4 py-2.5"
-      aria-label="专家 Mode"
-    >
-      <div className="mx-auto flex w-full max-w-[960px] flex-col gap-2">
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-[#9a542f] px-2 py-0.5 text-[10px] font-semibold text-white">专家 Runtime</span>
-              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{expert.expertName}</span>
-              <span className="text-[11px] text-[var(--color-text-secondary)]">{expertStatusLabel(expert.status)}</span>
-            </div>
-            <p className="mt-1 text-[11px] leading-4 text-[var(--color-text-secondary)]">
-              普通聊天、流式回复和工具调用保持可用；本次对话会按专家提示词、技能、工具声明和输出协议执行。
-              {skillCount > 0 ? ' 已加载 ' + skillCount + ' 个技能。' : ''}
-              {toolCount > 0 ? ' 已声明 ' + toolCount + ' 个专家工具。' : ''}
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-            <button type="button" onClick={onToggleIntake} className="rounded-[7px] border border-[#d8c1b1] bg-white px-2.5 py-1 text-[11px] font-medium text-[#7d4325] transition-colors hover:bg-[#fff4ea]">
-              {intakeOpen ? '收起结构化信息' : '补充结构化信息'}
-            </button>
-            <button type="button" onClick={onToggleMaterials} className="rounded-[7px] border border-[#d8c1b1] bg-white px-2.5 py-1 text-[11px] font-medium text-[#7d4325] transition-colors hover:bg-[#fff4ea]">
-              {'专家产物 (' + expert.materialRefs.length + ')'}
-            </button>
-            <button type="button" disabled={busy} onClick={onExit} className="rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50">
-              退出专家 Mode
-            </button>
-          </div>
-        </div>
-        {materialsOpen ? (
-          <div data-testid="expert-material-list" className="rounded-[9px] border border-[#eadfd7] bg-white/80 p-2">
-            {expert.materialRefs.length === 0 ? (
-              <p className="px-1 py-1 text-[11px] text-[var(--color-text-secondary)]">尚未生成专家产物。可先正常对话，或在“补充结构化信息”中生成材料包。</p>
-            ) : (
-              <div className="space-y-1.5">
-                {expert.materialRefs.map((material) => (
-                  <div key={material.runId} data-testid={'expert-material-' + material.runId} className="flex flex-wrap items-center justify-between gap-2 rounded-[7px] border border-[#f0e4da] bg-white px-2.5 py-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-[12px] font-medium text-[var(--color-text-primary)]">{material.title}</div>
-                      <div className="mt-0.5 line-clamp-2 text-[11px] text-[var(--color-text-secondary)]">{material.shortSummary}</div>
-                    </div>
-                    <button type="button" disabled={downloadingRunId === material.runId} onClick={() => onDownload(material)} className="inline-flex shrink-0 items-center gap-1 rounded-[6px] border border-[#d8c1b1] px-2 py-1 text-[11px] font-medium text-[#7d4325] hover:bg-[#fff4ea] disabled:cursor-wait disabled:opacity-60">
-                      <span className="material-symbols-outlined text-[13px]" aria-hidden="true">download</span>
-                      {downloadingRunId === material.runId ? '正在下载' : '下载材料包'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    </section>
-  )
-}
-
-function ExpertIntakeCard({
-  expert,
-  definition,
-  phase,
-  message,
-  error,
-  onWriteMaterial,
-}: {
-  expert: NonNullable<SessionListItem['expert']>
-  definition?: ExpertDefinition | null
-  phase: string
-  message: string | null
-  error: string | null
-  onWriteMaterial: (title: string, notes: string, answers: Record<string, unknown>) => void
-}) {
-  const initialAnswers = useMemo(() => expert.intakeState?.answers ?? {}, [expert.intakeState?.answers])
-  const [answers, setAnswers] = useState<Record<string, unknown>>(initialAnswers)
-  const flow = definition?.intakeFlow
-  const steps = flow?.steps?.length ? flow.steps : fallbackExpertIntakeSteps()
-  const busy = phase === 'writing' || phase === 'loading' || phase === 'entering' || phase === 'running' || expert.status === 'running'
-
-  useEffect(() => {
-    setAnswers(initialAnswers)
-  }, [initialAnswers])
-
-  const focusLabel = resolveExpertFocusLabel(steps, answers) || '专家材料整理'
-  const notes = typeof answers.notes === 'string' ? answers.notes : ''
-
-  const updateAnswer = (id: string, value: unknown) => {
-    setAnswers((current) => ({ ...current, [id]: value }))
-  }
-
-  return (
-    <section
-      data-testid="expert-intake-card"
-      className="mx-auto mb-4 w-full max-w-[860px] rounded-2xl border border-[#eadfd7] bg-[#fffaf5] p-4 shadow-sm"
-      aria-label="专家引导表单"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-[#9a542f] px-2.5 py-1 text-xs font-semibold text-white">专家引导</span>
-            <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{expert.expertName}</h3>
-          </div>
-          <p className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)]">
-            先补充必要材料，专家会把结果写成材料包；这个过程不会修改源码，也不会自动启动 workflow。
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onWriteMaterial(focusLabel, notes, answers)}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-[8px] bg-[#9a542f] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#7d4325] disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <span className="material-symbols-outlined text-[15px]" aria-hidden="true">description</span>
-          生成材料包
-        </button>
-      </div>
-
-      <div className="mt-3 grid gap-2 rounded-xl border border-[#eadfd7] bg-white/75 p-3" data-testid="expert-intake-flow">
-        {steps.map((step) => (
-          <ExpertIntakeStepView key={step.id} step={step} answers={answers} onChange={updateAnswer} />
-        ))}
-      </div>
-
-      {message ? <div className="mt-3 text-xs text-[#7d4325]">{message}</div> : null}
-      {error ? <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div> : null}
-    </section>
-  )
-}
-
-function ExpertIntakeStepView({
-  step,
-  answers,
-  onChange,
-}: {
-  step: NonNullable<ExpertDefinition['intakeFlow']>['steps'][number]
-  answers: Record<string, unknown>
-  onChange: (id: string, value: unknown) => void
-}) {
-  if (step.type === 'message') {
-    return <div className="text-xs leading-5 text-[var(--color-text-secondary)]">{step.markdown}</div>
-  }
-
-  if (step.type === 'question') {
-    const current = typeof answers[step.id] === 'string' ? answers[step.id] : ''
-    return (
-      <section className="rounded-lg border border-[#f0dfd2] bg-white px-3 py-2" data-testid={'expert-intake-question-' + step.id}>
-        <div className="text-[11px] font-semibold text-[var(--color-text-primary)]">{step.question}</div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {step.options.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              aria-pressed={current === option.id}
-              onClick={() => onChange(step.id, option.id)}
-              title={option.description}
-              className={'rounded-full border px-2.5 py-1 text-[11px] transition-colors ' + (current === option.id ? 'border-[#9a542f] bg-[#fff0e6] text-[#7d4325]' : 'border-[#eadfd7] bg-white text-[var(--color-text-secondary)] hover:bg-[#fff8f3]')}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </section>
-    )
-  }
-
-  return (
-    <section className="grid gap-2 rounded-lg border border-[#f0dfd2] bg-white px-3 py-2 md:grid-cols-2" data-testid={'expert-intake-form-' + step.id}>
-      <div className="md:col-span-2 text-[11px] font-semibold text-[var(--color-text-primary)]">{step.title}</div>
-      {step.fields.map((field) => (
-        <ExpertIntakeField key={field.id} field={field} value={answers[field.id]} onChange={(value) => onChange(field.id, value)} />
-      ))}
-    </section>
-  )
-}
-
-function ExpertIntakeField({
-  field,
-  value,
-  onChange,
-}: {
-  field: NonNullable<Extract<NonNullable<ExpertDefinition['intakeFlow']>['steps'][number], { type: 'form' }>['fields']>[number]
-  value: unknown
-  onChange: (value: unknown) => void
-}) {
-  const stringValue = typeof value === 'string' ? value : ''
-  const label = field.label + (field.required ? ' *' : '')
-  const commonClass = 'mt-1 w-full rounded-[8px] border border-[#eadfd7] bg-white px-2 py-1.5 text-[11px] font-normal text-[var(--color-text-primary)] outline-none focus:border-[#9a542f]'
-  const pathInputClass = commonClass + ' mt-0'
-  const pickerButtonClass = 'inline-flex shrink-0 items-center justify-center gap-1 rounded-[8px] border border-[#d8b39f] bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#7d4325] transition-colors hover:bg-[#fff8f3]'
-  const [pathPickerHint, setPathPickerHint] = useState<string | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const controlId = 'expert-intake-field-' + field.id.replace(/[^a-zA-Z0-9_-]/g, '-')
-
-  const focusPathControl = () => {
-    if (field.kind === 'file-list') textareaRef.current?.focus()
-    else inputRef.current?.focus()
-  }
-
-  const handlePickPath = async () => {
-    if (field.kind !== 'file' && field.kind !== 'file-list' && field.kind !== 'folder') return
-    setPathPickerHint(null)
-
-    if (!isTauriRuntime()) {
-      focusPathControl()
-      setPathPickerHint('当前环境不能打开系统选择器，请直接粘贴路径。')
-      return
-    }
-
-    try {
-      const { open } = await import('@tauri-apps/plugin-dialog')
-      const selected = await open({
-        directory: field.kind === 'folder',
-        multiple: field.kind === 'file-list',
-        title: field.kind === 'folder' ? '选择文件夹' : '选择文件',
-      })
-      const selectedPaths = normalizeExpertDialogSelection(selected)
-      if (selectedPaths.length === 0) return
-
-      if (field.kind === 'file-list') {
-        onChange(mergeExpertPathList(value, selectedPaths))
-        setPathPickerHint(`已添加 ${selectedPaths.length} 个路径。`)
-      } else {
-        onChange(selectedPaths[0])
-        setPathPickerHint('已填入选择的路径。')
-      }
-    } catch {
-      focusPathControl()
-      setPathPickerHint('无法打开系统选择器，请直接粘贴路径。')
-    }
-  }
-
-  const handleAddPathLine = () => {
-    const current = pathListTextValue(value)
-    onChange(current && !current.endsWith('\n') ? current + '\n' : current)
-    focusPathControl()
-    setPathPickerHint('已为新路径留出一行，请粘贴文件路径。')
-  }
-
-  if (field.kind === 'file-list') {
-    return (
-      <div className="block text-[11px] font-semibold text-[var(--color-text-primary)] md:col-span-2">
-        <label htmlFor={controlId}>{label}</label>
-        <div className="mt-1 grid gap-2">
-          <textarea
-            ref={textareaRef}
-            id={controlId}
-            value={pathListTextValue(value)}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder={field.placeholder || field.description || '每行一个文件路径，也可以点击“选择文件”批量添加。'}
-            className={commonClass + ' mt-0 h-16 resize-none'}
-          />
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={handlePickPath} className={pickerButtonClass}>
-              <span className="material-symbols-outlined text-[14px]" aria-hidden="true">attach_file</span>
-              选择文件
-            </button>
-            <button type="button" onClick={handleAddPathLine} className={pickerButtonClass}>
-              <span className="material-symbols-outlined text-[14px]" aria-hidden="true">add</span>
-              添加路径
-            </button>
-          </div>
-          {pathPickerHint ? <div className="text-[11px] font-normal text-[var(--color-text-secondary)]">{pathPickerHint}</div> : null}
-        </div>
-      </div>
-    )
-  }
-
-  if (field.kind === 'textarea' || field.kind === 'url-list' || field.kind === 'table') {
-    return (
-      <label className="block text-[11px] font-semibold text-[var(--color-text-primary)] md:col-span-2">
-        {label}
-        <textarea
-          value={Array.isArray(value) ? value.join('\n') : stringValue}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={field.placeholder || field.description || (field.kind === 'table' ? '每行一条，后续可作为表格材料读取。' : undefined)}
-          className={commonClass + ' h-16 resize-none'}
-        />
-      </label>
-    )
-  }
-
-  if (field.kind === 'file' || field.kind === 'folder') {
-    const pickerLabel = field.kind === 'folder' ? '选择文件夹' : '选择文件'
-    return (
-      <div className="block text-[11px] font-semibold text-[var(--color-text-primary)]">
-        <label htmlFor={controlId}>{label}</label>
-        <div className="mt-1 flex gap-2">
-          <input
-            ref={inputRef}
-            id={controlId}
-            value={stringValue}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder={field.placeholder || field.description || '粘贴路径，或点击右侧按钮选择。'}
-            type="text"
-            className={pathInputClass}
-          />
-          <button type="button" onClick={handlePickPath} className={pickerButtonClass}>
-            <span className="material-symbols-outlined text-[14px]" aria-hidden="true">{field.kind === 'folder' ? 'folder_open' : 'attach_file'}</span>
-            {pickerLabel}
-          </button>
-        </div>
-        {pathPickerHint ? <div className="mt-1 text-[11px] font-normal text-[var(--color-text-secondary)]">{pathPickerHint}</div> : null}
-      </div>
-    )
-  }
-
-  if (field.kind === 'select' || field.kind === 'multi-select') {
-    const selected = field.kind === 'multi-select' && Array.isArray(value) ? value.map(String) : [stringValue]
-    return (
-      <label className="block text-[11px] font-semibold text-[var(--color-text-primary)]">
-        {label}
-        <select
-          multiple={field.kind === 'multi-select'}
-          value={field.kind === 'multi-select' ? selected : stringValue}
-          onChange={(event) => {
-            if (field.kind === 'multi-select') onChange(Array.from(event.currentTarget.selectedOptions).map((option) => option.value))
-            else onChange(event.currentTarget.value)
-          }}
-          className={commonClass}
-        >
-          <option value="">请选择</option>
-          {(field.options ?? []).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-        </select>
-      </label>
-    )
-  }
-
-  if (field.kind === 'checkbox') {
-    return (
-      <label className="flex items-center gap-2 text-[11px] font-semibold text-[var(--color-text-primary)]">
-        <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.currentTarget.checked)} />
-        {label}
-      </label>
-    )
-  }
-
-  return (
-    <label className="block text-[11px] font-semibold text-[var(--color-text-primary)]">
-      {label}
-      <input
-        value={stringValue}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={field.placeholder || field.description}
-        type={field.kind === 'url' ? 'url' : 'text'}
-        className={commonClass}
-      />
-    </label>
-  )
-}
-
-function normalizeExpertDialogSelection(selected: unknown) {
-  if (typeof selected === 'string') {
-    const trimmed = selected.trim()
-    return trimmed ? [trimmed] : []
-  }
-
-  if (Array.isArray(selected)) {
-    return selected.map((item) => String(item).trim()).filter(Boolean)
-  }
-
-  return []
-}
-
-function pathListTextValue(value: unknown) {
-  if (Array.isArray(value)) return value.map(String).join('\n')
-  return typeof value === 'string' ? value : ''
-}
-
-function mergeExpertPathList(currentValue: unknown, selectedPaths: string[]) {
-  const existing = pathListTextValue(currentValue)
-    .split(/\r?\n/)
-    .map((path) => path.trim())
-    .filter(Boolean)
-  return Array.from(new Set([...existing, ...selectedPaths]))
-}
-
-function fallbackExpertIntakeSteps(): NonNullable<ExpertDefinition['intakeFlow']>['steps'] {
-  return [
-    {
-      type: 'question',
-      id: 'focus',
-      question: '你这次希望专家重点帮你看什么？',
-      options: [
-        { id: 'run', label: '怎么运行' },
-        { id: 'test', label: '怎么测试' },
-        { id: 'structure', label: '整体结构' },
-        { id: 'ai-handoff', label: '交给 AI 继续开发' },
-      ],
-      required: true,
-    },
-    {
-      type: 'form',
-      id: 'materials',
-      title: '请补充材料',
-      fields: [
-        { id: 'projectRoot', kind: 'folder', label: '项目目录' },
-        { id: 'notes', kind: 'textarea', label: '补充说明' },
-        { id: 'urls', kind: 'url-list', label: '参考链接' },
-      ],
-      required: false,
-    },
-  ]
-}
-
-function resolveExpertFocusLabel(steps: NonNullable<ExpertDefinition['intakeFlow']>['steps'], answers: Record<string, unknown>) {
-  for (const step of steps) {
-    if (step.type !== 'question') continue
-    const value = answers[step.id]
-    const option = step.options.find((candidate) => candidate.id === value)
-    if (option) return option.label
-  }
-  return null
-}
 
 function expertStatusLabel(status: NonNullable<SessionListItem['expert']>['status']) {
   switch (status) {
@@ -1218,8 +782,6 @@ export function ActiveSession() {
 
   const session = sessions.find((s) => s.id === activeTabId)
   const expertModePhase = useExpertStore((state) => state.modePhase)
-  const expertModeMessage = useExpertStore((state) => state.modeMessage)
-  const expertModeError = useExpertStore((state) => state.modeError)
   const expertDefinitions = useExpertStore((state) => state.experts)
   const activeExpertDefinition = useMemo(
     () => session?.expert
@@ -1260,9 +822,10 @@ export function ActiveSession() {
   const [workflowPreviewBusy, setWorkflowPreviewBusy] = useState<'start' | 'stop' | null>(null)
   const [workflowExitDialogOpen, setWorkflowExitDialogOpen] = useState(false)
   const [workflowExitBusy, setWorkflowExitBusy] = useState(false)
-  const [expertIntakeOpen, setExpertIntakeOpen] = useState(false)
-  const [expertMaterialsOpen, setExpertMaterialsOpen] = useState(false)
-  const [expertMaterialDownloadingRunId, setExpertMaterialDownloadingRunId] = useState<string | null>(null)
+  const [workflowCompletionPending, setWorkflowCompletionPending] = useState(false)
+  const [workflowCompletionError, setWorkflowCompletionError] = useState<string | null>(null)
+  const [workflowCompletionStatusOpen, setWorkflowCompletionStatusOpen] = useState(false)
+
   const [workflowCheckpoints, setWorkflowCheckpoints] = useState<WorkflowGitCheckpointListResponse>({
     enabled: false,
     latestVersion: null,
@@ -1643,52 +1206,27 @@ export function ActiveSession() {
       }))
       useUIStore.getState().addToast({ type: 'success', message: '已退出专家 Mode，会话中的专家材料会保留。' })
     } catch (error) {
+      if (isMissingServerExpertMode(error)) {
+        useChatStore.getState().settleSessionIdle(activeTabId)
+        useCLITaskStore.getState().clearTasks(activeTabId)
+        useSessionStore.setState((state) => ({
+          sessions: state.sessions.map((candidate) => {
+            if (candidate.id !== activeTabId) return candidate
+            const { expert: _expert, ...ordinarySession } = candidate
+            return { ...ordinarySession, modifiedAt: new Date().toISOString() }
+          }),
+        }))
+        useUIStore.getState().addToast({ type: 'warning', message: '专家 Mode 已不在服务端激活状态，已同步回普通会话。' })
+        return
+      }
       useUIStore.getState().addToast({ type: 'error', message: error instanceof Error ? error.message : '退出专家 Mode 失败' })
     }
   }, [activeTabId, session?.expert])
 
-  const handleDownloadExpertMaterial = useCallback(async (material: ExpertMaterialRef) => {
-    if (!activeTabId) return
-    setExpertMaterialDownloadingRunId(material.runId)
-    try {
-      const bytes = await expertsApi.downloadMaterialPackage(activeTabId, material.runId)
-      const blob = new Blob([bytes], { type: 'application/zip' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = material.title.replace(/[\\/:*?"<>|]+/g, '_') + '.zip'
-      link.rel = 'noopener'
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      URL.revokeObjectURL(url)
-    } catch (error) {
-      useUIStore.getState().addToast({ type: 'error', message: error instanceof Error ? error.message : '下载专家材料失败' })
-    } finally {
-      setExpertMaterialDownloadingRunId(null)
-    }
-  }, [activeTabId])
-
   const activeExpertMode = !isMemberSession && Boolean(session?.expert && session.expert.status !== 'exited')
-  const expertModeBusy = expertModePhase === 'writing' || expertModePhase === 'loading' || expertModePhase === 'entering' || session?.expert?.status === 'running'
+  const showExpertInfoSidebar = activeExpertMode && !isMobileLayout && activeExpertDefinition !== null
 
-  const activeExpertIntakeCard = activeExpertMode && expertIntakeOpen && session?.expert ? (
-    <ExpertIntakeCard
-      expert={session.expert}
-      definition={activeExpertDefinition}
-      phase={expertModePhase}
-      message={expertModeMessage}
-      error={expertModeError}
-      onWriteMaterial={(focus, notes, answers) => { void handleWriteExpertMaterial(focus, notes, answers) }}
-    />
-  ) : null
-
-  const chatInlineCard = workflowTransitionCard || activeExpertIntakeCard ? (
-    <>
-      {workflowTransitionCard}
-      {activeExpertIntakeCard}
-    </>
-  ) : null
+  const chatInlineCard = workflowTransitionCard
   const showEmptyHero = isEmpty && !activeExpertMode
   const showSessionTitleHeader = !isMemberSession && !isMobileLayout && (!showEmptyHero || Boolean(session?.expert && session.expert.status !== 'exited'))
 
@@ -2030,6 +1568,10 @@ export function ActiveSession() {
             <WorkspaceResizeHandle />
             <WorkspacePanel sessionId={activeTabId} />
           </>
+        ) : null}
+
+        {showExpertInfoSidebar && activeExpertDefinition ? (
+          <ExpertInfoSidebar definition={activeExpertDefinition} />
         ) : null}
       </div>
 

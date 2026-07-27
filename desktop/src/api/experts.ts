@@ -1,6 +1,50 @@
 import { api, getApiUrl } from './client'
 import type { ExpertIntakeState, ExpertMaterialRef, ExpertSessionSummary } from '../types/session'
 
+export type ExpertCategory = { id: string; name: string; description?: string; icon?: string }
+
+export const fallbackExpertCategories: ExpertCategory[] = [
+  { id: 'product', name: '产品经理', description: '调研、洞察、策略与产品规划', icon: 'explore' },
+  { id: 'development', name: '开发', description: '工程实现、代码审查与技术诊断', icon: 'terminal' },
+  { id: 'design', name: 'UI 设计', description: '界面、体验与视觉表达', icon: 'palette' },
+  { id: 'uncategorized', name: '未分类', description: '等待进一步归类的专家', icon: 'more_horiz' },
+]
+export type ExpertCatalogMetadata = { categoryId?: string; tags?: string[] }
+export type ExpertProfileEntry = { id: string; content: string; createdAt: string }
+export type ExpertProfileWorkflowStep = { id: string; title: string; description?: string }
+export type ExpertProfile = {
+  avatar?: string
+  tagline?: string
+  soul?: { whoIAm: string; howITalk: string; boundaries: string[] }
+  starterPrompts?: string[]
+  workflow?: ExpertProfileWorkflowStep[]
+  knowledgeBase?: {
+    version: string
+    ruleCount?: number
+    styleCount?: number
+    paletteCount?: number
+    componentCount?: number
+    notes?: string
+  }
+  memories?: ExpertProfileEntry[]
+  diary?: ExpertProfileEntry[]
+}
+export type ExpertProfileRecord = { schemaVersion: 1; expertId: string; profile: ExpertProfile; updatedAt: string }
+
+const legacyExpertCategoryIds: Record<string, string> = {
+  'commercialization-research-report': 'product',
+  'website-reference': 'development',
+  'repo-health-check': 'development',
+  'product-brief-intake': 'development',
+  'migration-refactor-assessment': 'development',
+}
+
+export function resolveExpertCategoryId(expert?: { id?: string; categoryId?: string }): string {
+  const categoryId = expert?.categoryId?.trim()
+  if (categoryId) return categoryId
+  return expert?.id ? legacyExpertCategoryIds[expert.id] ?? 'uncategorized' : 'uncategorized'
+}
+
 export type ExpertToolManifest = {
   id: string
   name: string
@@ -18,6 +62,9 @@ export type ExpertDefinition = {
   name: string
   description: string
   statusLabel: string
+  profile?: ExpertProfile
+  categoryId?: string
+  tags?: string[]
   packId: string
   packName: string
   packVersion: string
@@ -45,6 +92,7 @@ export type ExpertPackSummary = {
   manifest?: {
     minHostVersion?: string
     compatibility?: Record<string, unknown>
+    catalog?: ExpertCatalogMetadata
     portability?: { selfContained: boolean; notes?: string }
   }
   experts: ExpertDefinition[]
@@ -53,6 +101,7 @@ export type ExpertPackSummary = {
 }
 
 export type ExpertListResponse = { experts: ExpertDefinition[] }
+export type ExpertCategoryListResponse = { categories: ExpertCategory[] }
 export type ExpertPackListResponse = { packs: ExpertPackSummary[] }
 export type ExpertPackImportPreview = {
   pack: ExpertPackSummary
@@ -73,6 +122,7 @@ export type ExpertPackUpdateInput = {
   name?: string
   version?: string
   description?: string
+  catalog?: ExpertCatalogMetadata
   minHostVersion?: string
   hostTools?: ExpertDefinition['hostTools']
   permissions?: ExpertDefinition['permissions']
@@ -83,6 +133,7 @@ export type ExpertPackUpdateInput = {
     name?: string
     description?: string
     statusLabel?: string
+    profile?: ExpertProfile
     systemPromptContent?: string
     skillIds?: string[]
     intakeFlow?: ExpertDefinition['intakeFlow']
@@ -96,6 +147,15 @@ export type ExpertPackCreateInput = ExpertPackUpdateInput & {
   packId: string
   expert: NonNullable<ExpertPackUpdateInput['expert']> & { id: string; name: string }
 }
+export type SkillDiscoverySource = 'web' | 'qclaw' | 'all'
+export type SkillDiscoveryResult = { title: string; url: string; source: Exclude<SkillDiscoverySource, 'all'> }
+export type SkillDiscoveryResponse = {
+  query: string
+  source: SkillDiscoverySource
+  provider: 'tavily' | 'brave'
+  results: SkillDiscoveryResult[]
+}
+
 export type ExpertSessionResponse = { expert: ExpertSessionSummary }
 export type ExpertMaterialWriteResponse = { expert: ExpertSessionSummary; materialRef: ExpertMaterialRef }
 export type ExpertStreamEvent =
@@ -105,6 +165,12 @@ export type ExpertStreamEvent =
 
 export const expertsApi = {
   listExperts: () => api.get<ExpertListResponse>('/api/experts'),
+  discoverSkills: (query: string, source: SkillDiscoverySource = 'all') => api.get<SkillDiscoveryResponse>(`/api/experts/discovery?${new URLSearchParams({ query, source }).toString()}`),
+
+  listCategories: () => api.get<ExpertCategoryListResponse>('/api/experts/categories'),
+  getProfile: (expertId: string) => api.get<ExpertProfileRecord>(`/api/experts/profiles/${encodeURIComponent(expertId)}`),
+  updateProfile: (expertId: string, profile: ExpertProfile) => api.put<ExpertProfileRecord>(`/api/experts/profiles/${encodeURIComponent(expertId)}`, { profile }),
+  updateCategories: (categories: ExpertCategory[]) => api.put<ExpertCategoryListResponse>('/api/experts/categories', { categories }),
   listPacks: () => api.get<ExpertPackListResponse>('/api/experts/packs'),
   createPack: (input: ExpertPackCreateInput) => api.post<ExpertPackImportPreview>('/api/experts/packs', input),
   previewImport: (dataBase64: string) => api.post<ExpertPackImportPreview>('/api/experts/packs/import/preview', { dataBase64 }),

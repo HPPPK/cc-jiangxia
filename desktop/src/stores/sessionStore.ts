@@ -200,7 +200,9 @@ function shouldKeepCurrentExpert(
   incoming: SessionListItem,
 ): boolean {
   if (!current.expert) return false
-  if (!incoming.expert) return true
+  if (!incoming.expert) {
+    return new Date(current.modifiedAt) > new Date(incoming.modifiedAt)
+  }
 
   const currentUpdatedAt = current.expert.updatedAt ?? current.modifiedAt
   const incomingUpdatedAt = incoming.expert.updatedAt ?? incoming.modifiedAt

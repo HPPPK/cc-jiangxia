@@ -69,8 +69,10 @@ export type ExpertRuntimeBinding = {
   tools: ExpertToolManifest[]
   permissions: ExpertPermission[]
   outputProtocol?: { path: string; content: string }
+  outputTemplate?: { path: string; content: string }
   activatedAt: string
 }
+
 
 export type ExpertSessionMetadata = {
   mode: 'expert'
@@ -93,6 +95,29 @@ export type ExpertSessionMetadata = {
 export type ExpertHostTool = { id: string; name: string; purpose: string; minHostVersion?: string; supported?: boolean }
 export type ExpertPermission = { id: string; description: string }
 export type ExpertToolType = 'hostBuiltinRef' | 'packageLocalDeclarative' | 'packageLocalExecutable'
+export type ExpertCatalogMetadata = { categoryId?: string; tags?: string[] }
+
+export type ExpertProfileMemory = { id: string; content: string; createdAt: string }
+export type ExpertProfileDiaryEntry = { id: string; content: string; createdAt: string }
+export type ExpertProfileWorkflowStep = { id: string; title: string; description?: string }
+export type ExpertProfileKnowledgeBase = {
+  version: string
+  ruleCount?: number
+  styleCount?: number
+  paletteCount?: number
+  componentCount?: number
+  notes?: string
+}
+export type ExpertProfile = {
+  avatar?: string
+  tagline?: string
+  soul?: { whoIAm: string; howITalk: string; boundaries: string[] }
+  starterPrompts?: string[]
+  workflow?: ExpertProfileWorkflowStep[]
+  knowledgeBase?: ExpertProfileKnowledgeBase
+  memories?: ExpertProfileMemory[]
+  diary?: ExpertProfileDiaryEntry[]
+}
 
 export type ExpertToolManifest = {
   id: string
@@ -114,6 +139,7 @@ export type ExpertPackManifest = {
   schemaVersion: 1
   type: 'expert-pack'
   description?: string
+  catalog?: ExpertCatalogMetadata
   entrypoints: {
     experts: string[]
     skills: string[]
@@ -131,6 +157,9 @@ export type ExpertDefinition = {
   name: string
   description: string
   statusLabel: string
+  profile?: ExpertProfile
+  categoryId?: string
+  tags?: string[]
   packId: string
   packName: string
   packVersion: string
@@ -139,6 +168,8 @@ export type ExpertDefinition = {
   formPaths: string[]
   outputProtocolPath?: string
   outputProtocolContent?: string
+  outputTemplatePath?: string
+  outputTemplateContent?: string
   skillIds: string[]
   hostTools: NonNullable<ExpertPackManifest['hostTools']>
   permissions: NonNullable<ExpertPackManifest['permissions']>
@@ -155,7 +186,7 @@ export type ExpertPackIndexEntry = {
   version: string
   description: string
   manifest: ExpertPackManifest
-  storage: { kind: 'zip'; path: string }
+  storage: { kind: 'zip'; path: string; source?: 'bundled' | 'stored' }
   experts: ExpertDefinition[]
   tools: ExpertToolManifest[]
   importedAt: string
@@ -187,6 +218,7 @@ export type ExpertPackUpdateInput = {
   name?: string
   version?: string
   description?: string
+  catalog?: ExpertCatalogMetadata
   minHostVersion?: string
   hostTools?: ExpertHostTool[]
   permissions?: ExpertPermission[]
@@ -197,6 +229,7 @@ export type ExpertPackUpdateInput = {
     name?: string
     description?: string
     statusLabel?: string
+    profile?: ExpertProfile
     systemPromptContent?: string
     skillIds?: string[]
     intakeFlow?: ExpertIntakeFlow
@@ -265,6 +298,7 @@ export class ExpertPackRegistryService {
         ...(input.hostTools ? { hostTools: input.hostTools } : {}),
         ...(input.permissions ? { permissions: input.permissions } : {}),
         ...(input.compatibility ? { compatibility: input.compatibility } : {}),
+        ...(input.catalog ? { catalog: normalizeCatalogMetadata(input.catalog) } : {}),
         portability: input.portability ?? { selfContained: true },
       }, null, 2) + '\n',
       [expertPath]: JSON.stringify({
@@ -272,6 +306,7 @@ export class ExpertPackRegistryService {
         name: expertName,
         description: expert.description ?? '',
         statusLabel: expert.statusLabel ?? '',
+        ...(expert.profile ? { profile: normalizeExpertProfile(expert.profile) } : {}),
         promptPaths: { system: systemPath },
         skillIds: expert.skillIds ?? [],
         formPaths: [],
@@ -335,14 +370,7 @@ export class ExpertPackRegistryService {
 
   async readPackText(packId: string, entryPath: string): Promise<string> {
     assertSafeZipPath(entryPath)
-    const zipPath = path.join(getExpertPackStorageDir(), `${safeFileSegment(packId)}.zip`)
-    let zipData: Uint8Array
-    try {
-      zipData = new Uint8Array(await fs.readFile(zipPath))
-    } catch {
-      throw new Error('Expert package not found.')
-    }
-    const zip = await adapter.read(zipData)
+    const zip = await adapter.read(await this.readPackBytes(packId))
     if (!zip.has(entryPath)) throw new Error(`专家包缺少文件：${entryPath}`)
     return zip.readText(entryPath)
   }
@@ -384,14 +412,7 @@ export class ExpertPackRegistryService {
   }
 
   async exportExpertPackZip(packId: string): Promise<ExpertPackExportResult> {
-    const zipPath = path.join(getExpertPackStorageDir(), `${safeFileSegment(packId)}.zip`)
-    let data: Uint8Array
-    try {
-      data = new Uint8Array(await fs.readFile(zipPath))
-    } catch {
-      throw new Error('Expert package not found.')
-    }
-    return exportResult(packId, data)
+    return exportResult(packId, await this.readPackBytes(packId))
   }
 
   async deleteExpertPack(packId: string): Promise<void> {
@@ -401,7 +422,7 @@ export class ExpertPackRegistryService {
   }
 
   async updateExpertPack(packId: string, input: ExpertPackUpdateInput): Promise<ExpertPackIndexEntry> {
-    const zipData = await this.readStoredPackBytes(packId)
+    const zipData = await this.readPackBytes(packId)
     const zip = await adapter.read(zipData)
     const entries = await readAllEntries(zip)
     const manifest = normalizeManifest(parseJsonEntry(entries['manifest.json']))
@@ -418,6 +439,7 @@ export class ExpertPackRegistryService {
     if (input.hostTools !== undefined) manifest.hostTools = normalizeHostTools(input.hostTools)
     if (input.permissions !== undefined) manifest.permissions = normalizePermissions(input.permissions)
     if (input.compatibility !== undefined) manifest.compatibility = input.compatibility
+    if (input.catalog !== undefined) manifest.catalog = normalizeCatalogMetadata(input.catalog)
     if (input.portability !== undefined) manifest.portability = {
       selfContained: input.portability.selfContained !== false,
       ...(isNonEmptyString(input.portability.notes) ? { notes: input.portability.notes } : {}),
@@ -432,6 +454,7 @@ export class ExpertPackRegistryService {
       if (expertPatch.name !== undefined) raw.name = requireText(expertPatch.name, 'expert name')
       if (expertPatch.description !== undefined) raw.description = expertPatch.description
       if (expertPatch.statusLabel !== undefined) raw.statusLabel = expertPatch.statusLabel
+      if ('profile' in expertPatch && expertPatch.profile !== undefined) raw.profile = normalizeExpertProfile(expertPatch.profile)
       if ('skillIds' in expertPatch && expertPatch.skillIds !== undefined) raw.skillIds = normalizeStringArray(expertPatch.skillIds)
       if ('systemPromptContent' in expertPatch && expertPatch.systemPromptContent !== undefined) {
         const promptPaths = isRecord(raw.promptPaths) ? raw.promptPaths : {}
@@ -504,7 +527,7 @@ export class ExpertPackRegistryService {
   }
 
   async copyExpertPack(packId: string): Promise<ExpertPackImportPreview> {
-    const source = await this.readStoredPackBytes(packId)
+    const source = await this.readPackBytes(packId)
     const zip = await adapter.read(source)
     const entries = await readAllEntries(zip)
     const manifest = normalizeManifest(parseJsonEntry(entries['manifest.json']))
@@ -530,8 +553,12 @@ export class ExpertPackRegistryService {
     return preview
   }
 
-  private async readStoredPackBytes(packId: string): Promise<Uint8Array> {
-    const zipPath = path.join(getExpertPackStorageDir(), `${safeFileSegment(packId)}.zip`)
+  private async readPackBytes(packId: string): Promise<Uint8Array> {
+    const pack = (await this.loadAllPacks()).find((candidate) => candidate.packId === packId)
+    if (!pack) throw new Error(`Expert package not found: ${packId}`)
+    const zipPath = pack.storage.source === 'bundled'
+      ? pack.storage.path
+      : path.join(getExpertPackStorageDir(), pack.storage.path)
     try {
       return new Uint8Array(await fs.readFile(zipPath))
     } catch {
@@ -556,34 +583,49 @@ export class ExpertPackRegistryService {
   private async loadAllPacks(): Promise<ExpertPackIndexEntry[]> {
     if (packsCache) return packsCache
 
-    const dir = getExpertPackStorageDir()
-    let files: string[]
-    try {
-      files = await fs.readdir(dir)
-    } catch {
-      await fs.mkdir(dir, { recursive: true })
-      files = await fs.readdir(dir)
-    }
+    const bundled = await this.loadPacksFromDirectories(bundledExpertPackDirectories(), 'bundled')
+    const stored = await this.loadPacksFromDirectories([getExpertPackStorageDir()], 'stored')
+    packsCache = keepNewestExpertDefinitions([...bundled, ...stored])
+    return packsCache
+  }
 
+  private async loadPacksFromDirectories(
+    directories: string[],
+    source: 'bundled' | 'stored',
+  ): Promise<ExpertPackIndexEntry[]> {
     const packs: ExpertPackIndexEntry[] = []
-    for (const file of files) {
-      if (!file.endsWith('.zip')) continue
-      const zipPath = path.join(dir, file)
+    const seen = new Set<string>()
+    for (const directory of directories) {
+      const dir = path.resolve(directory)
+      if (seen.has(dir)) continue
+      seen.add(dir)
+
+      let files: string[]
       try {
-        const stat = await fs.stat(zipPath)
-        const zipData = new Uint8Array(await fs.readFile(zipPath))
-        const parsed = await this.readPack(zipData, {
-          storage: { kind: 'zip', path: file },
-          importedAt: stat.mtime.toISOString(),
-        })
-        packs.push(parsed.pack)
+        files = await fs.readdir(dir)
       } catch {
-        // Skip invalid / unreadable ZIPs silently
+        continue
+      }
+
+      for (const file of files.sort()) {
+        if (!file.endsWith('.zip')) continue
+        const zipPath = path.join(dir, file)
+        try {
+          const stat = await fs.stat(zipPath)
+          const zipData = new Uint8Array(await fs.readFile(zipPath))
+          const parsed = await this.readPack(zipData, {
+            storage: { kind: 'zip', path: source === 'bundled' ? zipPath : file, source },
+            // Bundled packages deliberately sort behind user-owned ZIPs so an
+            // editable local override remains authoritative after an update.
+            importedAt: source === 'bundled' ? new Date(0).toISOString() : stat.mtime.toISOString(),
+          })
+          packs.push(parsed.pack)
+        } catch {
+          // Skip invalid / unreadable ZIPs silently
+        }
       }
     }
-
-    packsCache = keepNewestExpertDefinitions(packs)
-    return packsCache
+    return packs
   }
 
   private invalidateCache(): void {
@@ -623,6 +665,9 @@ export class ExpertPackRegistryService {
           : {}),
         ...(expert.outputProtocolPath && zip.has(expert.outputProtocolPath)
           ? { outputProtocolContent: await zip.readText(expert.outputProtocolPath) }
+          : {}),
+        ...(expert.outputTemplatePath && zip.has(expert.outputTemplatePath)
+          ? { outputTemplateContent: await zip.readText(expert.outputTemplatePath) }
           : {}),
         skillContents,
       })
@@ -690,10 +735,20 @@ function normalizeManifest(raw: unknown): ExpertPackManifest {
     requiredHostTools,
     permissions: normalizePermissions(raw.permissions),
     compatibility: isRecord(raw.compatibility) ? raw.compatibility : {},
+    catalog: normalizeCatalogMetadata(raw.catalog),
     portability: isRecord(raw.portability)
       ? { selfContained: raw.portability.selfContained !== false, ...(isNonEmptyString(raw.portability.notes) ? { notes: raw.portability.notes } : {}) }
       : { selfContained: true },
   }
+}
+
+function normalizeCatalogMetadata(value: unknown): ExpertCatalogMetadata {
+  if (!isRecord(value)) return {}
+  const categoryId = isNonEmptyString(value.categoryId)
+    ? value.categoryId.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+    : ''
+  const tags = normalizeStringArray(value.tags).map((tag) => tag.slice(0, 48)).slice(0, 12)
+  return { ...(categoryId ? { categoryId } : {}), ...(tags.length ? { tags } : {}) }
 }
 
 function normalizeHostTools(value: unknown): ExpertHostTool[] {
@@ -796,13 +851,19 @@ function normalizeExpert(raw: unknown, manifest: ExpertPackManifest, entrypoint:
   formPaths.forEach(assertSafeZipPath)
   const outputProtocolPath = isNonEmptyString(raw.outputProtocolPath) ? raw.outputProtocolPath : undefined
   if (outputProtocolPath) assertSafeZipPath(outputProtocolPath)
+  const outputTemplatePath = isNonEmptyString(raw.outputTemplatePath) ? raw.outputTemplatePath : undefined
+  if (outputTemplatePath) assertSafeZipPath(outputTemplatePath)
   const skillIds = normalizeStringArray(raw.skillIds)
   const intakeFlow = normalizeIntakeFlow(raw.intakeFlow)
+  const profile = normalizeExpertProfile(raw.profile)
   return {
     id: raw.id,
     name: raw.name,
     description: isNonEmptyString(raw.description) ? raw.description : '',
     statusLabel: isNonEmptyString(raw.statusLabel) ? raw.statusLabel : '',
+    ...(profile ? { profile } : {}),
+    ...(manifest.catalog?.categoryId ? { categoryId: manifest.catalog.categoryId } : {}),
+    tags: manifest.catalog?.tags ?? [],
     packId: manifest.packId,
     packName: manifest.name,
     packVersion: manifest.version,
@@ -810,6 +871,7 @@ function normalizeExpert(raw: unknown, manifest: ExpertPackManifest, entrypoint:
     promptPaths,
     formPaths,
     outputProtocolPath,
+    outputTemplatePath,
     skillIds,
     hostTools: manifest.hostTools ?? [],
     permissions: manifest.permissions ?? [],
@@ -821,6 +883,56 @@ function normalizeExpert(raw: unknown, manifest: ExpertPackManifest, entrypoint:
 
 function normalizeStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter(isNonEmptyString) : []
+}
+
+function normalizeProfileEntries(value: unknown): ExpertProfileMemory[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isRecord).flatMap((entry, index): ExpertProfileMemory[] => {
+    const content = isNonEmptyString(entry.content) ? entry.content.trim() : ''
+    if (!content) return []
+    return [{
+      id: isNonEmptyString(entry.id) ? entry.id : `entry-${index + 1}`,
+      content,
+      createdAt: isNonEmptyString(entry.createdAt) ? entry.createdAt : new Date(0).toISOString(),
+    }]
+  })
+}
+
+export function normalizeExpertProfile(value: unknown): ExpertProfile | undefined {
+  if (!isRecord(value)) return undefined
+  const soul = isRecord(value.soul) ? {
+    whoIAm: isNonEmptyString(value.soul.whoIAm) ? value.soul.whoIAm.trim() : '',
+    howITalk: isNonEmptyString(value.soul.howITalk) ? value.soul.howITalk.trim() : '',
+    boundaries: normalizeStringArray(value.soul.boundaries),
+  } : undefined
+  const workflow = Array.isArray(value.workflow) ? value.workflow.filter(isRecord).flatMap((step, index): ExpertProfileWorkflowStep[] => {
+    const title = isNonEmptyString(step.title) ? step.title.trim() : ''
+    if (!title) return []
+    return [{
+      id: isNonEmptyString(step.id) ? step.id : `step-${index + 1}`,
+      title,
+      ...(isNonEmptyString(step.description) ? { description: step.description.trim() } : {}),
+    }]
+  }) : []
+  const knowledgeBase = isRecord(value.knowledgeBase) && isNonEmptyString(value.knowledgeBase.version) ? {
+    version: value.knowledgeBase.version.trim(),
+    ...(typeof value.knowledgeBase.ruleCount === 'number' && value.knowledgeBase.ruleCount >= 0 ? { ruleCount: Math.floor(value.knowledgeBase.ruleCount) } : {}),
+    ...(typeof value.knowledgeBase.styleCount === 'number' && value.knowledgeBase.styleCount >= 0 ? { styleCount: Math.floor(value.knowledgeBase.styleCount) } : {}),
+    ...(typeof value.knowledgeBase.paletteCount === 'number' && value.knowledgeBase.paletteCount >= 0 ? { paletteCount: Math.floor(value.knowledgeBase.paletteCount) } : {}),
+    ...(typeof value.knowledgeBase.componentCount === 'number' && value.knowledgeBase.componentCount >= 0 ? { componentCount: Math.floor(value.knowledgeBase.componentCount) } : {}),
+    ...(isNonEmptyString(value.knowledgeBase.notes) ? { notes: value.knowledgeBase.notes.trim() } : {}),
+  } : undefined
+  const profile: ExpertProfile = {
+    ...(isNonEmptyString(value.avatar) ? { avatar: value.avatar.trim() } : {}),
+    ...(isNonEmptyString(value.tagline) ? { tagline: value.tagline.trim() } : {}),
+    ...(soul ? { soul } : {}),
+    ...(normalizeStringArray(value.starterPrompts).length ? { starterPrompts: normalizeStringArray(value.starterPrompts) } : {}),
+    ...(workflow.length ? { workflow } : {}),
+    ...(knowledgeBase ? { knowledgeBase } : {}),
+    ...(normalizeProfileEntries(value.memories).length ? { memories: normalizeProfileEntries(value.memories) } : {}),
+    ...(normalizeProfileEntries(value.diary).length ? { diary: normalizeProfileEntries(value.diary) } : {}),
+  }
+  return Object.keys(profile).length ? profile : undefined
 }
 
 function countForms(experts: ExpertDefinition[]): number {
@@ -853,6 +965,37 @@ function keepNewestExpertDefinitions(packs: ExpertPackIndexEntry[]): ExpertPackI
       }),
     }))
     .filter((pack) => pack.experts.length > 0)
+}
+
+/**
+ * Directories scanned for built-in Expert Pack ZIPs. They are immutable
+ * application resources; user edits are written to the separate config store.
+ */
+function bundledExpertPackDirectories(): string[] {
+  const dirs: string[] = []
+  const envDir = process.env.CLAUDE_EXPERT_PACKS_DIR
+  if (envDir) return [envDir]
+
+  if (process.execPath) {
+    const exeDir = path.dirname(process.execPath)
+    pushUniqueDirectory(dirs, path.join(exeDir, 'packs', 'experts'))
+    pushUniqueDirectory(dirs, path.join(exeDir, 'binaries', 'packs', 'experts'))
+  }
+
+  for (const base of [process.env.CLAUDE_APP_ROOT, process.env.CALLER_DIR, process.cwd()]) {
+    if (!base) continue
+    pushUniqueDirectory(dirs, path.join(base, 'src', 'server', 'packs', 'experts'))
+    pushUniqueDirectory(dirs, path.join(base, '..', 'src', 'server', 'packs', 'experts'))
+    pushUniqueDirectory(dirs, path.join(base, 'desktop', 'src-tauri', 'binaries', 'packs', 'experts'))
+    pushUniqueDirectory(dirs, path.join(base, '..', 'desktop', 'src-tauri', 'binaries', 'packs', 'experts'))
+  }
+
+  return dirs
+}
+
+function pushUniqueDirectory(dirs: string[], candidate: string): void {
+  const normalized = path.resolve(candidate)
+  if (!dirs.includes(normalized)) dirs.push(normalized)
 }
 
 function safeFileSegment(value: string): string {

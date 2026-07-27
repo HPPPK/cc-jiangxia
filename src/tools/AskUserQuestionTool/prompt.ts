@@ -39,6 +39,9 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+- In an active workflow, use this tool only to collect information or an explicit authorization that is needed to continue the current phase. A submitted answer always returns to the same active phase; it never confirms, pauses, resumes, advances, returns, jumps, or routes the workflow.
+- In an active workflow, set blocksCompletion: true only when the answer must be incorporated into current-phase work before submit_phase_completion. After such an answer, update the relevant phase output before submitting completion. Set blocksCompletion: false for an informational status check or acknowledgement that must not add a completion blocker. Never rely on the question text to infer this.
+- Never add action, targetPhaseId, route, pause, resume, or workflow command fields to a question option. If the user answer means the workflow should change course, first receive the answer here; then separately call request_workflow_route and wait for its user confirmation.
 
 Plan mode note: In plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?" or "Should I proceed?" - use ${EXIT_PLAN_MODE_TOOL_NAME} for plan approval. IMPORTANT: Do not reference "the plan" in your questions (e.g., "Do you have feedback about the plan?", "Does the plan look good?") because the user cannot see the plan in the UI until you call ${EXIT_PLAN_MODE_TOOL_NAME}. If you need plan approval, use ${EXIT_PLAN_MODE_TOOL_NAME} instead.
 `

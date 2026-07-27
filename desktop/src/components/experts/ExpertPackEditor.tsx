@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { type ExpertDefinition, type ExpertPackCreateInput, type ExpertPackSummary, type ExpertPackUpdateInput, type ExpertToolManifest } from '../../api/experts'
+import { resolveExpertCategoryId, type ExpertCategory, type ExpertDefinition, type ExpertPackCreateInput, type ExpertPackSummary, type ExpertPackUpdateInput, type ExpertToolManifest } from '../../api/experts'
 import { useTranslation } from '../../i18n'
 import { useSkillStore } from '../../stores/skillStore'
 import { Button } from '../shared/Button'
@@ -10,6 +10,7 @@ type ExpertPackEditorProps = {
   open: boolean
   mode: 'create' | 'edit'
   pack: ExpertPackSummary | null
+  categories?: ExpertCategory[]
   saving?: boolean
   onSave?: (input: ExpertPackUpdateInput | ExpertPackCreateInput) => Promise<void>
   onClose: () => void
@@ -25,6 +26,8 @@ type EditorDraft = {
   name: string
   version: string
   description: string
+  categoryId: string
+  tags: string
   minHostVersion: string
   compatibilityJson: string
   selfContained: boolean
@@ -42,32 +45,16 @@ type EditorDraft = {
   tools: ExpertToolManifest[]
 }
 
-const RUNTIME_TOOLS = [
-  { id: 'Read', name: 'Read', purpose: 'Read workspace files.' },
-  { id: 'Write', name: 'Write', purpose: 'Create workspace files.' },
-  { id: 'Edit', name: 'Edit', purpose: 'Edit workspace files.' },
-  { id: 'MultiEdit', name: 'MultiEdit', purpose: 'Apply multiple file edits.' },
-  { id: 'NotebookEdit', name: 'NotebookEdit', purpose: 'Edit notebook cells.' },
-  { id: 'Bash', name: 'Bash', purpose: 'Run shell commands.' },
-  { id: 'PowerShell', name: 'PowerShell', purpose: 'Run PowerShell commands.' },
-  { id: 'Glob', name: 'Glob', purpose: 'Find files by pattern.' },
-  { id: 'Grep', name: 'Grep', purpose: 'Search workspace content.' },
-  { id: 'WebSearch', name: 'WebSearch', purpose: 'Search the web.' },
-  { id: 'WebFetch', name: 'WebFetch', purpose: 'Fetch web content.' },
-] as const
-
 const DEFAULT_INTAKE_FLOW: ExpertIntakeFlow = { version: 1, steps: [] }
 
-export function ExpertPackEditor({ open, mode, pack, saving = false, onSave, onClose }: ExpertPackEditorProps) {
+export function ExpertPackEditor({ open, mode, pack, categories = [], saving = false, onSave, onClose }: ExpertPackEditorProps) {
   const t = useTranslation()
   const { catalog, skills, isCatalogLoading, isLoading: isSkillListLoading, error: skillError, fetchCatalog } = useSkillStore()
   const [draft, setDraft] = useState<EditorDraft>(() => toEditorDraft(pack, mode))
   const [skillPickerOpen, setSkillPickerOpen] = useState(false)
   const [skillQuery, setSkillQuery] = useState('')
   const [toolArchiveNames, setToolArchiveNames] = useState<string[]>([])
-  const [toolArchivesBase64, setToolArchivesBase64] = useState<string[]>([])
-  const [removeToolIds, setRemoveToolIds] = useState<string[]>([])
-  const [validationError, setValidationError] = useState<string | null>(null)
+  const [toolArchivesBase64, setToolArchivesBase64] = useState<string[]>([])  const [validationError, setValidationError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -75,9 +62,7 @@ export function ExpertPackEditor({ open, mode, pack, saving = false, onSave, onC
     setSkillPickerOpen(false)
     setSkillQuery('')
     setToolArchiveNames([])
-    setToolArchivesBase64([])
-    setRemoveToolIds([])
-    setValidationError(null)
+    setToolArchivesBase64([])    setValidationError(null)
     void fetchCatalog()
   }, [fetchCatalog, mode, open, pack])
 
@@ -92,24 +77,14 @@ export function ExpertPackEditor({ open, mode, pack, saving = false, onSave, onC
     setDraft((current) => ({ ...current, [field]: value }))
   }
 
-  const toggleHostTool = (tool: typeof RUNTIME_TOOLS[number]) => {
-    setDraft((current) => {
-      const exists = current.hostTools.some((item) => item.id === tool.id)
-      return {
-        ...current,
-        hostTools: exists ? current.hostTools.filter((item) => item.id !== tool.id) : [...current.hostTools, tool],
-      }
-    })
-  }
-
   const toggleSkill = (skill: SkillCatalogItem) => {
-    const id = skillBindingId(skill)
-    update('skillIds', draft.skillIds.includes(id) ? draft.skillIds.filter((value) => value !== id) : [...draft.skillIds, id])
-  }
-
-  const removeLocalTool = (tool: ExpertToolManifest) => {
-    update('tools', draft.tools.filter((item) => item.id !== tool.id))
-    setRemoveToolIds((current) => current.includes(tool.id) ? current : [...current, tool.id])
+    const skillId = skillBindingId(skill)
+    setDraft((current) => ({
+      ...current,
+      skillIds: current.skillIds.includes(skillId)
+        ? current.skillIds.filter((item) => item !== skillId)
+        : [...current.skillIds, skillId],
+    }))
   }
 
   const handleToolArchiveChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -151,15 +126,14 @@ export function ExpertPackEditor({ open, mode, pack, saving = false, onSave, onC
       name: draft.name.trim(),
       version: draft.version.trim(),
       description: draft.description,
+      catalog: { ...(draft.categoryId.trim() ? { categoryId: draft.categoryId.trim() } : {}), ...(draft.tags.split(',').map((tag) => tag.trim()).filter(Boolean).length ? { tags: draft.tags.split(',').map((tag) => tag.trim()).filter(Boolean) } : {}) },
       minHostVersion: draft.minHostVersion.trim() || '',
       compatibility,
       portability: { selfContained: draft.selfContained, notes: draft.portabilityNotes.trim() || undefined },
       hostTools: draft.hostTools,
       permissions: draft.permissions,
       expert,
-      tools: draft.tools,
-      removeToolIds,
-      toolArchivesBase64,
+      tools: draft.tools,      toolArchivesBase64,
     }
     if (mode === 'create') {
       await onSave({ ...shared, packId: normalizedPackId, expert: { ...expert, id: normalizedExpertId, name: draft.expertName.trim() } })
@@ -201,6 +175,8 @@ export function ExpertPackEditor({ open, mode, pack, saving = false, onSave, onC
             <TextField id="expert-pack-name" label={t('settings.experts.editor.packName')} value={draft.name} onChange={(value) => update('name', value)} />
             <TextField id="expert-name" label={t('settings.experts.editor.expertName')} value={draft.expertName} onChange={(value) => update('expertName', value)} />
             <TextField id="expert-status-label" label={t('settings.experts.editor.statusLabel')} value={draft.statusLabel} onChange={(value) => update('statusLabel', value)} />
+            <label className="flex flex-col gap-1 text-xs font-medium text-[var(--color-text-secondary)]"><span>分类</span><select value={draft.categoryId} onChange={(event) => update('categoryId', event.target.value)} className="h-9 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2 text-sm text-[var(--color-text-primary)]"><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+            <TextField id="expert-tags" label="标签（逗号分隔）" value={draft.tags} onChange={(value) => update('tags', value)} />
             <TextField id="expert-min-host-version" label={t('settings.experts.editor.minHostVersion')} value={draft.minHostVersion} onChange={(value) => update('minHostVersion', value)} />
             <TextField id="expert-portability-notes" label={t('settings.experts.editor.portabilityNotes')} value={draft.portabilityNotes} onChange={(value) => update('portabilityNotes', value)} />
             <TextField id="expert-id" label={t('settings.experts.editor.expertId')} value={draft.expertId} onChange={(value) => update('expertId', value)} disabled={mode === 'edit'} mono />
@@ -232,7 +208,7 @@ export function ExpertPackEditor({ open, mode, pack, saving = false, onSave, onC
           allCatalog={skillCatalog}
         />
 
-        <ToolAccessEditor hostTools={draft.hostTools} tools={draft.tools} onToggle={toggleHostTool} onRemove={removeLocalTool} onToolArchiveChange={handleToolArchiveChange} archiveNames={toolArchiveNames} />
+        <ToolAccessEditor tools={draft.tools} onToolArchiveChange={handleToolArchiveChange} archiveNames={toolArchiveNames} />
 
         <IntakeEditor flow={draft.intakeFlow} onChange={(flow) => update('intakeFlow', flow)} />
 
@@ -269,10 +245,47 @@ function SkillBindingEditor({ catalog, allCatalog, selectedIds, pickerOpen, quer
   </section>
 }
 
-function ToolAccessEditor({ hostTools, tools, onToggle, onRemove, onToolArchiveChange, archiveNames }: { hostTools: ExpertHostTool[]; tools: ExpertToolManifest[]; onToggle: (tool: typeof RUNTIME_TOOLS[number]) => void; onRemove: (tool: ExpertToolManifest) => void; onToolArchiveChange: (event: ChangeEvent<HTMLInputElement>) => void; archiveNames: string[] }) {
+function ToolAccessEditor({ tools, onToolArchiveChange, archiveNames }: { tools: ExpertToolManifest[]; onToolArchiveChange: (event: ChangeEvent<HTMLInputElement>) => void; archiveNames: string[] }) {
   const t = useTranslation()
-  const ids = new Set(hostTools.map((tool) => tool.id))
-  return <section role="group" aria-label={t('settings.experts.editor.tools')} className="rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-4"><div className="flex items-start justify-between gap-3"><div><SectionTitle title={t('settings.experts.editor.tools')} /><p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t('settings.experts.editor.toolsHint')}</p></div><label className="cursor-pointer rounded-[7px] border border-[var(--color-border)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--color-surface-hover)]">{t('settings.experts.editor.addToolZip')}<input type="file" accept=".zip,application/zip" multiple className="sr-only" onChange={onToolArchiveChange} /></label></div><div className="mt-3 grid gap-3 md:grid-cols-2"><div className="rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] p-3"><h5 className="text-[11px] font-semibold uppercase text-[var(--color-text-tertiary)]">{t('settings.experts.editor.commonTools')}</h5><div className="mt-2 grid gap-1.5">{RUNTIME_TOOLS.map((tool) => <label key={tool.id} className="flex items-center gap-2 rounded-[6px] px-2 py-1.5 text-xs hover:bg-[var(--color-surface-hover)]"><input type="checkbox" checked={ids.has(tool.id)} onChange={() => onToggle(tool)} /><span>{tool.name}</span></label>)}</div></div><div className="rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] p-3"><h5 className="text-[11px] font-semibold uppercase text-[var(--color-text-tertiary)]">{t('settings.experts.editor.zipTools')}</h5>{tools.length ? <div className="space-y-2">{tools.map((tool) => <div key={tool.id} className="flex items-start justify-between gap-2 rounded-[6px] border border-[var(--color-border)] px-2 py-2"><div className="min-w-0"><div className="truncate text-xs font-medium">{tool.name}</div><div className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{tool.purpose}</div><div className="mt-0.5 font-mono text-[10px] text-[var(--color-text-tertiary)]">{tool.type}</div></div><button type="button" onClick={() => onRemove(tool)} className="shrink-0 text-xs text-[var(--color-error)]">{t('settings.experts.editor.removeTool')}</button></div>)}</div> : <p className="text-xs text-[var(--color-text-tertiary)]">{t('settings.experts.editor.noZipTools')}</p>}{archiveNames.length ? <div className="mt-3 border-t border-[var(--color-border)] pt-2 text-[11px] text-[var(--color-text-tertiary)]">{t('settings.experts.editor.pendingToolArchives')}: {archiveNames.join(', ')}</div> : null}</div></div></section>
+
+  return (
+    <section role="group" aria-label={t('settings.experts.editor.tools')} className="rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <SectionTitle title={t('settings.experts.editor.tools')} />
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t('settings.experts.editor.toolsHint')}</p>
+        </div>
+        <label className="cursor-pointer rounded-[7px] border border-[var(--color-border)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--color-surface-hover)]">
+          {t('settings.experts.editor.addToolZip')}
+          <input type="file" accept=".zip,application/zip" multiple className="sr-only" onChange={onToolArchiveChange} />
+        </label>
+      </div>
+
+      <div data-testid="expert-zip-tools-panel" className="mt-3 w-full rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+        <h5 className="text-[11px] font-semibold uppercase text-[var(--color-text-tertiary)]">{t('settings.experts.editor.zipTools')}</h5>
+        {tools.length ? (
+          <div className="mt-2 space-y-2">
+            {tools.map((tool) => (
+              <div key={tool.id} className="rounded-[6px] border border-[var(--color-border)] px-2 py-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium">{tool.name}</div>
+                  <div className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{tool.purpose}</div>
+                  <div className="mt-0.5 font-mono text-[10px] text-[var(--color-text-tertiary)]">{tool.type}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{t('settings.experts.editor.noZipTools')}</p>
+        )}
+        {archiveNames.length ? (
+          <div className="mt-3 border-t border-[var(--color-border)] pt-2 text-[11px] text-[var(--color-text-tertiary)]">
+            {t('settings.experts.editor.pendingToolArchives')}: {archiveNames.join(', ')}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  )
 }
 
 function IntakeEditor({ flow, onChange }: { flow: ExpertIntakeFlow; onChange: (flow: ExpertIntakeFlow) => void }) {
@@ -296,6 +309,8 @@ function toEditorDraft(pack: ExpertPackSummary | null, mode: 'create' | 'edit'):
     name: pack?.name ?? '',
     version: pack?.version ?? '1.0.0',
     description: pack?.description ?? '',
+    categoryId: pack?.manifest?.catalog?.categoryId ?? resolveExpertCategoryId(expert),
+    tags: (pack?.manifest?.catalog?.tags ?? expert?.tags ?? []).join(', '),
     minHostVersion: pack?.manifest?.minHostVersion ?? '',
     compatibilityJson: JSON.stringify(pack?.manifest?.compatibility ?? {}, null, 2),
     selfContained: pack?.manifest?.portability?.selfContained ?? expert?.portable ?? true,

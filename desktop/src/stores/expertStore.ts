@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { expertsApi, type ExpertDefinition, type ExpertPackSummary, type ExpertPackUpdateInput } from '../api/experts'
+import { expertsApi, fallbackExpertCategories, type ExpertCategory, type ExpertDefinition, type ExpertPackSummary, type ExpertPackUpdateInput } from '../api/experts'
 import type { ExpertMaterialRef, ExpertSessionSummary } from '../types/session'
 import { isTauriRuntime } from '../lib/desktopRuntime'
 
@@ -8,6 +8,7 @@ type ExpertModePhase = 'idle' | 'loading' | 'entering' | 'collecting' | 'writing
 type ExpertStore = {
   experts: ExpertDefinition[]
   packs: ExpertPackSummary[]
+  categories: ExpertCategory[]
   loadingExperts: boolean
   expertsError: string | null
   modePhase: ExpertModePhase
@@ -59,6 +60,7 @@ async function saveExportedZip(result: Awaited<ReturnType<typeof expertsApi.expo
 export const useExpertStore = create<ExpertStore>((set, get) => ({
   experts: [],
   packs: [],
+  categories: [],
   loadingExperts: false,
   expertsError: null,
   modePhase: 'idle',
@@ -70,7 +72,8 @@ export const useExpertStore = create<ExpertStore>((set, get) => ({
     set({ loadingExperts: true, expertsError: null })
     try {
       const [expertsResponse, packsResponse] = await Promise.all([expertsApi.listExperts(), expertsApi.listPacks()])
-      set({ experts: expertsResponse.experts, packs: packsResponse.packs, loadingExperts: false, expertsError: null })
+      const categoriesResponse = await expertsApi.listCategories().catch(() => ({ categories: fallbackExpertCategories }))
+      set({ experts: expertsResponse.experts, packs: packsResponse.packs, categories: categoriesResponse.categories, loadingExperts: false, expertsError: null })
     } catch (error) {
       set({ loadingExperts: false, expertsError: error instanceof Error ? error.message : 'Failed to load experts.' })
     }

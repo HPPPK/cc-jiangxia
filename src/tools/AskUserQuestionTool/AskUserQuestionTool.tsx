@@ -88,10 +88,14 @@ const UNIQUENESS_REFINE = {
 } as const;
 const commonFields = lazySchema(() => ({
   answers: z.record(z.string(), z.string()).optional().describe('User answers collected by the permission component'),
+  answerChoiceIds: z.record(z.string(), z.array(z.string().min(1)).min(1)).optional().describe('Stable selected choice IDs returned by the desktop permission component for runtime-bound questions.'),
   annotations: annotationsSchema(),
   metadata: z.object({
-    source: z.string().optional().describe('Optional identifier for the source of this question (e.g., "remember" for /remember command). Used for analytics tracking.')
-  }).optional().describe('Optional metadata for tracking and analytics purposes. Not displayed to user.')
+    source: z.string().optional().describe('Optional identifier for the source of this question (e.g., "remember" for /remember command). Used for analytics tracking.'),
+    research_recovery_field: z.string().min(1).optional().describe('Trusted commercial research recovery field identifier.'),
+    research_recovery_state: z.enum(['access_limited', 'needs_user_material']).optional().describe('Trusted commercial research recovery state.'),
+    attempted_urls: z.array(z.string().url()).max(8).optional().describe('Public URLs actually attempted by BrowserResearch when access was limited.'),
+  }).passthrough().optional().describe('Optional metadata for tracking and runtime validation. Not displayed to user.')
 }));
 const inputSchema = lazySchema(() => z.strictObject({
   questions: z.array(questionSchema()).min(1).max(4).describe('Questions to ask the user (1-4 questions)'),

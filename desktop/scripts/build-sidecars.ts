@@ -25,6 +25,7 @@ if (scanExit !== 0) {
 }
 
 await mkdir(binariesDir, { recursive: true })
+await buildBundledExpertPacks()
 await copyBundledWorkflowPacks()
 await copyBundledSkills()
 
@@ -40,6 +41,16 @@ await compileExecutable({
 
 console.log(`[build-sidecars] Built desktop sidecar for ${targetTriple} (${bunTarget})`)
 
+
+async function buildBundledExpertPacks() {
+  const proc = Bun.spawn(['bun', 'run', path.join(repoRoot, 'scripts', 'build-expert-packs.ts')], {
+    cwd: repoRoot,
+    stdout: 'inherit',
+    stderr: 'inherit',
+  })
+  const exitCode = await proc.exited
+  if (exitCode !== 0) throw new Error(`[build-sidecars] build-expert-packs failed (exit ${exitCode})`)
+}
 
 async function copyBundledWorkflowPacks() {
   const sourceDir = path.join(repoRoot, 'src', 'server', 'packs')

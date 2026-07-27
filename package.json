@@ -13,6 +13,7 @@
     "cc-jiangxia": "bun run ./bin/cc-jiangxia",
     "claude-haha": "bun run ./bin/claude-haha",
     "start": "bun run ./bin/claude-jiangxia",
+    "build:expert-packs": "bun run scripts/build-expert-packs.ts",
     "check:pr": "bun run scripts/pr/check-pr.ts",
     "check:fast-lane": "bun run scripts/pr/fast-lane-tests.ts",
     "check:impact": "bun run scripts/pr/impact-report.ts",
@@ -83,6 +84,7 @@
     "medium-zoom": "^1.1.0",
     "p-map": "^7.0.4",
     "picomatch": "^4.0.4",
+    "playwright": "^1.61.1",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4",
     "react": "^19.2.4",
@@ -116,3 +118,4 @@
     "vue": "^3.5.13"
   }
 }
+

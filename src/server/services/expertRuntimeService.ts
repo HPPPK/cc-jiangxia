@@ -23,6 +23,7 @@ export type ExpertRuntimeContext = {
   prompts: { system?: string; intake?: string }
   forms: Array<{ path: string; content: string; json?: unknown }>
   outputProtocol?: { path: string; content: string; json?: unknown }
+  outputTemplate?: { path: string; content: string }
   skills: ExpertRuntimeSkill[]
   hostTools: ExpertDefinition['hostTools']
   permissions: ExpertDefinition['permissions']
@@ -96,6 +97,9 @@ export class ExpertRuntimeService {
     const outputProtocol = expert.outputProtocolPath
       ? await readOutputProtocol(expert.packId, expert.outputProtocolPath)
       : undefined
+    const outputTemplate = expert.outputTemplatePath
+      ? { path: expert.outputTemplatePath, content: await registry.readPackText(expert.packId, expert.outputTemplatePath) }
+      : undefined
 
     const skills: ExpertRuntimeSkill[] = []
     for (const skillId of expert.skillIds) {
@@ -120,6 +124,7 @@ export class ExpertRuntimeService {
       prompts,
       forms,
       outputProtocol,
+      outputTemplate,
       skills,
       hostTools: expert.hostTools,
       permissions: expert.permissions,
@@ -166,6 +171,7 @@ export class ExpertRuntimeService {
       },
       formsLoaded: context.forms.map((form) => form.path),
       outputProtocolLoaded: context.outputProtocol?.path ?? null,
+      outputTemplateLoaded: context.outputTemplate?.path ?? null,
       packageLocalSkills: context.skills.map((skill) => ({
         skillId: skill.skillId,
         title: skill.title,

@@ -92,44 +92,100 @@ import {
   renderToolUseMessage,
   renderToolUseTag,
   userFacingName,
-} from './UI.js'
+} from "./UI.js";
 
 // Device files that would hang the process: infinite output or blocking input.
 // Checked by path only (no I/O). Safe devices like /dev/null are intentionally omitted.
 const BLOCKED_DEVICE_PATHS = new Set([
   // Infinite output — never reach EOF
-  '/dev/zero',
-  '/dev/random',
-  '/dev/urandom',
-  '/dev/full',
+  "/dev/zero",
+  "/dev/random",
+  "/dev/urandom",
+  "/dev/full",
   // Blocks waiting for input
-  '/dev/stdin',
-  '/dev/tty',
-  '/dev/console',
+  "/dev/stdin",
+  "/dev/tty",
+  "/dev/console",
   // Nonsensical to read
-  '/dev/stdout',
-  '/dev/stderr',
+  "/dev/stdout",
+  "/dev/stderr",
   // fd aliases for stdin/stdout/stderr
-  '/dev/fd/0',
-  '/dev/fd/1',
-  '/dev/fd/2',
-])
+  "/dev/fd/0",
+  "/dev/fd/1",
+  "/dev/fd/2",
+]);
 
 function isBlockedDevicePath(filePath: string): boolean {
-  if (BLOCKED_DEVICE_PATHS.has(filePath)) return true
+  if (BLOCKED_DEVICE_PATHS.has(filePath)) return true;
   // /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
   if (
-    filePath.startsWith('/proc/') &&
-    (filePath.endsWith('/fd/0') ||
-      filePath.endsWith('/fd/1') ||
-      filePath.endsWith('/fd/2'))
+    filePath.startsWith("/proc/") &&
+    (filePath.endsWith("/fd/0") ||
+      filePath.endsWith("/fd/1") ||
+      filePath.endsWith("/fd/2"))
   )
-    return true
-  return false
+    return true;
+  return false;
+}
+
+const EXPERT_EVIDENCE_RESEARCH_AGENT_TYPE = "expert-evidence-researcher";
+
+function normalizeEvidenceMaterialPath(filePath: string): string {
+  const absolutePath = path.resolve(getCwd(), filePath);
+  return process.platform === "win32"
+    ? absolutePath.toLowerCase()
+    : absolutePath;
+}
+
+function isSameOrDescendantPath(
+  candidatePath: string,
+  parentPath: string,
+): boolean {
+  const relativePath = path.relative(parentPath, candidatePath);
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+  );
+}
+
+/**
+ * The commercial-research evidence agent may read only material the user explicitly
+ * attached to the conversation. This prevents a no-material research task from
+ * probing workspace defaults such as README.md or index.html.
+ */
+export function isExpertEvidenceResearchReadAllowed(
+  filePath: string,
+  messages: ToolUseContext["messages"],
+): boolean {
+  const normalizedFilePath = normalizeEvidenceMaterialPath(filePath);
+
+  return messages.some((message) => {
+    if (message.type !== "attachment") return false;
+
+    const attachment = message.attachment;
+    switch (attachment.type) {
+      // These attachment types originate from an explicit user @-mention and
+      // remain valid if a conversation is compacted.
+      case "file":
+      case "compact_file_reference":
+      case "pdf_reference":
+        return (
+          normalizeEvidenceMaterialPath(attachment.filename) ===
+          normalizedFilePath
+        );
+      case "directory":
+        return isSameOrDescendantPath(
+          normalizedFilePath,
+          normalizeEvidenceMaterialPath(attachment.path),
+        );
+      default:
+        return false;
+    }
+  });
 }
 
 // Narrow no-break space (U+202F) used by some macOS versions in screenshot filenames
-const THIN_SPACE = String.fromCharCode(8239)
+const THIN_SPACE = String.fromCharCode(8239);
 
 /**
  * Resolves macOS screenshot paths that may have different space characters.
@@ -241,168 +297,184 @@ const inputSchema = lazySchema(() =>
         `Page range for PDF files (e.g., "1-5", "3", "10-20"). Only applicable to PDF files. Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
       ),
   }),
-)
-type InputSchema = ReturnType<typeof inputSchema>
+);
+type InputSchema = ReturnType<typeof inputSchema>;
 
-export type Input = z.infer<InputSchema>
+export type Input = z.infer<InputSchema>;
 
 const outputSchema = lazySchema(() => {
   // Define the media types supported for images
   const imageMediaTypes = z.enum([
-    'image/jpeg',
-    'image/png',
-    'image/gif',
-    'image/webp',
-  ])
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ]);
 
-  return z.discriminatedUnion('type', [
+  return z.discriminatedUnion("type", [
     z.object({
-      type: z.literal('text'),
+      type: z.literal("text"),
       file: z.object({
-        filePath: z.string().describe('The path to the file that was read'),
-        content: z.string().describe('The content of the file'),
+        filePath: z.string().describe("The path to the file that was read"),
+        content: z.string().describe("The content of the file"),
         numLines: z
           .number()
-          .describe('Number of lines in the returned content'),
-        startLine: z.number().describe('The starting line number'),
-        totalLines: z.number().describe('Total number of lines in the file'),
+          .describe("Number of lines in the returned content"),
+        startLine: z.number().describe("The starting line number"),
+        totalLines: z.number().describe("Total number of lines in the file"),
       }),
     }),
     z.object({
-      type: z.literal('image'),
+      type: z.literal("image"),
       file: z.object({
-        base64: z.string().describe('Base64-encoded image data'),
-        type: imageMediaTypes.describe('The MIME type of the image'),
-        originalSize: z.number().describe('Original file size in bytes'),
+        base64: z.string().describe("Base64-encoded image data"),
+        type: imageMediaTypes.describe("The MIME type of the image"),
+        originalSize: z.number().describe("Original file size in bytes"),
         dimensions: z
           .object({
             originalWidth: z
               .number()
               .optional()
-              .describe('Original image width in pixels'),
+              .describe("Original image width in pixels"),
             originalHeight: z
               .number()
               .optional()
-              .describe('Original image height in pixels'),
+              .describe("Original image height in pixels"),
             displayWidth: z
               .number()
               .optional()
-              .describe('Displayed image width in pixels (after resizing)'),
+              .describe("Displayed image width in pixels (after resizing)"),
             displayHeight: z
               .number()
               .optional()
-              .describe('Displayed image height in pixels (after resizing)'),
+              .describe("Displayed image height in pixels (after resizing)"),
           })
           .optional()
-          .describe('Image dimension info for coordinate mapping'),
+          .describe("Image dimension info for coordinate mapping"),
       }),
     }),
     z.object({
-      type: z.literal('notebook'),
+      type: z.literal("notebook"),
       file: z.object({
-        filePath: z.string().describe('The path to the notebook file'),
-        cells: z.array(z.any()).describe('Array of notebook cells'),
+        filePath: z.string().describe("The path to the notebook file"),
+        cells: z.array(z.any()).describe("Array of notebook cells"),
       }),
     }),
     z.object({
-      type: z.literal('pdf'),
+      type: z.literal("pdf"),
       file: z.object({
-        filePath: z.string().describe('The path to the PDF file'),
-        base64: z.string().describe('Base64-encoded PDF data'),
-        originalSize: z.number().describe('Original file size in bytes'),
+        filePath: z.string().describe("The path to the PDF file"),
+        base64: z.string().describe("Base64-encoded PDF data"),
+        originalSize: z.number().describe("Original file size in bytes"),
       }),
     }),
     z.object({
-      type: z.literal('parts'),
+      type: z.literal("parts"),
       file: z.object({
-        filePath: z.string().describe('The path to the PDF file'),
-        originalSize: z.number().describe('Original file size in bytes'),
-        count: z.number().describe('Number of pages extracted'),
+        filePath: z.string().describe("The path to the PDF file"),
+        originalSize: z.number().describe("Original file size in bytes"),
+        count: z.number().describe("Number of pages extracted"),
         outputDir: z
           .string()
-          .describe('Directory containing extracted page images'),
+          .describe("Directory containing extracted page images"),
       }),
     }),
     z.object({
-      type: z.literal('file_unchanged'),
+      type: z.literal("file_unchanged"),
       file: z.object({
-        filePath: z.string().describe('The path to the file'),
+        filePath: z.string().describe("The path to the file"),
       }),
     }),
-  ])
-})
-type OutputSchema = ReturnType<typeof outputSchema>
+  ]);
+});
+type OutputSchema = ReturnType<typeof outputSchema>;
 
-export type Output = z.infer<OutputSchema>
+export type Output = z.infer<OutputSchema>;
 
 export const FileReadTool = buildTool({
   name: FILE_READ_TOOL_NAME,
-  searchHint: 'read files, images, PDFs, notebooks',
+  searchHint: "read files, images, PDFs, notebooks",
   // Output is bounded by maxTokens (validateContentTokens). Persisting to a
   // file the model reads back with Read is circular — never persist.
   maxResultSizeChars: Infinity,
   strict: true,
   async description() {
-    return DESCRIPTION
+    return DESCRIPTION;
   },
   async prompt() {
-    const limits = getDefaultFileReadingLimits()
+    const limits = getDefaultFileReadingLimits();
     const maxSizeInstruction = limits.includeMaxSizeInPrompt
       ? `. Files larger than ${formatFileSize(limits.maxSizeBytes)} will return an error; use offset and limit for larger files`
-      : ''
+      : "";
     const offsetInstruction = limits.targetedRangeNudge
       ? OFFSET_INSTRUCTION_TARGETED
-      : OFFSET_INSTRUCTION_DEFAULT
+      : OFFSET_INSTRUCTION_DEFAULT;
     return renderPromptTemplate(
       pickLineFormatInstruction(),
       maxSizeInstruction,
       offsetInstruction,
-    )
+    );
   },
   get inputSchema(): InputSchema {
-    return inputSchema()
+    return inputSchema();
   },
   get outputSchema(): OutputSchema {
-    return outputSchema()
+    return outputSchema();
   },
   userFacingName,
   getToolUseSummary,
   getActivityDescription(input) {
-    const summary = getToolUseSummary(input)
-    return summary ? `Reading ${summary}` : 'Reading file'
+    const summary = getToolUseSummary(input);
+    return summary ? `Reading ${summary}` : "Reading file";
   },
   isConcurrencySafe() {
-    return true
+    return true;
   },
   isReadOnly() {
-    return true
+    return true;
   },
   toAutoClassifierInput(input) {
-    return input.file_path
+    return input.file_path;
   },
   isSearchOrReadCommand() {
-    return { isSearch: false, isRead: true }
+    return { isSearch: false, isRead: true };
   },
   getPath({ file_path }): string {
-    return file_path || getCwd()
+    return file_path || getCwd();
   },
   backfillObservableInput(input) {
     // hooks.mdx documents file_path as absolute; expand so hook allowlists
     // can't be bypassed via ~ or relative paths.
-    if (typeof input.file_path === 'string') {
-      input.file_path = expandPath(input.file_path)
+    if (typeof input.file_path === "string") {
+      input.file_path = expandPath(input.file_path);
     }
   },
   async preparePermissionMatcher({ file_path }) {
-    return pattern => matchWildcardPattern(pattern, file_path)
+    return (pattern) => matchWildcardPattern(pattern, file_path);
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
-    const appState = context.getAppState()
+    if (
+      context.agentType === EXPERT_EVIDENCE_RESEARCH_AGENT_TYPE &&
+      !isExpertEvidenceResearchReadAllowed(input.file_path, context.messages)
+    ) {
+      return {
+        behavior: "deny",
+        message:
+          "The evidence-research subagent may only Read files or directories explicitly attached by the user. No user material is available for this path; ask for the source file instead of guessing workspace files such as README.md or index.html.",
+        decisionReason: {
+          type: "other",
+          reason:
+            "Evidence-research Read is limited to explicit user attachments.",
+        },
+      };
+    }
+
+    const appState = context.getAppState();
     return checkReadPermissionForTool(
       FileReadTool,
       input,
       appState.toolPermissionContext,
-    )
+    );
   },
   renderToolUseMessage,
   renderToolUseTag,

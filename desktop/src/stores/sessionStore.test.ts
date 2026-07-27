@@ -451,6 +451,50 @@ describe('sessionStore', () => {
     })
   })
 
+
+  it('clears stale local expert state when a newer server snapshot has no expert metadata', async () => {
+    useSessionStore.setState({
+      sessions: [{
+        id: 'session-stale-expert',
+        title: 'Expert session',
+        createdAt: '2026-07-24T03:40:00.000Z',
+        modifiedAt: '2026-07-24T03:40:01.000Z',
+        messageCount: 1,
+        projectPath: '',
+        workDir: '/workspace/project',
+        workDirExists: true,
+        expert: {
+          mode: 'expert',
+          expertId: 'uiux-design-system',
+          expertName: 'UIUX Design System',
+          packId: 'builtin-experts',
+          packVersion: '1.0.0',
+          status: 'active',
+          materialRefs: [],
+          startedAt: '2026-07-24T03:40:01.000Z',
+          updatedAt: '2026-07-24T03:40:01.000Z',
+        },
+      }],
+    })
+    listMock.mockResolvedValue({
+      sessions: [{
+        id: 'session-stale-expert',
+        title: 'Expert session',
+        createdAt: '2026-07-24T03:40:00.000Z',
+        modifiedAt: '2026-07-24T03:40:02.000Z',
+        messageCount: 2,
+        projectPath: '',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      total: 1,
+    })
+
+    await useSessionStore.getState().fetchSessions()
+
+    expect(useSessionStore.getState().sessions[0]?.expert).toBeUndefined()
+  })
+
   it('does not invent workflow metadata when fetched sessions omit workflow summaries', async () => {
     listMock.mockResolvedValue({
       sessions: [{

@@ -1893,7 +1893,7 @@ describe('WebSocket handler workflow runtime gating', () => {
     )).toBe(false)
   })
 
-  it('injects the active Expert Runtime into an ordinary chat turn on the server', async () => {
+  it('keeps active Expert Runtime hidden from the visible user turn', async () => {
     const sessionId = `expert-runtime-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
     const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
@@ -1914,15 +1914,38 @@ describe('WebSocket handler workflow runtime gating', () => {
     }))
     await waitForCondition(() => sendMessage.mock.calls.length > 0)
 
-    const expertTurn = sendMessage.mock.calls[0]?.[1] ?? ''
-    expect(expertTurn).toContain('<expert-runtime>')
-    expect(expertTurn).toContain('Repository health (repo-health-check)')
-    expect(expertTurn).toContain('Repository health review')
-    expect(expertTurn).toContain('- Read')
-    expect(expertTurn).toContain('read-only: Do not mutate repository files.')
-    expect(expertTurn).toContain('<expert-user-request>')
-    expect(expertTurn).toContain('Please inspect the project health.')
-    expect(expertTurn).toContain('</expert-user-request>')
+    expect(sendMessage.mock.calls[0]?.[1]).toBe('Please inspect the project health.')
+  })
+
+  it('rejects an active Expert Mode turn when the runtime binding is missing', async () => {
+    const sessionId = `expert-runtime-missing-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue(null)
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: {
+        ...makeExpertRuntimeMetadata('active'),
+        runtimeBinding: undefined,
+      },
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: 'Please inspect the project health.',
+    }))
+    await flushAsyncHandlers()
+
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'EXPERT_RUNTIME_BINDING_MISSING',
+    }))
   })
 
   it('injects an ordinary-chat reset after Expert Mode has exited', async () => {
@@ -2564,6 +2587,7 @@ describe('WebSocket handler workflow runtime gating', () => {
       workDir: process.cwd(),
       workDirExists: true,
       messages: [],
+      expert: makeExpertRuntimeMetadata('active'),
       workflow: {
         mode: 'workflow',
         schemaVersion: 1,
@@ -2615,7 +2639,10 @@ describe('WebSocket handler workflow runtime gating', () => {
     expect(startSession.mock.calls[0]?.[3]?.workflowSystemPrompt).toContain(
       'Never call it merely to enter the immediate linear next phase already represented by the pending completion',
     )
-    const disallowedTools = startSession.mock.calls[0]?.[3]?.disallowedTools ?? []
+    const sessionSettings = startSession.mock.calls[0]?.[3]
+    expect(sessionSettings?.expertSystemPrompt).toBeUndefined()
+    expect(sessionSettings?.expertOutputTemplateWriteGuard).toBeUndefined()
+    const disallowedTools = sessionSettings?.disallowedTools ?? []
     expect(disallowedTools).not.toContain('Bash')
     for (const toolName of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Agent', 'workflow_template_authoring']) {
       expect(disallowedTools).toContain(toolName)
