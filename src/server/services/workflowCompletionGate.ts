@@ -150,11 +150,113 @@ export function createWorkflowRuntimeContract(
   return recalculateWorkflowCompletionEligibility({ ...state, runtimeContract: contract }, resolvedTemplate, now).runtimeContract!
 }
 
-export function migrateWorkflowRuntimeContract(
+function migrateLegacyDebugIntakeArtifactBinding(
   state: WorkflowSessionState,
   template: WorkflowTemplate | null | undefined,
   now: string,
 ): WorkflowSessionState {
+  const resolvedTemplate = templateFromState(state, template)
+  const stateTemplateId = state.template && typeof state.template === 'object'
+    ? (state.template as { id?: string }).id
+    : undefined
+  const templateId = template?.id ?? stateTemplateId ?? state.templateIdentity?.id ?? resolvedTemplate?.id
+  if (templateId !== 'debug-repair-workflow-v8') return state
+
+  const debugPhaseId = 'debug-memory-intake'
+  const legacyPhaseId = 'route-context'
+  if (!state.phases.some((phase) => phase.id === debugPhaseId)) return state
+
+  const hasLegacyBinding = (state.workflowRuns ?? []).some((run) =>
+    run.artifacts.some((artifact) => artifact.id === 'debug-context' && artifact.phaseId === legacyPhaseId)
+  ) || artifactPointersFor(state).some((pointer) =>
+    pointer.artifactId === 'debug-context' && (pointer as { phaseId?: unknown }).phaseId === legacyPhaseId
+  )
+  if (!hasLegacyBinding) return state
+
+  const rebindArtifact = <T extends { id?: string; phaseId?: string }>(artifact: T): T =>
+    artifact.id === 'debug-context' && artifact.phaseId === legacyPhaseId
+      ? { ...artifact, phaseId: debugPhaseId }
+      : artifact
+  const rebindPointer = <T extends { artifactId?: string; phaseId?: string }>(pointer: T): T =>
+    pointer.artifactId === 'debug-context' && pointer.phaseId === legacyPhaseId
+      ? { ...pointer, phaseId: debugPhaseId }
+      : pointer
+
+  const artifactIndex = Array.isArray(state.artifactIndex)
+    ? state.artifactIndex.map(rebindPointer)
+    : Object.fromEntries(Object.entries(state.artifactIndex ?? {}).map(([id, pointer]) => [id, rebindPointer(pointer)]))
+  const debugContextPointer = (Array.isArray(artifactIndex) ? artifactIndex : Object.values(artifactIndex))
+    .find((pointer) => pointer.artifactId === 'debug-context')
+
+  const phases = state.phases.map((phase) => {
+    const pointers = phase.artifactPointers.map(rebindPointer)
+    if (phase.id === debugPhaseId) {
+      return debugContextPointer && !pointers.some((pointer) => pointer.artifactId === 'debug-context')
+        ? { ...phase, artifactPointers: [...pointers, debugContextPointer] }
+        : { ...phase, artifactPointers: pointers }
+    }
+    return {
+      ...phase,
+      artifactPointers: pointers.filter((pointer) => pointer.artifactId !== 'debug-context'),
+    }
+  })
+
+  const runtimeContract = state.runtimeContract
+    ? {
+        ...state.runtimeContract,
+        phaseStates: Object.fromEntries(Object.entries(state.runtimeContract.phaseStates).map(([phaseId, phaseState]) => [
+          phaseId,
+          phaseId === debugPhaseId
+            ? {
+                ...phaseState,
+                issues: phaseState.issues.map((issue) =>
+                  issue.source === 'ask-user-question' && issue.questionId === 'phase_blocked'
+                    ? {
+                        ...issue,
+                        status: 'stale' as const,
+                        blocksCompletion: false,
+                        updatedAt: now,
+                        processing: {
+                          status: 'stale' as const,
+                          rationale: 'Marked stale because the legacy Debug intake artifact binding was repaired; this question was generated only by that obsolete completion blocker.',
+                          processedAt: now,
+                          processedBy: 'runtime' as const,
+                        },
+                      }
+                    : issue
+                ),
+              }
+            : phaseState,
+        ])),
+        audit: [
+          ...(state.runtimeContract.audit ?? []),
+          {
+            at: now,
+            type: 'debug-intake-artifact-binding-migrated',
+            summary: 'Rebound legacy debug-context evidence from route-context to debug-memory-intake without advancing the workflow.',
+          },
+        ],
+      }
+    : undefined
+
+  return {
+    ...state,
+    workflowRuns: state.workflowRuns?.map((run) => ({
+      ...run,
+      artifacts: run.artifacts.map(rebindArtifact),
+    })),
+    artifactIndex,
+    phases,
+    runtimeContract,
+  }
+}
+
+export function migrateWorkflowRuntimeContract(
+  inputState: WorkflowSessionState,
+  template: WorkflowTemplate | null | undefined,
+  now: string,
+): WorkflowSessionState {
+  const state = migrateLegacyDebugIntakeArtifactBinding(inputState, template, now)
   if (state.runtimeContract?.schemaVersion === CONTRACT_SCHEMA_VERSION) {
     const resolvedTemplate = templateFromState(state, template)
     const missingPhaseStates = Object.fromEntries(

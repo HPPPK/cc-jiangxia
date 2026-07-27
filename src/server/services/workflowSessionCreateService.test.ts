@@ -97,6 +97,13 @@ describe('workflow session creation routing', () => {
     expect(state.state?.phases.map((phase) => phase.id)).toContain('debug-investigate')
     expect(state.state?.phases.find((phase) => phase.id === 'debug-quality-preview')?.label)
       .toBe('Regression Scenario Validation + Preview')
+    expect(state.state?.activePhaseId).toBe('debug-memory-intake')
+    expect(state.state?.workflowRuns?.[0]?.artifacts.find((item) => item.id === 'debug-context')?.phaseId)
+      .toBe('debug-memory-intake')
+    expect(Array.isArray(state.state?.artifactIndex) ? state.state.artifactIndex : Object.values(state.state?.artifactIndex ?? {}))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ artifactId: 'debug-context', phaseId: 'debug-memory-intake' }),
+      ]))
   })
 
   test('documentation light route skips implementation-heavy phases', async () => {

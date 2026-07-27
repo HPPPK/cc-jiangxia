@@ -337,7 +337,7 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
       const manifest = await archive.readJson<{ dependencies?: { requiredHostTools?: Array<{ name: string; supported: boolean }> } }>('manifest.json')
       const workflowEntry = archive.entries.find((entry) => entry.path.startsWith('workflows/') && entry.path.endsWith('.workflow.json'))
       if (!workflowEntry) throw new Error('Workflow entry is missing from ' + workflow.packFile)
-      const template = await archive.readJson<{ phases: Array<{ id: string; runtimeContract?: { toolAccess?: { allowed?: string[] } }; instructions?: string }> }>(workflowEntry.path)
+      const template = await archive.readJson<{ phases: Array<{ id: string; runtimeContract?: { toolAccess?: { allowed?: string[] } }; instructions?: string; executionRules?: string[] }> }>(workflowEntry.path)
 
       expect(hostTools.requiredHostTools.map((tool) => tool.name)).toEqual(CANONICAL_WORKFLOW_PROTOCOL_TOOLS)
       expect(hostTools.requiredHostTools.every((tool) => tool.supported)).toBe(true)
@@ -351,6 +351,13 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
         expect(phase, `${workflow.id} is missing routing phase ${phaseId}`).toBeDefined()
         expect(phase?.runtimeContract?.toolAccess?.allowed).toContain('request_workflow_route')
         expect(phase?.runtimeContract?.toolAccess?.allowed).toContain('submit_phase_completion')
+      }
+      if (workflow.id === 'debug-repair-workflow-v8') {
+        const intake = template.phases.find((phase) => phase.id === 'debug-memory-intake')
+        expect(intake?.executionRules).toEqual(expect.arrayContaining([
+          expect.stringContaining('use workflow_artifact_write'),
+          expect.stringContaining('do not ask the user to finish, retry, bypass'),
+        ]))
       }
     }
   })

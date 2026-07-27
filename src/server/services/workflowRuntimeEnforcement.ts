@@ -774,7 +774,8 @@ function debugContextArtifact(
     filename: 'debug-context.md',
     kind: 'markdown',
     required: true,
-    phaseId: 'route-context',
+    // This artifact belongs to Debug's own intake phase, not the development workflow's route-context phase.
+    phaseId: 'debug-memory-intake',
     createdAt: existingArtifact(run, 'debug-context')?.createdAt ?? input.now,
     updatedAt: input.now,
     content: [
