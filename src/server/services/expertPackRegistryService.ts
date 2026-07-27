@@ -583,10 +583,33 @@ export class ExpertPackRegistryService {
   private async loadAllPacks(): Promise<ExpertPackIndexEntry[]> {
     if (packsCache) return packsCache
 
+    await this.seedBundledExpertPacks()
     const bundled = await this.loadPacksFromDirectories(bundledExpertPackDirectories(), 'bundled')
     const stored = await this.loadPacksFromDirectories([getExpertPackStorageDir()], 'stored')
     packsCache = keepNewestExpertDefinitions([...bundled, ...stored])
     return packsCache
+  }
+
+  private async seedBundledExpertPacks(): Promise<void> {
+    const bundled = await this.loadPacksFromDirectories(bundledExpertPackDirectories(), 'bundled')
+    if (bundled.length === 0) return
+
+    const storageDir = getExpertPackStorageDir()
+    const stored = await this.loadPacksFromDirectories([storageDir], 'stored')
+    const storedPackIds = new Set(stored.map((pack) => pack.packId))
+
+    for (const pack of bundled) {
+      // A pack in the user store is user-owned, including a customized pack
+      // with the same id. Seed only missing defaults; never overwrite it.
+      if (storedPackIds.has(pack.packId)) continue
+      try {
+        await fs.mkdir(storageDir, { recursive: true })
+        await fs.copyFile(pack.storage.path, path.join(storageDir, `${safeFileSegment(pack.packId)}.zip`))
+        storedPackIds.add(pack.packId)
+      } catch {
+        // Keep the immutable bundled source available even if user storage is unavailable.
+      }
+    }
   }
 
   private async loadPacksFromDirectories(

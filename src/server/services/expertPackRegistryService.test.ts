@@ -66,7 +66,7 @@ describe('ExpertPackRegistryService', () => {
     expect(getExpertPackStorageDir()).toBe(path.join(process.env.CLAUDE_CONFIG_DIR!, 'cc-jiangxia', 'experts', 'packs'))
   })
 
-  it('loads a bundled Expert ZIP without copying it into user configuration, then creates a local override on edit', async () => {
+  it('seeds a bundled Expert ZIP into user configuration on first load, then keeps it as the local override', async () => {
     const service = await makeService()
     const bundleDir = await mkdtemp(path.join(tmpdir(), 'bundled-expert-pack-'))
     tempRoots.push(bundleDir)
@@ -78,6 +78,9 @@ describe('ExpertPackRegistryService', () => {
     expect(await service.getExpert('custom-expert')).toEqual(expect.objectContaining({ id: 'custom-expert' }))
     expect(await service.readPackText('custom-expert-pack', 'experts/custom/prompts/system.md')).toContain('Custom Expert')
     expect(await service.exportExpertPackZip('custom-expert-pack')).toEqual(expect.objectContaining({ filename: 'custom-expert-pack.zip' }))
+    expect((await service.listPacks()).find((pack) => pack.packId === 'custom-expert-pack')).toEqual(expect.objectContaining({
+      storage: expect.objectContaining({ source: 'stored', path: 'custom-expert-pack.zip' }),
+    }))
 
     await service.updateExpertPack('custom-expert-pack', { name: 'Local override' })
     expect((await service.listPacks()).find((pack) => pack.packId === 'custom-expert-pack')).toEqual(expect.objectContaining({

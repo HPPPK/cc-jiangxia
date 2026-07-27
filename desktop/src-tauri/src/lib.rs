@@ -1598,6 +1598,13 @@ fn select_bundled_packs_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
     packs_dir.is_dir().then_some(packs_dir)
 }
 
+fn select_bundled_expert_packs_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    select_bundled_packs_dir(resource_dir).and_then(|packs_dir| {
+        let expert_packs_dir = packs_dir.join("experts");
+        expert_packs_dir.is_dir().then_some(expert_packs_dir)
+    })
+}
+
 
 fn is_application_control_block(error: &str) -> bool {
     error.contains("Application Control")
@@ -1696,6 +1703,8 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     let resource_dir = app.path().resource_dir().ok();
     let bundled_packs_dir = select_bundled_packs_dir(resource_dir.as_deref())
         .map(|path| path.to_string_lossy().to_string());
+    let bundled_expert_packs_dir = select_bundled_expert_packs_dir(resource_dir.as_deref())
+        .map(|path| path.to_string_lossy().to_string());
 
     let sidecar_args = vec![
         "server".to_string(),
@@ -1712,6 +1721,9 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     ];
     if let Some(packs_dir) = bundled_packs_dir {
         sidecar_environment.push(("CLAUDE_PACKS_DIR", packs_dir));
+    }
+    if let Some(expert_packs_dir) = bundled_expert_packs_dir {
+        sidecar_environment.push(("CLAUDE_EXPERT_PACKS_DIR", expert_packs_dir));
     }
     let envs = base_sidecar_environment(&app_root, &sidecar_environment);
 
@@ -1985,7 +1997,7 @@ mod tests {
         decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
         has_meaningful_intersection, is_persistable_window_state, normalize_terminal_bash_path,
         parse_env_block, resolve_desktop_terminal_shell, run_notification_bridge,
-        select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
+        select_bundled_expert_packs_dir, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
         TerminalHostPlatform, SERVER_BIND_HOST, SERVER_CONTROL_HOST, SERVER_STARTUP_TIMEOUT_SECS,
     };
     use std::{collections::HashMap, fs};
@@ -2226,6 +2238,19 @@ mod tests {
         fs::create_dir_all(&packs_dir).expect("create bundled packs dir");
 
         assert_eq!(select_bundled_packs_dir(Some(&resource_dir)), Some(packs_dir));
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
+
+    #[test]
+    fn bundled_expert_packs_dir_uses_the_packaged_expert_resource_directory_when_present() {
+        let root = std::env::temp_dir().join(format!("cchh-bundled-expert-packs-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        let expert_packs_dir = resource_dir.join("binaries").join("packs").join("experts");
+
+        fs::create_dir_all(&expert_packs_dir).expect("create bundled expert packs dir");
+
+        assert_eq!(select_bundled_expert_packs_dir(Some(&resource_dir)), Some(expert_packs_dir));
 
         fs::remove_dir_all(root).expect("remove temp app tree");
     }
