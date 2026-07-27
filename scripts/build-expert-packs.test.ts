@@ -1,4 +1,4 @@
-﻿import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -48,5 +48,32 @@ describe('buildBundledExpertPacks', () => {
     expect(zip.has('experts/research-pack/prompts/system.md')).toBe(true)
     expect(zip.has('experts/research-pack/skills/research/SKILL.md')).toBe(true)
     expect(zip.has('tools/write/tool.json')).toBe(true)
+  })
+  it('bundles the commercialization pack external-demand skill and its runtime priority', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'commercialization-expert-pack-'))
+    roots.push(root)
+    const sourceDir = path.resolve(import.meta.dir, '..', 'experts')
+    const outputDir = path.join(root, 'out')
+
+    const outputs = await buildBundledExpertPacks({ sourceDir, outputDir })
+    const output = outputs.find((candidate) => path.basename(candidate) === 'commercialization-research-report.zip')
+    expect(output).toBeDefined()
+
+    const zip = await adapter.read(new Uint8Array(await readFile(output!)))
+    const manifest = JSON.parse(await zip.readText('manifest.json'))
+    const expert = JSON.parse(await zip.readText('experts/commercialization-research-report/expert.json'))
+    const skillPath = 'experts/commercialization-research-report/skills/external-demand-evidence/SKILL.md'
+    const systemPrompt = await zip.readText('experts/commercialization-research-report/prompts/system.md')
+
+    expect(manifest.version).toBe('0.10.9-local')
+    expect(manifest.entrypoints.skills.slice(0, 3)).toEqual([
+      'commercialization-research-method',
+      'source-graph-research',
+      'external-demand-evidence',
+    ])
+    expect(expert.skillIds.slice(0, 3)).toEqual(manifest.entrypoints.skills.slice(0, 3))
+    expect(zip.has(skillPath)).toBe(true)
+    expect(await zip.readText(skillPath)).toContain('BrowserResearch')
+    expect(systemPrompt).toContain('external-demand-evidence')
   })
 })

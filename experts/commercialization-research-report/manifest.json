@@ -1,7 +1,7 @@
 {
   "packId": "commercialization-research-report",
   "name": "新品商业化调研报告专家",
-  "version": "0.10.8-local",
+  "version": "0.10.9-local",
   "schemaVersion": 1,
   "type": "expert-pack",
   "description": "基于可编辑业务规则、经典 HTML 母版、分章节研究子代理和独立证据复核的新品商业化调研专家。",
@@ -11,6 +11,8 @@
     ],
     "skills": [
       "commercialization-research-method",
+      "source-graph-research",
+      "external-demand-evidence",
       "identify-assumptions-new",
       "prioritize-assumptions",
       "brainstorm-experiments-new",
@@ -23,8 +25,7 @@
       "monetization-strategy",
       "beachhead-segment",
       "gtm-strategy",
-      "strategy-red-team",
-      "source-graph-research"
+      "strategy-red-team"
     ],
     "tools": [
       "tools/bash/tool.json",
@@ -92,6 +93,6 @@
   },
   "portability": {
     "selfContained": true,
-    "notes": "The ZIP includes the system prompt, HTML template, intake form, output protocol, all 15 declared package-local Skills, a source-coverage protocol, and a mandatory independent evidence-review step. Runtime host tools still depend on the active desktop runtime."
+    "notes": "The ZIP includes the system prompt, HTML template, intake form, output protocol, all 16 declared package-local Skills, a source-coverage protocol, and a mandatory independent evidence-review step. Runtime host tools still depend on the active desktop runtime."
   }
 }
