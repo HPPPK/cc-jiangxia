@@ -57,6 +57,22 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(source).toContain("'playwright', 'install', 'chromium-headless-shell'")
   })
 
+  it('downloads a pinned Portable Git runtime into Windows release resources', () => {
+    const source = readBuildScript()
+
+    expect(source).toContain('buildBundledGitRuntime')
+    expect(source).toContain("path.join(resourceDir, 'portable-git')")
+    expect(source).toContain("if (targetTriple !== 'x86_64-pc-windows-msvc')")
+    expect(source).toContain("path.join(resourceDir, '.keep')")
+    expect(source).toContain('waitForManagedGitRuntime')
+    expect(source).toContain("'bin', 'bash.exe'")
+    expect(source.indexOf("const MANAGED_GIT_VERSION = '2.55.0.3'")).toBeLessThan(source.indexOf('await buildBundledGitRuntime()'))
+    expect(source).toContain("const MANAGED_GIT_VERSION = '2.55.0.3'")
+    expect(source).toContain('v2.55.0.windows.3')
+    expect(source).toContain('ab00566336b5472120f9a52d34f2e79c5406535792acb0548001ffd0bd090e5d')
+    expect(source).toContain("'-y', `-o${cacheDir}`")
+  })
+
   it('copies bundled skill resources next to the compiled sidecar', () => {
     const source = readBuildScript()
 

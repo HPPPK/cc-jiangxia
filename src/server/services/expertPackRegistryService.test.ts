@@ -285,14 +285,27 @@ describe('ExpertPackRegistryService', () => {
     await expect(service.previewExpertPackZip(await adapter.write({ 'README.md': 'missing manifest' }))).rejects.toThrow(/manifest.json/)
   })
 
-  it('accepts host skill bindings without copying SKILL.md into the expert ZIP', async () => {
+  it('rejects an incomplete ZIP before import when a declared Skill file is missing', async () => {
     const service = await makeService()
     const entries = validPackEntries()
     delete entries['skills/custom-guide/SKILL.md']
-    const preview = await service.previewExpertPackZip(await adapter.write(entries))
-    expect(preview.canImport).toBe(true)
-    expect(preview.experts[0]?.skillIds).toEqual(['custom-guide'])
-    expect(preview.experts[0]?.skillContents).toEqual({})
+
+    await expect(service.previewExpertPackZip(await adapter.write(entries))).rejects.toThrow(
+      '专家包不完整，缺少 Skill 文件：skills/custom-guide/SKILL.md。请重新导入完整专家 ZIP。',
+    )
+  })
+
+  it('validates incomplete bundled ZIPs before they can reach the expert selector', async () => {
+    const service = await makeService()
+    const bundleDir = await mkdtemp(path.join(tmpdir(), 'incomplete-bundled-expert-pack-'))
+    tempRoots.push(bundleDir)
+    const entries = validPackEntries()
+    delete entries['skills/custom-guide/SKILL.md']
+    await writeFile(path.join(bundleDir, 'incomplete.zip'), await adapter.write(entries))
+    process.env.CLAUDE_EXPERT_PACKS_DIR = bundleDir
+    resetExpertPackRegistryForTests()
+
+    expect(await service.listExperts()).toEqual([])
   })
 
   it('rejects unsafe zip entry paths before import', async () => {

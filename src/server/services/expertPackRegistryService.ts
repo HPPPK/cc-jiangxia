@@ -252,6 +252,13 @@ export type ExpertPackUpdateInput = {
 const adapter = new ZipPackAdapter()
 let packsCache: ExpertPackIndexEntry[] | null = null
 
+export class ExpertPackValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ExpertPackValidationError'
+  }
+}
+
 
 function getConfigDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
@@ -271,6 +278,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function skillEntryPath(skillId: string): string {
+  const entryPath = `skills/${skillId}/SKILL.md`
+  assertSafeZipPath(entryPath)
+  return entryPath
+}
+
+function missingSkillFileError(entryPath: string): ExpertPackValidationError {
+  return new ExpertPackValidationError(`专家包不完整，缺少 Skill 文件：${entryPath}。请重新导入完整专家 ZIP。`)
 }
 
 export function resetExpertPackRegistryForTests(): void {
@@ -371,7 +388,10 @@ export class ExpertPackRegistryService {
   async readPackText(packId: string, entryPath: string): Promise<string> {
     assertSafeZipPath(entryPath)
     const zip = await adapter.read(await this.readPackBytes(packId))
-    if (!zip.has(entryPath)) throw new Error(`专家包缺少文件：${entryPath}`)
+    if (!zip.has(entryPath)) {
+      if (/^skills\/[^/]+\/SKILL\.md$/.test(entryPath)) throw missingSkillFileError(entryPath)
+      throw new Error(`专家包缺少文件：${entryPath}`)
+    }
     return zip.readText(entryPath)
   }
 
@@ -661,6 +681,10 @@ export class ExpertPackRegistryService {
     const manifest = normalizeManifest(await zip.readJson('manifest.json'))
     if (manifest.entrypoints.experts.length !== 1) throw new Error('Expert ZIP must contain exactly one expert definition.')
 
+    for (const skillId of manifest.entrypoints.skills) {
+      const entryPath = skillEntryPath(skillId)
+      if (!zip.has(entryPath)) throw missingSkillFileError(entryPath)
+    }
 
     const tools: ExpertToolManifest[] = []
     for (const toolPath of manifest.entrypoints.tools ?? []) {
@@ -674,10 +698,14 @@ export class ExpertPackRegistryService {
       assertSafeZipPath(entrypoint)
       if (!zip.has(entrypoint)) throw new Error(`\u4e13\u5bb6\u5305\u7f3a\u5c11\u4e13\u5bb6\u8bf4\u660e\uff1a${entrypoint}`)
       const expert = normalizeExpert(await zip.readJson(entrypoint), manifest, entrypoint, tools)
+      for (const skillId of expert.skillIds) {
+        if (!manifest.entrypoints.skills.includes(skillId)) {
+          throw new ExpertPackValidationError(`专家包 Skill 声明不一致：专家引用了未在 manifest 中声明的 Skill：${skillId}`)
+        }
+      }
       const skillContents = Object.fromEntries(await Promise.all(expert.skillIds
-        .filter((skillId) => zip.has(`skills/${skillId}/SKILL.md`))
         .map(async (skillId) => {
-          const skillPath = `skills/${skillId}/SKILL.md`
+          const skillPath = skillEntryPath(skillId)
           return [skillId, await zip.readText(skillPath)] as const
         })))
       experts.push({

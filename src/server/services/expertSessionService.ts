@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { ApiError } from '../middleware/errorHandler.js'
 import { sessionService } from './sessionService.js'
 import { conversationService } from './conversationService.js'
-import { ExpertPackRegistryService, type ExpertIntakeState, type ExpertMaterialRef, type ExpertSessionMetadata } from './expertPackRegistryService.js'
+import { ExpertPackRegistryService, ExpertPackValidationError, type ExpertIntakeState, type ExpertMaterialRef, type ExpertSessionMetadata } from './expertPackRegistryService.js'
 import { ExpertRuntimeService } from './expertRuntimeService.js'
 import { createExpertRuntimeBinding, hasActiveExpertRuntime } from './expertRuntimeBindingService.js'
 
@@ -18,7 +18,15 @@ export class ExpertSessionService {
     const expert = await registry.getExpert(expertId)
     if (!expert) throw ApiError.notFound(`Expert not found: ${expertId}`)
     const now = new Date().toISOString()
-    const runtimeContext = await runtime.loadContext(expert.id)
+    let runtimeContext
+    try {
+      runtimeContext = await runtime.loadContext(expert.id)
+    } catch (error) {
+      if (error instanceof ExpertPackValidationError) {
+        throw new ApiError(400, error.message, 'EXPERT_PACK_INCOMPLETE')
+      }
+      throw error
+    }
     const previousRefs = session.expert?.materialRefs ?? []
     const metadata: ExpertSessionMetadata = {
       mode: 'expert',

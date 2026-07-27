@@ -2,6 +2,7 @@ import memoize from 'lodash-es/memoize.js'
 import * as path from 'path'
 import * as pathWin32 from 'path/win32'
 import { getCwd } from './cwd.js'
+import { resolveGitBashPath } from './windowsBashRuntime.js'
 import { logForDebugging } from './debug.js'
 import { execSync_DEPRECATED } from './execSyncWrapper.js'
 import { memoizeWithLRU } from './memoize.js'
@@ -106,22 +107,12 @@ export function setShellIfWindows(): void {
  * fall back (for example, to PowerShell) instead of hard-exiting the process.
  */
 export const tryFindGitBashPath = memoize((): string | null => {
-  if (process.env.CLAUDE_CODE_GIT_BASH_PATH) {
-    if (checkPathExists(process.env.CLAUDE_CODE_GIT_BASH_PATH)) {
-      return process.env.CLAUDE_CODE_GIT_BASH_PATH
-    }
-    return null
-  }
-
-  const gitPath = findExecutable('git')
-  if (gitPath) {
-    const bashPath = pathWin32.join(gitPath, '..', '..', 'bin', 'bash.exe')
-    if (checkPathExists(bashPath)) {
-      return bashPath
-    }
-  }
-
-  return null
+  return resolveGitBashPath({
+    configuredPath: process.env.CLAUDE_CODE_GIT_BASH_PATH,
+    systemGitPath: findExecutable('git'),
+    bundledBashPath: process.env.CLAUDE_BUNDLED_GIT_BASH_PATH,
+    pathExists: checkPathExists,
+  })
 })
 
 /**

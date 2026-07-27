@@ -1,5 +1,5 @@
 ﻿import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import { ExpertPackRegistryService, type ExpertPackCreateInput, type ExpertPackUpdateInput } from '../services/expertPackRegistryService.js'
+import { ExpertPackRegistryService, ExpertPackValidationError, type ExpertPackCreateInput, type ExpertPackUpdateInput } from '../services/expertPackRegistryService.js'
 import { ExpertCategoryService } from '../services/expertCatalogService.js'
 import { ExpertProfileService } from '../services/expertProfileService.js'
 import { SkillDiscoveryConfigurationError, SkillDiscoveryService, type SkillDiscoverySource } from '../services/skillDiscoveryService.js'
@@ -22,6 +22,9 @@ export async function handleExpertsApi(req: Request, _url: URL, segments: string
     if (resource === 'packs') return await handlePackRoute(req, segments)
     throw ApiError.notFound(`Unknown experts resource: ${segments.slice(2).join('/')}`)
   } catch (error) {
+    if (error instanceof ExpertPackValidationError) {
+      return errorResponse(new ApiError(400, error.message, 'EXPERT_PACK_INCOMPLETE'))
+    }
     return errorResponse(error)
   }
 }

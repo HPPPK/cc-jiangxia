@@ -26,7 +26,7 @@ export async function buildBundledExpertPacks(options: BuildBundledExpertPacksOp
     const manifest = JSON.parse(await readFile(path.join(packRoot, 'manifest.json'), 'utf8')) as {
       packId?: unknown
       type?: unknown
-      entrypoints?: { experts?: unknown }
+      entrypoints?: { experts?: unknown; skills?: unknown }
     }
     if (manifest.type !== 'expert-pack' || typeof manifest.packId !== 'string' || !manifest.packId.trim()) {
       throw new Error(`Invalid Expert Pack manifest in ${packRoot}`)
@@ -38,12 +38,23 @@ export async function buildBundledExpertPacks(options: BuildBundledExpertPacksOp
 
     const expertRoot = path.posix.dirname(expertEntrypoint)
     const files = await collectFiles(packRoot)
+    const relativeFiles = new Set(files.map((filePath) => path.relative(packRoot, filePath).replaceAll('\\', '/')))
+    const declaredSkillIds = Array.isArray(manifest.entrypoints?.skills) ? manifest.entrypoints.skills : []
+    for (const skillId of declaredSkillIds) {
+      if (typeof skillId !== 'string' || !skillId.trim() || skillId.includes('/') || skillId.includes('\\')) {
+        throw new Error(`Invalid Expert Pack Skill ID in ${packRoot}: ${String(skillId)}`)
+      }
+      const skillPath = `skills/${skillId}/SKILL.md`
+      if (!relativeFiles.has(skillPath)) {
+        throw new Error(`Expert Pack is missing declared Skill file: ${skillPath}`)
+      }
+    }
     const zipEntries: Record<string, Uint8Array> = {}
     for (const filePath of files) {
       const relativePath = path.relative(packRoot, filePath).replaceAll('\\', '/')
       const zipPath = relativePath === 'manifest.json'
         ? relativePath
-        : relativePath.startsWith('tools/')
+        : relativePath.startsWith('tools/') || relativePath.startsWith('skills/')
           ? relativePath
           : `${expertRoot}/${relativePath}`
       zipEntries[zipPath] = new Uint8Array(await readFile(filePath))

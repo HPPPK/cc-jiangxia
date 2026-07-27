@@ -17,6 +17,7 @@ import { handleJiangxiaOAuthCallback } from './api/jiangxia-oauth.js'
 import { handleJiangxiaOpenAIOAuthCallback } from './api/jiangxia-openai-oauth.js'
 import { ensureDesktopCliLauncherInstalled } from './services/desktopCliLauncherService.js'
 import { enableConfigs } from '../utils/config.js'
+import { setShellIfWindows } from '../utils/windowsPaths.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { ensurePersistentStorageUpgraded } from './services/persistentStorageMigrations.js'
 import { handleStaticH5Request } from './staticH5.js'
@@ -120,6 +121,7 @@ function originFromUrl(value: string | null): string | null {
 
 export function startServer(port = PORT, host = HOST) {
   enableConfigs()
+  setShellIfWindows()
   diagnosticsService.installConsoleCapture()
   diagnosticsService.installProcessCapture()
   ProviderService.setServerPort(port)

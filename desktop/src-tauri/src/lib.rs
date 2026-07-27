@@ -1615,6 +1615,40 @@ fn select_bundled_browser_runtime_dir(resource_dir: Option<&Path>) -> Option<Pat
 }
 
 
+#[cfg(target_os = "windows")]
+fn select_bundled_git_executable(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let resource_dir = resource_dir?;
+    let git_executable = resource_dir
+        .join("binaries")
+        .join("git-runtime")
+        .join("portable-git")
+        .join("cmd")
+        .join("git.exe");
+    git_executable.is_file().then_some(git_executable)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn select_bundled_git_executable(_resource_dir: Option<&Path>) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn select_bundled_git_bash_executable(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let resource_dir = resource_dir?;
+    let bash_executable = resource_dir
+        .join("binaries")
+        .join("git-runtime")
+        .join("portable-git")
+        .join("bin")
+        .join("bash.exe");
+    bash_executable.is_file().then_some(bash_executable)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn select_bundled_git_bash_executable(_resource_dir: Option<&Path>) -> Option<PathBuf> {
+    None
+}
+
 fn is_application_control_block(error: &str) -> bool {
     error.contains("Application Control")
         || error.contains("应用程序控制策略")
@@ -1716,6 +1750,10 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
         .map(|path| path.to_string_lossy().to_string());
     let bundled_browser_runtime_dir = select_bundled_browser_runtime_dir(resource_dir.as_deref())
         .map(|path| path.to_string_lossy().to_string());
+    let bundled_git_executable = select_bundled_git_executable(resource_dir.as_deref())
+        .map(|path| path.to_string_lossy().to_string());
+    let bundled_git_bash_executable = select_bundled_git_bash_executable(resource_dir.as_deref())
+        .map(|path| path.to_string_lossy().to_string());
 
     let sidecar_args = vec![
         "server".to_string(),
@@ -1738,6 +1776,12 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     }
     if let Some(browser_runtime_dir) = bundled_browser_runtime_dir {
         sidecar_environment.push(("CLAUDE_BROWSER_RUNTIME_DIR", browser_runtime_dir));
+    }
+    if let Some(git_executable) = bundled_git_executable {
+        sidecar_environment.push(("CLAUDE_BUNDLED_GIT_EXECUTABLE", git_executable));
+    }
+    if let Some(git_bash_executable) = bundled_git_bash_executable {
+        sidecar_environment.push(("CLAUDE_BUNDLED_GIT_BASH_PATH", git_bash_executable));
     }
     let envs = base_sidecar_environment(&app_root, &sidecar_environment);
 
@@ -2011,7 +2055,7 @@ mod tests {
         decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
         has_meaningful_intersection, is_persistable_window_state, normalize_terminal_bash_path,
         parse_env_block, resolve_desktop_terminal_shell, run_notification_bridge,
-        select_bundled_browser_runtime_dir, select_bundled_expert_packs_dir, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
+        select_bundled_browser_runtime_dir, select_bundled_expert_packs_dir, select_bundled_git_bash_executable, select_bundled_git_executable, select_bundled_packs_dir, select_h5_dist_dir, server_startup_timeout_error, DesktopTerminalConfig, StoredWindowState,
         TerminalHostPlatform, SERVER_BIND_HOST, SERVER_CONTROL_HOST, SERVER_STARTUP_TIMEOUT_SECS,
     };
     use std::{collections::HashMap, fs};
@@ -2278,6 +2322,36 @@ mod tests {
         fs::create_dir_all(&browser_runtime_dir).expect("create bundled browser runtime dir");
 
         assert_eq!(select_bundled_browser_runtime_dir(Some(&resource_dir)), Some(browser_runtime_dir));
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn bundled_git_executable_uses_the_packaged_resource_when_present() {
+        let root = std::env::temp_dir().join(format!("cchh-bundled-git-runtime-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        let git_executable = resource_dir.join("binaries").join("git-runtime").join("portable-git").join("cmd").join("git.exe");
+
+        fs::create_dir_all(git_executable.parent().expect("git executable parent")).expect("create bundled Git dir");
+        fs::write(&git_executable, "").expect("write bundled Git executable marker");
+
+        assert_eq!(select_bundled_git_executable(Some(&resource_dir)), Some(git_executable));
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn bundled_git_bash_uses_the_packaged_resource_when_present() {
+        let root = std::env::temp_dir().join(format!("cchh-bundled-git-bash-runtime-test-{}", std::process::id()));
+        let resource_dir = root.join("Contents").join("Resources");
+        let bash_executable = resource_dir.join("binaries").join("git-runtime").join("portable-git").join("bin").join("bash.exe");
+
+        fs::create_dir_all(bash_executable.parent().expect("bash executable parent")).expect("create bundled Bash dir");
+        fs::write(&bash_executable, "").expect("write bundled Bash executable marker");
+
+        assert_eq!(select_bundled_git_bash_executable(Some(&resource_dir)), Some(bash_executable));
 
         fs::remove_dir_all(root).expect("remove temp app tree");
     }

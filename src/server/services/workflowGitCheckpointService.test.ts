@@ -7,6 +7,7 @@ import {
   createWorkflowGitCheckpoint,
   listWorkflowGitCheckpoints,
   restoreWorkflowGitCheckpoint,
+  resolveGitExecutable,
 } from './workflowGitCheckpointService.js'
 
 let tmpDir: string | null = null
@@ -180,6 +181,18 @@ describe('workflowGitCheckpointService', () => {
     const listed = await listWorkflowGitCheckpoints('session-a', tmpDir)
     expect(listed.enabled).toBe(true)
     expect(listed.latestVersion).toBe(1)
+  })
+
+  it('prefers a usable system Git executable over the packaged fallback', () => {
+    expect(resolveGitExecutable('C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\App\\mingit\\cmd\\git.exe')).toBe('C:\\Program Files\\Git\\cmd\\git.exe')
+  })
+
+  it('uses the packaged Git executable when no system Git exists', () => {
+    expect(resolveGitExecutable(null, 'C:\\App\\mingit\\cmd\\git.exe')).toBe('C:\\App\\mingit\\cmd\\git.exe')
+  })
+
+  it('keeps the standard Git command only when neither runtime is available', () => {
+    expect(resolveGitExecutable(null, null)).toBe('git')
   })
 
   it('excludes dependency folders from workflow checkpoints', async () => {

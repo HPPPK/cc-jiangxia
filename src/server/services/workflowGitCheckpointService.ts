@@ -82,13 +82,41 @@ const CHECKPOINT_EXCLUDED_PATHS = [
   ':(exclude)**/.cache',
 ]
 
+class GitExecutableUnavailableError extends Error {
+  constructor(executable: string) {
+    super(`Git executable is unavailable: ${executable}`)
+    this.name = 'GitExecutableUnavailableError'
+  }
+}
+
+export function resolveGitExecutable(
+  systemGitExecutable: string | null | undefined,
+  bundledGitExecutable: string | null | undefined,
+): string {
+  return systemGitExecutable?.trim() || bundledGitExecutable?.trim() || 'git'
+}
+
+function gitExecutable(): string {
+  return resolveGitExecutable(Bun.which('git'), process.env.CLAUDE_BUNDLED_GIT_EXECUTABLE)
+}
+
 async function git(cwd: string, args: string[], env?: Record<string, string>): Promise<string> {
-  const proc = Bun.spawn(['git', ...args], {
-    cwd,
-    env: { ...process.env, ...env },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
+  const executable = gitExecutable()
+  let proc: ReturnType<typeof Bun.spawn>
+  try {
+    proc = Bun.spawn([executable, ...args], {
+      cwd,
+      env: { ...process.env, ...env },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+  } catch (error) {
+    const code = (error as { code?: unknown }).code
+    if (code === 'ENOENT' || (error instanceof Error && error.message.includes('ENOENT'))) {
+      throw new GitExecutableUnavailableError(executable)
+    }
+    throw error
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -228,8 +256,18 @@ async function resolveCheckpointStore(workDir: string): Promise<WorkflowCheckpoi
       argsPrefix: [],
       fallback: false,
     }
-  } catch {
-    return await ensureLocalStore(workDir)
+  } catch (error) {
+    if (error instanceof GitExecutableUnavailableError) {
+      return { enabled: false, reason: error.message }
+    }
+    try {
+      return await ensureLocalStore(workDir)
+    } catch (fallbackError) {
+      if (fallbackError instanceof GitExecutableUnavailableError) {
+        return { enabled: false, reason: fallbackError.message }
+      }
+      throw fallbackError
+    }
   }
 }
 

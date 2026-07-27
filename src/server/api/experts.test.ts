@@ -79,6 +79,25 @@ describe('experts API', () => {
     const deleted = await handleExpertsApi(new Request('http://localhost/api/experts/packs/api-pack', { method: 'DELETE' }), new URL('http://localhost'), ['api', 'experts', 'packs', 'api-pack'])
     expect(deleted.status).toBe(204)
   })
+  it('returns a clear error when an imported ZIP declares a missing Skill file', async () => {
+    await setup()
+    const incomplete = entries()
+    delete incomplete['skills/api-skill/SKILL.md']
+    const dataBase64 = Buffer.from(await adapter.write(incomplete)).toString('base64')
+
+    const response = await handleExpertsApi(
+      new Request('http://localhost/api/experts/packs/import/preview', { method: 'POST', body: JSON.stringify({ dataBase64 }) }),
+      new URL('http://localhost'),
+      ['api', 'experts', 'packs', 'import', 'preview'],
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: 'EXPERT_PACK_INCOMPLETE',
+      message: '专家包不完整，缺少 Skill 文件：skills/api-skill/SKILL.md。请重新导入完整专家 ZIP。',
+    })
+  })
+
   it('reads the packaged profile and stores editable profile overrides locally', async () => {
     await setup()
     const dataBase64 = Buffer.from(await adapter.write(entries())).toString('base64')

@@ -37,6 +37,7 @@ artifacts/
 desktop/dist/
 desktop/build-artifacts/
 desktop/.playwright-browsers/
+desktop/.portable-git-runtime/
 desktop/src-tauri/binaries/*
 !desktop/src-tauri/binaries/packs/
 desktop/src-tauri/binaries/packs/*
