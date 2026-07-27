@@ -102,6 +102,14 @@ export function isBrowserResearchRuntimeInstalled(configDir = getClaudeConfigHom
   return getBrowserResearchExecutablePath(configDir) !== null
 }
 
+export function isBrowserResearchRuntimeAvailable(
+  configDir = getClaudeConfigHomeDir(),
+  bundledRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR,
+): boolean {
+  return getBrowserResearchExecutablePath(configDir) !== null
+    || Boolean(bundledRuntimeDir && getBrowserResearchExecutablePathFromRuntimeDir(bundledRuntimeDir))
+}
+
 export function summarizeBrowserResearchText(text: string, maxChars = 24_000): { text: string; truncated: boolean } {
   const normalized = text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
   if (normalized.length <= maxChars) return { text: normalized, truncated: false }

@@ -14,6 +14,7 @@ import {
   seedBundledBrowserResearchRuntime,
   getBrowserResearchScreenshotDir,
   getUnsafeBrowserResearchUrlReason,
+  isBrowserResearchRuntimeAvailable,
   isBrowserResearchRuntimeInstalled,
   summarizeBrowserResearchText,
 } from "./runtime.js";
@@ -318,7 +319,7 @@ export const BrowserResearchTool = buildTool({
     return outputSchema;
   },
   isEnabled() {
-    return isBrowserResearchRuntimeInstalled();
+    return isBrowserResearchRuntimeAvailable();
   },
   isConcurrencySafe() {
     return false;

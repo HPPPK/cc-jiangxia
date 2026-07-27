@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BrowserResearchTool } from "./BrowserResearchTool.js";
 
 function textContentOf(
@@ -14,6 +17,17 @@ function textContentOf(
   return block.content;
 }
 
+const temporaryDirectories: string[] = []
+const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const originalBundledRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR
+
+afterEach(async () => {
+  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+  if (originalBundledRuntimeDir === undefined) delete process.env.CLAUDE_BROWSER_RUNTIME_DIR
+  else process.env.CLAUDE_BROWSER_RUNTIME_DIR = originalBundledRuntimeDir
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+})
 describe("BrowserResearchTool model result mapping", () => {
   test("returns rendered text, links, and the local screenshot path to the model", () => {
     const block = BrowserResearchTool.mapToolResultToToolResultBlockParam(
@@ -73,4 +87,28 @@ describe("BrowserResearchTool model result mapping", () => {
     expect(content).toContain("1. failed: https://example.com/blocked [access_limited] — HTTP 403")
     expect(content).toContain("Rendered links: none");
   });
-});
+
+  test("is enabled on a clean machine when the desktop package supplies Chromium", async () => {
+    const configDir = await temporaryDirectory("browser-research-clean-config-")
+    const bundledRuntimeDir = await temporaryDirectory("browser-research-bundled-runtime-")
+    const executable = join(bundledRuntimeDir, "chromium_headless_shell-1", "chrome-win", "headless_shell.exe")
+    await mkdir(join(bundledRuntimeDir, "chromium_headless_shell-1", "chrome-win"), { recursive: true })
+    await writeFile(executable, "bundled runtime")
+    process.env.CLAUDE_CONFIG_DIR = configDir
+    process.env.CLAUDE_BROWSER_RUNTIME_DIR = bundledRuntimeDir
+
+    expect(BrowserResearchTool.isEnabled()).toBe(true)
+    expect(await BrowserResearchTool.validateInput({
+      url: "https://example.com/research",
+      task: "Read a public research page",
+      includeScreenshot: false,
+      retry_urls: [],
+    })).toEqual({ result: true })
+  })
+})
+
+async function temporaryDirectory(prefix: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), prefix))
+  temporaryDirectories.push(directory)
+  return directory
+}

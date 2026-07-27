@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import {
   getBrowserResearchRuntimeDir,
   getUnsafeBrowserResearchUrlReason,
+  isBrowserResearchRuntimeAvailable,
   isBrowserResearchRuntimeInstalled,
   seedBundledBrowserResearchRuntime,
   summarizeBrowserResearchText,
@@ -32,6 +33,17 @@ describe('BrowserResearch runtime guardrails', () => {
     await mkdir(join(runtimeDir, 'chromium_headless_shell-1', 'chrome-win'), { recursive: true })
     await writeFile(join(runtimeDir, 'chromium_headless_shell-1', 'chrome-win', 'headless_shell.exe'), '')
     expect(isBrowserResearchRuntimeInstalled(configDir)).toBe(true)
+  })
+
+  test('treats a valid packaged Chromium runtime as available before first-run seeding', async () => {
+    const configDir = await mkdtemp('browser-research-runtime-config-')
+    const bundledRuntimeDir = await mkdtemp('browser-research-runtime-bundled-')
+    const bundledExecutable = join(bundledRuntimeDir, 'chromium_headless_shell-1', 'chrome-win', 'headless_shell.exe')
+    await mkdir(join(bundledRuntimeDir, 'chromium_headless_shell-1', 'chrome-win'), { recursive: true })
+    await writeFile(bundledExecutable, 'bundled runtime')
+
+    expect(isBrowserResearchRuntimeInstalled(configDir)).toBe(false)
+    expect(isBrowserResearchRuntimeAvailable(configDir, bundledRuntimeDir)).toBe(true)
   })
 
   test('seeds the bundled managed Chromium runtime for a clean user and preserves an existing local runtime', async () => {
