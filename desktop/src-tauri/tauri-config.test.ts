@@ -30,4 +30,26 @@ describe('tauri security config', () => {
     expect(cargoToml).toContain('reqwest = { version = "0.13"')
     expect(cargoToml).toContain('features = ["system-proxy"]')
   })
+
+  it('packages default workflow ZIP resources for first-run seeding', () => {
+    const config = JSON.parse(
+      readFileSync(join(currentDir, 'tauri.conf.json'), 'utf8'),
+    ) as {
+      bundle?: { resources?: string[] }
+    }
+
+    expect(config.bundle?.resources ?? []).toContain('binaries/packs')
+  })
+
+  it('checks the maintained fork release channel for desktop updates', () => {
+    const config = JSON.parse(
+      readFileSync(join(currentDir, 'tauri.conf.json'), 'utf8'),
+    ) as {
+      plugins?: { updater?: { endpoints?: string[] } }
+    }
+
+    expect(config.plugins?.updater?.endpoints).toContain(
+      'https://github.com/HPPPK/cc-jiangxia/releases/latest/download/latest.json',
+    )
+  })
 })

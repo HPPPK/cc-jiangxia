@@ -1,7 +1,7 @@
 {
     "$schema":  "https://raw.githubusercontent.com/nicegui/nicegui/main/nicegui/static/tauri-schema-v2.json",
     "productName":  "Claude Code Jiangxia",
-    "version": "0.2.38",
+    "version": "0.2.39",
     "identifier":  "com.claude-code-jiangxia.desktop",
     "build":  {
                   "frontendDist":  "../dist",
@@ -33,7 +33,7 @@
                     "updater":  {
                                     "pubkey":  "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI1MUI5Q0QxNjlENDI2MDIKUldRQ0p0UnAwWndiSmJmYmQwbERQbWpBSWFTMXp6S3M0QXRqRmY0N0ttRnhsUlNwQUZGSUlTVGQK",
                                     "endpoints":  [
-                                                      "https://github.com/HPPPK/cc-test/releases/latest/download/latest.json"
+                                                      "https://github.com/HPPPK/cc-jiangxia/releases/latest/download/latest.json"
                                                   ],
                                     "windows":  {
                                                     "installMode":  "passive"
