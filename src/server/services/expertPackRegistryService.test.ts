@@ -86,6 +86,28 @@ describe('ExpertPackRegistryService', () => {
     }))
   })
 
+  it('upgrades a previously seeded built-in expert ZIP with the same pack ID', async () => {
+    const service = await makeService()
+    const bundleDir = await mkdtemp(path.join(tmpdir(), 'bundled-expert-pack-'))
+    tempRoots.push(bundleDir)
+    const bundledEntries = validPackEntries()
+    bundledEntries['experts/custom/prompts/system.md'] = '# Bundled first prompt'
+    const bundledPath = path.join(bundleDir, 'custom-expert-pack.zip')
+    await writeFile(bundledPath, await adapter.write(bundledEntries))
+    process.env.CLAUDE_EXPERT_PACKS_DIR = bundleDir
+    resetExpertPackRegistryForTests()
+
+    await expect(service.readPackText('custom-expert-pack', 'experts/custom/prompts/system.md'))
+      .resolves.toBe('# Bundled first prompt')
+
+    bundledEntries['experts/custom/prompts/system.md'] = '# Bundled latest prompt'
+    await writeFile(bundledPath, await adapter.write(bundledEntries))
+    resetExpertPackRegistryForTests()
+
+    await expect(service.readPackText('custom-expert-pack', 'experts/custom/prompts/system.md'))
+      .resolves.toBe('# Bundled latest prompt')
+  })
+
   it('exposes and updates portable expert category metadata from the ZIP manifest', async () => {
     const service = await makeService()
     await service.importExpertPackZip(await adapter.write(validPackEntries({

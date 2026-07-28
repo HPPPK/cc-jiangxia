@@ -1,6 +1,7 @@
 ﻿import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { createHash } from 'node:crypto'
 import { getAppStoragePath } from '../../utils/appIdentity.js'
 import { ZipPackAdapter, assertSafeZipPath, type ZipPackArchive } from './zipPackAdapter.js'
 import { deriveExpertTemplateFillSchema } from '../../utils/expertTemplateFill.js'
@@ -255,6 +256,12 @@ export type ExpertPackUpdateInput = {
 }
 
 const adapter = new ZipPackAdapter()
+const MANAGED_BUNDLED_EXPERT_PACKS_FILE = 'managed-bundled-expert-packs.json'
+const KNOWN_LEGACY_BUNDLED_EXPERT_FINGERPRINTS = new Map<string, ReadonlySet<string>>([
+  ['commercialization-research-report', new Set([
+    'f3b5f95f5188ebdf43d07f141385769b21febd91f0210e717bb91e656bba0936',
+  ])],
+])
 let packsCache: ExpertPackIndexEntry[] | null = null
 
 export class ExpertPackValidationError extends Error {
@@ -424,6 +431,7 @@ export class ExpertPackRegistryService {
     await fs.mkdir(dir, { recursive: true })
     const zipPath = path.join(dir, `${safeFileSegment(packId)}.zip`)
     await fs.writeFile(zipPath, Buffer.from(zipData))
+    await this.unmarkManagedBundledExpertPack(packId)
 
     this.invalidateCache()
 
@@ -594,6 +602,7 @@ export class ExpertPackRegistryService {
   private async writeStoredPack(packId: string, data: Uint8Array): Promise<void> {
     await fs.mkdir(getExpertPackStorageDir(), { recursive: true })
     await fs.writeFile(path.join(getExpertPackStorageDir(), `${safeFileSegment(packId)}.zip`), Buffer.from(data))
+    await this.unmarkManagedBundledExpertPack(packId)
     this.invalidateCache()
   }
 
@@ -609,9 +618,73 @@ export class ExpertPackRegistryService {
     if (packsCache) return packsCache
 
     const bundled = await this.loadPacksFromDirectories(bundledExpertPackDirectories(), 'bundled')
+    await this.seedBundledExpertPacks(bundled)
     const stored = await this.loadPacksFromDirectories([getExpertPackStorageDir()], 'stored')
     packsCache = keepNewestExpertDefinitions([...bundled, ...stored])
     return packsCache
+  }
+
+  private async seedBundledExpertPacks(bundledPacks: ExpertPackIndexEntry[]): Promise<void> {
+    if (bundledPacks.length === 0) return
+
+    const storageDir = getExpertPackStorageDir()
+    await fs.mkdir(storageDir, { recursive: true })
+    const managedPackIds = await this.readManagedBundledExpertPackIds()
+    let managedStateChanged = false
+
+    for (const pack of bundledPacks) {
+      const sourceZip = new Uint8Array(await fs.readFile(pack.storage.path))
+      const targetPath = path.join(storageDir, safeFileSegment(pack.packId) + '.zip')
+      let existing: Uint8Array | null = null
+      try {
+        existing = new Uint8Array(await fs.readFile(targetPath))
+      } catch {
+        // A missing default is installed below.
+      }
+
+      const legacyDefault = existing
+        ? await isKnownLegacyBundledExpertFingerprint(pack.packId, existing)
+        : false
+      const shouldManage = !existing || managedPackIds.has(pack.packId) || legacyDefault
+      if (!shouldManage) continue
+
+      if (!existing || !Buffer.from(existing).equals(Buffer.from(sourceZip))) {
+        await fs.writeFile(targetPath, Buffer.from(sourceZip))
+      }
+      if (!managedPackIds.has(pack.packId)) {
+        managedPackIds.add(pack.packId)
+        managedStateChanged = true
+      }
+    }
+
+    if (managedStateChanged) await this.writeManagedBundledExpertPackIds(managedPackIds)
+  }
+
+  private managedBundledExpertPacksPath(): string {
+    return path.join(getExpertPackStorageDir(), MANAGED_BUNDLED_EXPERT_PACKS_FILE)
+  }
+
+  private async readManagedBundledExpertPackIds(): Promise<Set<string>> {
+    try {
+      const raw = JSON.parse(await fs.readFile(this.managedBundledExpertPacksPath(), 'utf8')) as unknown
+      if (!isRecord(raw) || raw.schemaVersion !== 1 || !Array.isArray(raw.packIds)) return new Set()
+      return new Set(raw.packIds.filter(isNonEmptyString))
+    } catch {
+      return new Set()
+    }
+  }
+
+  private async writeManagedBundledExpertPackIds(packIds: Set<string>): Promise<void> {
+    await fs.writeFile(this.managedBundledExpertPacksPath(), JSON.stringify({
+      schemaVersion: 1,
+      packIds: [...packIds].sort(),
+    }, null, 2) + '\n')
+  }
+
+  private async unmarkManagedBundledExpertPack(packId: string): Promise<void> {
+    const packIds = await this.readManagedBundledExpertPackIds()
+    if (!packIds.delete(packId)) return
+    await this.writeManagedBundledExpertPackIds(packIds)
   }
 
   private async loadPacksFromDirectories(
@@ -999,6 +1072,23 @@ function exportResult(packId: string, data: Uint8Array): ExpertPackExportResult 
   }
 }
 
+async function isKnownLegacyBundledExpertFingerprint(packId: string, zipData: Uint8Array): Promise<boolean> {
+  const known = KNOWN_LEGACY_BUNDLED_EXPERT_FINGERPRINTS.get(packId)
+  if (!known) return false
+  return known.has(await canonicalExpertPackFingerprint(zipData))
+}
+
+async function canonicalExpertPackFingerprint(zipData: Uint8Array): Promise<string> {
+  const zip = await adapter.read(zipData)
+  const hash = createHash('sha256')
+  for (const entry of [...zip.entries].sort((left, right) => left.path.localeCompare(right.path))) {
+    hash.update(entry.path)
+    hash.update('\0')
+    hash.update(await zip.readBytes(entry.path))
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
 function keepNewestExpertDefinitions(packs: ExpertPackIndexEntry[]): ExpertPackIndexEntry[] {
   const claimedExpertIds = new Set<string>()
   return [...packs]
