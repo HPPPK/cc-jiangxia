@@ -189,6 +189,13 @@ export function buildExpertRuntimeTurnInstruction(
     'Keep normal conversational and streamed responses. Do not turn this into a blocking form flow.',
     'Enabled host tools for this turn. Call no other tool, even if the Expert ZIP or a Skill mentions it:',
     availability.toolNames.length ? availability.toolNames.map((name) => `- ${name}`).join('\n') : '- No additional host tool is available for this expert turn.',
+    ...(availability.toolNames.includes('AskUserQuestion')
+      ? [
+          'Question routing for this turn: use normal conversational text only when the answer genuinely needs free-form narrative, a URL, pasted material, or an unrestricted description. Do not call AskUserQuestion for that kind of input.',
+          'Use AskUserQuestion for a decision, scope confirmation, preference, or missing fact that the user can answer through 2–4 clear choices. Do not render those choices as a numbered text questionnaire.',
+          'Every AskUserQuestion item must include a prompt and 2–4 actual user-answer choices. If a call is rejected because choices are missing, immediately classify the same question: retry it with 2–4 choices if it is a decision; otherwise ask it once as normal conversational text. Do not echo the tool error or silently turn a decision card into a text questionnaire.',
+        ]
+      : []),
     ...(availability.toolNames.includes('BrowserResearch')
       ? [
           'Public research protocol: when product names, competitor names, or a research question need public evidence, construct candidate URLs from trusted domains, public entry points, task terms, and links discovered on successfully opened pages. Use BrowserResearch to open each candidate before treating it as a discovery or citation.',

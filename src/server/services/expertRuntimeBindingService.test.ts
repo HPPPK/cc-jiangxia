@@ -79,6 +79,11 @@ describe('Expert Runtime tool availability', () => {
     expect(instruction).toContain('Use BrowserResearch to open each candidate')
     expect(instruction).toContain('A candidate URL is not evidence')
     expect(instruction).toContain('after reasonable attempts')
+    expect(instruction).toContain('Question routing for this turn:')
+    expect(instruction).toContain('Do not call AskUserQuestion for that kind of input.')
+    expect(instruction).toContain('Use AskUserQuestion for a decision, scope confirmation, preference, or missing fact')
+    expect(instruction).toContain('Every AskUserQuestion item must include a prompt and 2–4 actual user-answer choices.')
+    expect(instruction).toContain('If a call is rejected because choices are missing')
   })
 
   test('asks for user material only when BrowserResearch is unavailable for the turn', () => {

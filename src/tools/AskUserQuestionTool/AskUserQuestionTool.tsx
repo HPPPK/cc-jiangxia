@@ -32,7 +32,7 @@ const questionSchema = lazySchema(() => z.object({
     ctx.addIssue({ code: 'custom', message: 'Question requires prompt (or legacy question).' })
   }
   if (!value.choices && !value.options) {
-    ctx.addIssue({ code: 'custom', message: 'Question requires choices (or legacy options).' })
+    ctx.addIssue({ code: 'custom', message: 'Question card requires 2–4 choices (or legacy options). For an open-ended answer, use a normal assistant message; for a decision, retry AskUserQuestion with 2–4 user-answer choices.' })
   }
 }));
 

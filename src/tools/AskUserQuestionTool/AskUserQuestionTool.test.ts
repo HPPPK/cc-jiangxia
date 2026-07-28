@@ -13,6 +13,19 @@ describe('AskUserQuestionTool workflow contract', () => {
     expect(tool.inputSchema.safeParse({}).success).toBe(false)
   })
 
+  test('explains how to correct a missing-choice question card without treating free-form input as a card', async () => {
+    const tool = await loadTool()
+    const parsed = tool.inputSchema.safeParse({
+      questions: [{ prompt: 'Describe the product capability in one sentence.' }],
+    })
+
+    expect(parsed.success).toBe(false)
+    if (parsed.success) throw new Error('Question without choices must be rejected')
+    expect(parsed.error.issues.some((issue) => issue.message.includes('Question card requires 2–4 choices'))).toBe(true)
+    expect(parsed.error.issues.some((issue) => issue.message.includes('open-ended answer, use a normal assistant message'))).toBe(true)
+    expect(parsed.error.issues.some((issue) => issue.message.includes('retry AskUserQuestion with 2–4 user-answer choices'))).toBe(true)
+  })
+
   test('accepts explicit workflow completion blocking semantics without adding a new tool', async () => {
     const tool = await loadTool()
     expect(tool.inputSchema.safeParse({
