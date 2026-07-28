@@ -1,7 +1,6 @@
-﻿import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import type { ExpertRuntimeBinding, ExpertSessionMetadata } from './expertPackRegistryService.js'
 import {
-  buildExpertOutputTemplateWriteGuard,
   buildExpertRuntimeTurnInstruction,
   resolveCurrentExpertRuntimeToolNames,
   resolveExpertRuntimeToolAvailability,
@@ -17,24 +16,28 @@ function binding(): ExpertRuntimeBinding {
     packId: 'commercialization-research-report',
     packVersion: '1.0.0',
     promptSnapshot: 'Research public evidence before making a recommendation.',
+    // This deliberately simulates an older imported pack. The runtime must not
+    // expose obsolete research instructions to the model.
     skills: [{
       skillId: 'research-method',
       title: 'Research method',
       path: 'skills/research-method/SKILL.md',
       sha256: 'test',
-      content: 'Use WebSearchTool to discover competitor evidence, then use WebFetch for the source page.',
+      content: 'Use WebSearchTool to discover competitor evidence, then use BrowserResearch for the source page.',
     }],
     hostTools: [
       { id: 'AskUserQuestion', name: 'Ask', purpose: 'Gather missing input.' },
       { id: 'Read', name: 'Read', purpose: 'Read supplied files.' },
-      { id: 'WebSearch', name: 'Web Search', purpose: 'Discover public sources.' },
-      { id: 'WebFetch', name: 'Web Fetch', purpose: 'Fetch user-provided URLs.' },
+      { id: 'BrowserResearch', name: 'Browser research', purpose: 'Open and inspect a rendered public page.' },
+      { id: 'WebSearch', name: 'Legacy web discovery', purpose: 'Must not be exposed in Expert Mode.' },
+      { id: 'WebFetch', name: 'Web Fetch', purpose: 'Fetch a user-confirmed URL only when explicitly authorized.' },
       { id: 'ExpertMaterialWriter', name: 'Write material', purpose: 'Write a material package.' },
     ],
     tools: [
       { id: 'ask', name: 'Ask', type: 'hostBuiltinRef', entrypoint: 'tools/ask.json', hostToolId: 'AskUserQuestion', permissions: [] },
       { id: 'read', name: 'Read', type: 'hostBuiltinRef', entrypoint: 'tools/read.json', hostToolId: 'Read', permissions: [] },
-      { id: 'search', name: 'Web Search', type: 'hostBuiltinRef', entrypoint: 'tools/search.json', hostToolId: 'WebSearch', permissions: [] },
+      { id: 'browser', name: 'Browser research', type: 'hostBuiltinRef', entrypoint: 'tools/browser.json', hostToolId: 'BrowserResearch', permissions: [] },
+      { id: 'legacy-search', name: 'Legacy web discovery', type: 'hostBuiltinRef', entrypoint: 'tools/search.json', hostToolId: 'WebSearch', permissions: [] },
       { id: 'fetch', name: 'Web Fetch', type: 'hostBuiltinRef', entrypoint: 'tools/fetch.json', hostToolId: 'WebFetch', permissions: [] },
       { id: 'writer', name: 'Write material', type: 'hostBuiltinRef', entrypoint: 'tools/write.json', hostToolId: 'ExpertMaterialWriter', permissions: [] },
     ],
@@ -59,28 +62,36 @@ function activeSession(runtimeBinding: ExpertRuntimeBinding): ExpertSessionMetad
 }
 
 describe('Expert Runtime tool availability', () => {
-  test('only injects host tools enabled by the actual runtime and substitutes the DeepSeek no-search path', () => {
+  test('removes the obsolete web-discovery tool and injects candidate-URL browser research instead', () => {
     const runtimeBinding = binding()
-    const availability = resolveExpertRuntimeToolAvailability(runtimeBinding, ['AskUserQuestion', 'Read', 'WebFetch'])
-    expect(availability.toolNames).toEqual(['AskUserQuestion', 'Read', 'WebFetch'])
-    expect(availability.webSearchUnavailable).toBe(true)
+    const enabledToolNames = ['AskUserQuestion', 'Read', 'BrowserResearch', 'WebSearch', 'WebFetch']
+    const availability = resolveExpertRuntimeToolAvailability(runtimeBinding, enabledToolNames)
 
-    const instruction = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames: ['AskUserQuestion', 'Read', 'WebFetch'] })
-    expect(instruction).toContain('- AskUserQuestion')
-    expect(instruction).toContain('- Read')
+    expect(availability.toolNames).toEqual(['AskUserQuestion', 'Read', 'BrowserResearch', 'WebFetch'])
+    expect(availability.hostTools.map((tool) => tool.id)).toEqual(['AskUserQuestion', 'Read', 'BrowserResearch', 'WebFetch'])
+
+    const instruction = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames })
+    expect(instruction).toContain('- BrowserResearch')
     expect(instruction).toContain('- WebFetch')
-    expect(instruction).not.toContain('- WebSearch')
-    expect(instruction).not.toContain('- ExpertMaterialWriter')
-    expect(instruction).toContain('Ask the user for URLs, screenshots, copied page text, exported pages, or files')
-    expect(instruction).toContain('[public web search is unavailable: ask the user for URLs, screenshots, copied page text, or source files instead]')
+    expect(instruction).not.toContain('WebSearch')
+    expect(instruction).not.toContain('web discovery is unavailable')
+    expect(instruction).toContain('construct candidate URLs from trusted domains')
+    expect(instruction).toContain('Use BrowserResearch to open each candidate')
+    expect(instruction).toContain('A candidate URL is not evidence')
+    expect(instruction).toContain('after reasonable attempts')
   })
 
-  test('keeps WebSearch in the injected tool list only when the active runtime enables it', () => {
-    const instruction = buildExpertRuntimeTurnInstruction(activeSession(binding()), { enabledToolNames: ['AskUserQuestion', 'Read', 'WebSearch', 'WebFetch'] })
-    expect(instruction).toContain('- WebSearch')
-    expect(instruction).not.toContain('Public research fallback: web discovery is unavailable')
-    expect(instruction).toContain('Use WebSearchTool to discover competitor evidence')
+  test('asks for user material only when BrowserResearch is unavailable for the turn', () => {
+    const instruction = buildExpertRuntimeTurnInstruction(activeSession(binding()), {
+      enabledToolNames: ['AskUserQuestion', 'Read', 'WebSearch', 'WebFetch'],
+    })
+
+    expect(instruction).not.toContain('- BrowserResearch')
+    expect(instruction).not.toContain('WebSearch')
+    expect(instruction).toContain('Public research limitation: BrowserResearch is not available for this turn.')
+    expect(instruction).toContain('Use AskUserQuestion to request a link, screenshot, copied page text, exported page, source file, or permission to retain an evidence gap.')
   })
+
   test('shows BrowserResearch only when the locally installed browser is actually enabled for the expert turn', () => {
     const runtimeBinding = binding()
     runtimeBinding.hostTools = [
@@ -97,55 +108,43 @@ describe('Expert Runtime tool availability', () => {
 
     const available = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames: ['AskUserQuestion', 'BrowserResearch'] })
     expect(available).toContain('- BrowserResearch')
-    expect(available).not.toContain('- WebSearch')
-    expect(available).not.toContain('- WebFetch')
-  })
-  test('uses the session-selected model to remove WebSearch even when the default tool list contains it', () => {
-    expect(resolveCurrentExpertRuntimeToolNames('deepseek-chat', ['Read', 'WebSearch'], () => false)).toEqual(['Read'])
-    expect(resolveCurrentExpertRuntimeToolNames('claude-sonnet-4-6', ['Read'], () => true)).toEqual(['Read', 'WebSearch'])
+    expect(available).toContain('construct candidate URLs from trusted domains')
   })
 
+  test('excludes the obsolete web-discovery tool for every selected model', () => {
+    expect(resolveCurrentExpertRuntimeToolNames('deepseek-chat', ['Read', 'WebSearch'])).toEqual(['Read'])
+    expect(resolveCurrentExpertRuntimeToolNames('gpt-5.6', ['Read', 'WebSearch', 'BrowserResearch'])).toEqual(['Read', 'BrowserResearch'])
+  })
 
-  test('injects a declared HTML output template as the mandatory final-document base', () => {
+  test('instructs a template-fill expert to submit field JSON without injecting the complete HTML document', () => {
     const runtimeBinding = binding()
+    runtimeBinding.outputMode = 'template-fill'
     runtimeBinding.outputTemplate = {
       path: 'experts/commercialization/templates/report.html',
-      content: '<html><head><style>body{color:#111}</style></head><body><h1>{{REPORT_TITLE}}</h1><!-- SLOT: SOURCE_ROWS --></body></html>',
+      content: '<html data-template-id="classic-v1"><head><style>body{color:#111}</style></head><body><h1>{{REPORT_TITLE}}</h1><table><thead><tr><th>编号</th><th>链接（URL）</th></tr></thead><tbody><!-- SLOT: SOURCE_ROWS --></tbody></table></body></html>',
     }
 
-    const instruction = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames: ['AskUserQuestion', 'Read'] })
-    expect(instruction).toContain('Mandatory expert output template:')
-    expect(instruction).toContain('experts/commercialization/templates/report.html')
-    expect(instruction).toContain('Preserve its CSS, heading hierarchy, table headers, anchors, and all non-slot structure.')
-    expect(instruction).toContain('{{REPORT_TITLE}}')
-    expect(instruction).toContain('no unresolved {{...}} placeholder or SLOT comment remains')
+    const instruction = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames: ['AskUserQuestion', 'Read', 'Write'] })
+    expect(instruction).toContain('Final report delivery uses server-rendered template filling:')
+    expect(instruction).toContain('cc-jiangxia-expert-template-fill/v1')
+    expect(instruction).toContain('REPORT_TITLE')
+    expect(instruction).toContain('SOURCE_ROWS')
+    expect(instruction).toContain('table-rows')
+    expect(instruction).not.toContain('<style>body{color:#111}</style>')
+    expect(instruction).not.toContain('Mandatory expert output template:')
   })
 
-  test('exposes a per-session Write guard for a declared HTML output template', () => {
-    const runtimeBinding = binding()
-    runtimeBinding.outputTemplate = {
-      path: 'experts/commercialization/templates/report.html',
-      content: '<html data-template-id="classic-v1"><head><style>body{color:#111}</style></head><body><h2 id="section1">一、产品</h2><table><thead><tr><th>字段</th></tr></thead></table><h2 id="sources">来源</h2></body></html>',
-    }
-
-    const encoded = buildExpertOutputTemplateWriteGuard(activeSession(runtimeBinding))
-
-    expect(encoded).toBeTruthy()
-  })
-
-  test('uses the global enabled tool pool for experts and only disables Edit globally', () => {
+  test('uses the global enabled tool pool for experts and disables Edit plus obsolete web discovery', () => {
     const runtimeBinding = binding()
     runtimeBinding.hostTools = [{ id: 'Read', name: 'Read', purpose: 'Read supplied files.' }]
     runtimeBinding.tools = []
+    const enabledToolNames = ['Read', 'Write', 'Bash', 'Glob', 'Agent', 'WebSearch', 'Edit']
 
-    const availability = resolveExpertRuntimeToolAvailability(runtimeBinding, ['Read', 'Write', 'Bash', 'Glob', 'Agent', 'Edit'])
+    const availability = resolveExpertRuntimeToolAvailability(runtimeBinding, enabledToolNames)
     expect(availability.toolNames).toEqual(['Read', 'Write', 'Bash', 'Glob', 'Agent'])
 
-    const policy = resolveExpertRuntimeToolPolicy(activeSession(runtimeBinding), { enabledToolNames: ['Read', 'Write', 'Bash', 'Glob', 'Agent', 'Edit'] })
+    const policy = resolveExpertRuntimeToolPolicy(activeSession(runtimeBinding), { enabledToolNames })
     expect(policy.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Glob', 'Agent'])
-    expect(policy.disallowedTools).toEqual(['Edit'])
+    expect(policy.disallowedTools).toEqual(['WebSearch', 'Edit'])
   })
-
-
 })
-

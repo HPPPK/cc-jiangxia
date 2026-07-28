@@ -60,7 +60,6 @@ import {
 } from '../../constants/xml.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
 import {
-  buildExpertOutputTemplateWriteGuard,
   buildExpertRuntimeTurnInstruction,
   buildNormalRuntimeResetInstruction,
   ExpertRuntimeBindingError,
@@ -3590,7 +3589,7 @@ type RuntimeSettings = {
   workflowSessionId?: string
   workflowSystemPrompt?: string
   expertSystemPrompt?: string
-  expertOutputTemplateWriteGuard?: string
+  expertSessionId?: string
 }
 
 async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> {
@@ -3654,9 +3653,9 @@ async function getRuntimeSettingsWithWorkflowPolicy(
   const expertSystemPrompt = workflowIsActive
     ? null
     : buildExpertRuntimeTurnInstruction(expert, { modelId: settings.model })
-  const expertOutputTemplateWriteGuard = workflowIsActive
-    ? null
-    : buildExpertOutputTemplateWriteGuard(expert)
+  const expertSessionId = !workflowIsActive && hasActiveExpertRuntime(expert) && expert.runtimeBinding.outputMode === 'template-fill'
+    ? sessionId
+    : undefined
   const disallowedTools = [...new Set([
     ...workflowDisallowedTools,
     ...expertToolPolicy.disallowedTools,
@@ -3671,7 +3670,7 @@ async function getRuntimeSettingsWithWorkflowPolicy(
   const expertSettings = expertSystemPrompt
     ? {
         expertSystemPrompt,
-        ...(expertOutputTemplateWriteGuard ? { expertOutputTemplateWriteGuard } : {}),
+        ...(expertSessionId ? { expertSessionId } : {}),
       }
     : {}
   return disallowedTools.length > 0

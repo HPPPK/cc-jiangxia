@@ -402,6 +402,18 @@ describe('ConversationService', () => {
     expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe('1')
   })
 
+  test('passes a template-fill Expert session ID only to the desktop SDK child environment', async () => {
+    const service = new ConversationService() as any
+    const env = (await service.buildChildEnv(
+      '/tmp',
+      'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
+      { expertSessionId: 'template-fill-session' },
+    )) as Record<string, string>
+
+    expect(env.CC_JIANGXIA_EXPERT_SESSION_ID).toBe('template-fill-session')
+    expect(env.CC_HAHA_EXPERT_SESSION_ID).toBe('template-fill-session')
+  })
+
   test('reports SDK connection authorization status reasons', () => {
     const service = new ConversationService() as any
     service.sessions.set('sdk-test-session', {

@@ -2923,7 +2923,7 @@ describe('WebSocket handler workflow runtime gating', () => {
     )
     const sessionSettings = startSession.mock.calls[0]?.[3]
     expect(sessionSettings?.expertSystemPrompt).toBeUndefined()
-    expect(sessionSettings?.expertOutputTemplateWriteGuard).toBeUndefined()
+    expect(sessionSettings?.expertSessionId).toBeUndefined()
     const disallowedTools = sessionSettings?.disallowedTools ?? []
     expect(disallowedTools).not.toContain('Bash')
     for (const toolName of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Agent', 'workflow_template_authoring']) {

@@ -467,6 +467,11 @@ async function handleSessionExpertRoute(
     if (!expertId) throw ApiError.badRequest('请选择一个专家。')
     return Response.json({ expert: await expertSessionService.enterExpertMode(sessionId, expertId) })
   }
+  if (action === 'template-fill') {
+    if (req.method !== 'POST') throw new ApiError(405, `Method ${req.method} not allowed`, 'METHOD_NOT_ALLOWED')
+    const body = await readOptionalObjectBody(req)
+    return Response.json(await expertSessionService.renderTemplateFill(sessionId, body.payload))
+  }
   if (action === 'intake') {
     if (req.method !== 'POST') throw new ApiError(405, `Method ${req.method} not allowed`, 'METHOD_NOT_ALLOWED')
     const body = await readOptionalObjectBody(req)
