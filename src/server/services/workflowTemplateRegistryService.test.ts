@@ -453,7 +453,9 @@ describe('workflow template registry service', () => {
       subagentPolicy: expect.objectContaining({
         allowedRoles: expect.arrayContaining(['coder', 'reviewer']),
         sequence: ['coder', 'reviewer'],
-        maxParallel: 1,
+        maxParallel: null,
+        parallelSubagentsAllowed: true,
+        controlledBy: 'host-runtime',
         contextPolicy: 'brief-only',
         reviewerReadOnly: true,
         coderRequiredReturn: ['changedFiles', 'completedItems', 'skippedItems', 'testsRun', 'testResults', 'blockers', 'risks', 'summary', 'readyForReview'],

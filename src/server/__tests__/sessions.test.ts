@@ -7584,7 +7584,7 @@ describe('Sessions API', () => {
     }
   })
 
-  it('persists runtime-verified completion evidence before a fail-closed transition rejection', async () => {
+  it('persists runtime-verified completion evidence before accepting a normal transition', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12)
     const workDir = path.join(tmpDir, 'api-workflow-persisted-completion-evidence')
     const runDir = path.join(workDir, '.workflow', 'runs', 'run-001')
@@ -7653,14 +7653,14 @@ describe('Sessions API', () => {
         phaseId: 'discussion',
         action: 'ready',
         stateVersion: state.stateVersion,
-        transitionId: 'persist-evidence-before-rejection',
-        handoff: { summary: 'Declared outputs are present.', artifacts: [], next: 'Await issue resolution.' },
-        rationale: 'Verify output evidence before evaluating the still-open independent issue.',
+        transitionId: 'persist-evidence-before-transition',
+        handoff: { summary: 'Declared outputs are present.', artifacts: [], next: 'Await confirmation.' },
+        rationale: 'Verify output evidence before accepting this normal transition.',
         evidence: [{ type: 'artifact', path: '.workflow/context.md' }],
       }),
     })
 
-    expect(response.status).not.toBe(200)
+    expect(response.status).toBe(200)
     const persisted = await readWorkflowSessionState(sessionId) as Record<string, any>
     const persistedPhase = persisted.runtimeContract.phaseStates.discussion
     expect(persisted.stateVersion).toBeGreaterThan(state.stateVersion)

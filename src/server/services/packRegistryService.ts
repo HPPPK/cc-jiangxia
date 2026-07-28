@@ -115,11 +115,17 @@ const adapter = new ZipPackAdapter()
 // A stored pack is user-owned. These fingerprints are the only legacy packs
 // that may be refreshed automatically: they identify an unchanged shipped V5
 // template, rather than relying on its id or version alone.
-const KNOWN_BUNDLED_WORKFLOW_UPGRADES = new Map<string, { version: string; fingerprint: string }>([
-  ['efficient-constrained-dev-debug-workflow-v5', {
-    version: '9',
-    fingerprint: '078573febf09165e6cb12517ad7c10abdaff113e0a3af00b1634fc0e622944c5',
-  }],
+const KNOWN_BUNDLED_WORKFLOW_UPGRADES = new Map<string, ReadonlyArray<{ version: string; fingerprint: string }>>([
+  ['efficient-constrained-dev-debug-workflow-v5', [
+    {
+      version: '9',
+      fingerprint: '078573febf09165e6cb12517ad7c10abdaff113e0a3af00b1634fc0e622944c5',
+    },
+    {
+      version: '10',
+      fingerprint: 'ba06243dd41f45402dfb8822de33203115449e5a5a4f9474c820deeae038f6f2',
+    },
+  ]],
 ])
 let cachedIndex: PackRegistryIndex | null = null
 let cachedIndexPath: string | null = null
@@ -233,11 +239,18 @@ function canonicalizeWorkflowTemplate(value: unknown): unknown {
     .map((key) => [key, canonicalizeWorkflowTemplate(value[key])]))
 }
 
+export function isKnownBundledWorkflowFingerprint(workflowId: string, version: string, fingerprint: string): boolean {
+  return KNOWN_BUNDLED_WORKFLOW_UPGRADES.get(workflowId)?.some((candidate) =>
+    candidate.version === version && candidate.fingerprint === fingerprint,
+  ) ?? false
+}
+
 export function isKnownBundledWorkflowUpgrade(workflow: WorkflowTemplateRegistryTemplate): boolean {
-  const known = KNOWN_BUNDLED_WORKFLOW_UPGRADES.get(workflow.id)
-  return !!known
-    && workflow.version === known.version
-    && canonicalWorkflowFingerprint(workflow) === known.fingerprint
+  return isKnownBundledWorkflowFingerprint(
+    workflow.id,
+    workflow.version,
+    canonicalWorkflowFingerprint(workflow),
+  )
 }
 
 function clone<T>(value: T): T {

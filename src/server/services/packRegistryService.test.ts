@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   PackRegistryService,
+  isKnownBundledWorkflowFingerprint,
   getWorkflowPackStorageDir,
   resetPackRegistryForTests,
 } from './packRegistryService.js'
@@ -125,6 +126,15 @@ afterEach(async () => {
 })
 
 describe('PackRegistryService', () => {
+  test('recognizes only the exact official v10 development-workflow fingerprint as auto-upgradeable', () => {
+    const workflowId = 'efficient-constrained-dev-debug-workflow-v5'
+    const officialV10Fingerprint = 'ba06243dd41f45402dfb8822de33203115449e5a5a4f9474c820deeae038f6f2'
+
+    expect(isKnownBundledWorkflowFingerprint(workflowId, '10', officialV10Fingerprint)).toBe(true)
+    expect(isKnownBundledWorkflowFingerprint(workflowId, '10', '0'.repeat(64))).toBe(false)
+    expect(isKnownBundledWorkflowFingerprint(workflowId, '11', officialV10Fingerprint)).toBe(false)
+  })
+
   test('imports a workflow ZIP pack and lists schemaVersion 2 workflows from registry', async () => {
     const service = new PackRegistryService()
     const archive = await makeWorkflowPackZip()
