@@ -34,7 +34,6 @@ import {
 import { getWorkflowPhaseActionPolicy } from './workflowToolPolicy.js'
 import {
   applyWorkflowPhaseProgress,
-  getWorkflowCompletionEligibility,
   markWorkflowPhaseStarted,
   migrateWorkflowRuntimeContract,
 } from './workflowCompletionGate.js'
@@ -1456,15 +1455,6 @@ export class WorkflowRuntimeService {
         `Workflow route intent "${input.request.intent}" is not available while the current phase is blocked.`,
       )
     }
-    if (!isControlRoute && !isBlockedRecovery) {
-      const eligibility = getWorkflowCompletionEligibility(state)
-      if (eligibility.status !== 'eligible') {
-        throw workflowError(
-          'WORKFLOW_COMPLETION_INELIGIBLE',
-          'Current workflow phase is not completion-eligible: ' + eligibility.reasons.join(' '),
-        )
-      }
-    }
 
     if (state.pendingRoute?.status === 'pending') {
       throw workflowError('WORKFLOW_PENDING_CONFLICT', 'Workflow already has a pending route.')
@@ -1600,15 +1590,6 @@ export class WorkflowRuntimeService {
     }
 
     validateCompletionSubmission(input.state, input.submission)
-    if (isReadyCompletionStatus(input.submission.status)) {
-      const eligibility = getWorkflowCompletionEligibility(input.state)
-      if (eligibility.status !== 'eligible') {
-        throw workflowError(
-          'WORKFLOW_COMPLETION_INELIGIBLE',
-          'Current workflow phase is not completion-eligible: ' + eligibility.reasons.join(' '),
-        )
-      }
-    }
     if (
       isReadyCompletionStatus(input.submission.status)
       && input.state.pendingConfirmation?.status === 'pending'

@@ -22,10 +22,6 @@ vi.mock('../../api/sessions', () => ({
   },
 }))
 
-vi.mock('../controls/PermissionModeSelector', () => ({
-  PermissionModeSelector: () => <button type="button">Permission mode</button>,
-}))
-
 import { AskUserQuestion } from './AskUserQuestion'
 import { useChatStore } from '../../stores/chatStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -177,55 +173,22 @@ describe('AskUserQuestion', () => {
     expect(sent.updatedInput?.workflowChoiceActions).toBeUndefined()
   })
 
-  it('shows the real permission mode control when a workflow asks for tool access', () => {
+  it('submits a business authorization answer without rendering or invoking runtime permission control', () => {
+    const question = '\u662f\u5426\u5177\u5907\u5b66\u6821\u6388\u6743\uff0c\u53ef\u4ee5\u5904\u7406\u771f\u5b9e\u5b66\u751f\u6570\u636e\uff1f'
+    const authorized = '\u6709\u6388\u6743\uff08\u63a8\u8350\uff09'
+
     render(
       <AskUserQuestion
         toolUseId="tool-1"
-        input={{
-          questions: [
-            {
-              question: '当前会话中缺少创建文件的工具权限，无法自动写入项目代码。如何继续？',
-              options: [
-                { label: '请我手动创建目录和文件 (Recommended)' },
-                { label: '授权终端访问权限', description: '如果可能，授权我使用终端来创建目录结构和文件' },
-                { label: '暂停，稍后继续' },
-              ],
-            },
-          ],
-        }}
+        input={{ questions: [{ question, options: [{ label: authorized }, { label: '\u6682\u65e0\u6388\u6743' }] }] }}
       />,
     )
 
-    expect(screen.getByText(/choose permissions in the selector/i)).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: /permission mode/i }).length).toBeGreaterThan(0)
-    expect((screen.getByRole('button', { name: /授权终端访问权限/i }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(/use the permission selector above/i)).toBeTruthy()
-  })
+    expect(screen.queryByText(/choose permissions in the selector/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /permission mode/i })).toBeNull()
 
-  it('does not submit fake permission grant answers as workflow authorization', () => {
-    render(
-      <AskUserQuestion
-        toolUseId="tool-1"
-        input={{
-          questions: [
-            {
-              question: '当前会话缺少文件/终端权限。如何继续？',
-              options: [
-                { label: '授予文件/终端权限 (Recommended)' },
-                { label: '请我手动创建目录和文件' },
-                { label: '暂停，稍后继续' },
-              ],
-            },
-          ],
-        }}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /授予文件\/终端权限/i }))
-    expect((screen.getByRole('button', { name: /submit/i }) as HTMLButtonElement).disabled).toBe(true)
-    expect(sendMock).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: /请我手动创建目录和文件/i }))
+    fireEvent.click(screen.getByRole('button', { name: authorized }))
+    expect((screen.getByRole('button', { name: /submit/i }) as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: /submit/i }))
 
     expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, {
@@ -233,19 +196,8 @@ describe('AskUserQuestion', () => {
       requestId: 'perm-1',
       allowed: true,
       updatedInput: {
-        questions: [
-          {
-            question: '当前会话缺少文件/终端权限。如何继续？',
-            options: [
-              { label: '授予文件/终端权限 (Recommended)' },
-              { label: '请我手动创建目录和文件' },
-              { label: '暂停，稍后继续' },
-            ],
-          },
-        ],
-        answers: {
-          '当前会话缺少文件/终端权限。如何继续？': '请我手动创建目录和文件',
-        },
+        questions: [{ question, options: [{ label: authorized }, { label: '\u6682\u65e0\u6388\u6743' }] }],
+        answers: { [question]: authorized },
       },
     })
   })

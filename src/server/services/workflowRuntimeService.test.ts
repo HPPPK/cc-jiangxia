@@ -2237,6 +2237,33 @@ describe('WorkflowRuntimeService', () => {
       })
     }
 
+    test('allows an ordinary ready completion to request confirmation even when legacy runtime evidence is ineligible', async () => {
+      const service = await makeService()
+      const state = runningState({
+        runtimeContract: {
+          ...readyRuntimeContract(runningState().phases),
+          phaseStates: {
+            requirements: {
+              ...readyRuntimeContract(runningState().phases).phaseStates.requirements,
+              workStatus: 'in-progress',
+              eligibility: 'ineligible',
+              blockerReasons: ['Legacy evidence has not been processed.'],
+            },
+          },
+        },
+      })
+
+      const result = await service.submitPhaseCompletion({
+        state,
+        requestedAt: '2026-05-20T00:04:30.000Z',
+        transitionId: 'submit-ineligible-contract-1',
+        submission: completionSubmission(),
+      })
+
+      expect(result.status).toBe('pending')
+      expect(result.state.pendingConfirmation).toMatchObject({ phaseId: 'requirements', status: 'pending' })
+    })
+
     test('records ready completion as a pending artifact without advancing the active phase', async () => {
       const service = await makeService()
 

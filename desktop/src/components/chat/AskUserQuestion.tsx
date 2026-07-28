@@ -3,7 +3,6 @@ import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import { Button } from '../shared/Button'
-import { PermissionModeSelector } from '../controls/PermissionModeSelector'
 
 type QuestionOption = {
   id?: string
@@ -86,25 +85,6 @@ function getSelectedAnswer(question: Question, selected: string[] | undefined) {
     questionOptions(question).find((option) => (option.id ?? option.label) === optionKey)?.label ?? optionKey,
   )
   return question.multiSelect ? labels.join(', ') : labels[0] ?? ''
-}
-
-function textSuggestsPermissionSetup(value: string): boolean {
-  return /权限|授权|终端访问|工具访问|tool permission|permission|terminal access|write tools|bash/i.test(value)
-}
-
-function textSuggestsFakePermissionGrantOption(value: string): boolean {
-  return /授予|授权|开启.*权限|允许.*权限|grant|authorize|allow.*permission|allow.*terminal|allow.*shell|allow.*bash|allow.*write|enable.*permission|enable.*terminal|enable.*shell|enable.*bash|enable.*write/i.test(value)
-}
-
-function optionIsFakePermissionGrant(option: QuestionOption): boolean {
-  return textSuggestsFakePermissionGrantOption(`${option.label}\n${option.description ?? ''}`)
-}
-
-function questionNeedsPermissionControl(question: Question): boolean {
-  if (textSuggestsPermissionSetup(questionText(question))) return true
-  return questionOptions(question).some((option) =>
-    textSuggestsPermissionSetup(option.label) || textSuggestsPermissionSetup(option.description ?? '')
-  )
 }
 
 function resultContentToText(result: unknown): string | null {
@@ -236,7 +216,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const submitted = hasTerminalResult || hasSubmitted
   const interactionLocked = submitted || submissionStatus === 'submitting' || submissionStatus === 'stale'
   const terminalWithoutAnswers = submitted && !hasStructuredAnswers && resultText.length > 0
-  const showPermissionControl = !submitted && !!activeQuestion && questionNeedsPermissionControl(activeQuestion)
 
   if (hasStructuredAnswers) {
     return (
@@ -254,10 +233,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const handleSelect = (qIndex: number, optionKey: string) => {
     if (interactionLocked) return
     const question = questions[qIndex]
-    const option = question
-      ? questionOptions(question).find((candidate) => (candidate.id ?? candidate.label) === optionKey)
-      : undefined
-    if (showPermissionControl && option && optionIsFakePermissionGrant(option)) return
     const selected = selections[qIndex] ?? []
     const shouldAdvance =
       question &&
@@ -444,21 +419,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
           {questionText(activeQuestion)}
         </p>
 
-        {showPermissionControl ? (
-          <div className="mb-3 rounded-[var(--radius-md)] border border-[var(--color-warning)]/25 bg-[var(--color-warning)]/8 px-3 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold text-[var(--color-text-primary)]">
-                  {t('question.permissionControlTitle')}
-                </div>
-                <p className="mt-0.5 text-xs leading-5 text-[var(--color-text-secondary)]">
-                  {t('question.permissionControlDescription')}
-                </p>
-              </div>
-              <PermissionModeSelector compact />
-            </div>
-          </div>
-        ) : null}
 
         {/* Option cards */}
         {questionOptions(activeQuestion).length > 0 && (
@@ -466,19 +426,17 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
             {questionOptions(activeQuestion).map((opt, optIndex) => {
               const isSelected = selections[safeActiveTab]?.includes(opt.id ?? opt.label) ?? false
               const isMultiSelect = activeQuestion.multiSelect === true
-              const fakePermissionGrant = showPermissionControl && optionIsFakePermissionGrant(opt)
               return (
                 <button
                   key={optIndex}
                   data-testid={`ask-user-option-${safeActiveTab}-${opt.id ?? opt.label}`}
                   onClick={() => handleSelect(safeActiveTab, opt.id ?? opt.label)}
-                  disabled={submitted || fakePermissionGrant}
-                  aria-disabled={fakePermissionGrant || undefined}
+                  disabled={submitted}
                   className={`w-full text-left px-4 py-3 rounded-[var(--radius-md)] border transition-all duration-150 cursor-pointer ${
                     isSelected
                       ? 'border-[var(--color-brand)] bg-[var(--color-primary-fixed)]/35 ring-1 ring-[var(--color-brand)]/25'
                       : 'border-[var(--color-outline-variant)]/40 bg-[var(--color-surface)] hover:border-[var(--color-outline-variant)] hover:bg-[var(--color-surface-container-low)]'
-                  } ${submitted || fakePermissionGrant ? 'cursor-not-allowed opacity-60 hover:border-[var(--color-outline-variant)]/40 hover:bg-[var(--color-surface)]' : ''}`}
+                  } ${submitted ? 'cursor-not-allowed opacity-60 hover:border-[var(--color-outline-variant)]/40 hover:bg-[var(--color-surface)]' : ''}`}
                 >
                   <div className="flex items-start gap-3">
                     {/* Selection indicator */}
@@ -504,11 +462,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
                       {opt.description && (
                         <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
                           {opt.description}
-                        </p>
-                      )}
-                      {fakePermissionGrant && (
-                        <p className="mt-1 text-xs font-medium text-[var(--color-warning)]">
-                          {t('question.permissionOptionDisabled')}
                         </p>
                       )}
                     </div>

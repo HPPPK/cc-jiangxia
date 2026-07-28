@@ -337,7 +337,7 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
       const manifest = await archive.readJson<{ dependencies?: { requiredHostTools?: Array<{ name: string; supported: boolean }> } }>('manifest.json')
       const workflowEntry = archive.entries.find((entry) => entry.path.startsWith('workflows/') && entry.path.endsWith('.workflow.json'))
       if (!workflowEntry) throw new Error('Workflow entry is missing from ' + workflow.packFile)
-      const template = await archive.readJson<{ phases: Array<{ id: string; runtimeContract?: { toolAccess?: { allowed?: string[] } }; instructions?: string; executionRules?: string[] }> }>(workflowEntry.path)
+      const template = await archive.readJson<{ phases: Array<{ id: string; runtimeContract?: { toolAccess?: { allowed?: string[] } }; instructions?: string; executionRules?: string[]; subagentPolicy?: { parallelSubagentsAllowed?: boolean; maxParallel?: number | null; controlledBy?: string; sequence?: string[] } }> }>(workflowEntry.path)
 
       expect(hostTools.requiredHostTools.map((tool) => tool.name)).toEqual(CANONICAL_WORKFLOW_PROTOCOL_TOOLS)
       expect(hostTools.requiredHostTools.every((tool) => tool.supported)).toBe(true)
@@ -361,6 +361,25 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
       }
     }
   })
+  test('allows the development implementation phase to schedule independent batches through the host runtime while keeping Coder before Reviewer', async () => {
+    const adapter = new ZipPackAdapter()
+    const source = path.join(process.cwd(), 'src', 'server', 'packs', 'efficient-constrained-dev-debug-workflow-v5.zip')
+    const archive = await adapter.read(new Uint8Array(await fs.readFile(source)))
+    const workflowEntry = archive.entries.find((entry) => entry.path.startsWith('workflows/') && entry.path.endsWith('.workflow.json'))
+    if (!workflowEntry) throw new Error('Development workflow entry is missing')
+    const template = await archive.readJson<{ phases: Array<{ id: string; instructions?: string; subagentPolicy?: { parallelSubagentsAllowed?: boolean; maxParallel?: number | null; controlledBy?: string; sequence?: string[] } }> }>(workflowEntry.path)
+    const phase = template.phases.find((candidate) => candidate.id === 'delegate-implement')
+
+    expect(phase?.subagentPolicy).toMatchObject({
+      parallelSubagentsAllowed: true,
+      maxParallel: null,
+      controlledBy: 'host-runtime',
+      sequence: ['coder', 'reviewer'],
+    })
+    expect(phase?.instructions).toContain('Coder → Reviewer')
+    expect(phase?.instructions).toContain('write scopes')
+  })
+
   test('runs every actual ZIP workflow through stage permissions, malformed completion rejection, pause/resume, invalid routes, repair loops, and final completion', async () => {
     await initializeIsolatedPackRegistry()
     const service = runtimeService()
