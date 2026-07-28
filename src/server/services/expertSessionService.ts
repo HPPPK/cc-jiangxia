@@ -7,6 +7,7 @@ import { conversationService } from './conversationService.js'
 import { ExpertPackRegistryService, ExpertPackValidationError, type ExpertIntakeState, type ExpertMaterialRef, type ExpertSessionMetadata } from './expertPackRegistryService.js'
 import { ExpertRuntimeService } from './expertRuntimeService.js'
 import { createExpertRuntimeBinding, hasActiveExpertRuntime } from './expertRuntimeBindingService.js'
+import { renderExpertTemplateFill } from '../../utils/expertTemplateFill.js'
 
 const registry = new ExpertPackRegistryService()
 const runtime = new ExpertRuntimeService()
@@ -118,6 +119,25 @@ export class ExpertSessionService {
       expert: metadata,
     })
     return { expert: metadata, intakeState }
+  }
+
+  async renderTemplateFill(sessionId: string, payload: unknown): Promise<{ content: string; templateId: string }> {
+    const session = await sessionService.getSession(sessionId)
+    if (!session) throw ApiError.notFound(`Session not found: ${sessionId}`)
+    const expert = session.expert
+    if (!hasActiveExpertRuntime(expert)) {
+      throw ApiError.badRequest('当前会话没有启用可用的专家模板填充输出。请重新进入专家 Mode 后重试。')
+    }
+    const binding = expert.runtimeBinding
+    if (binding.outputMode !== 'template-fill' || !binding.outputTemplate) {
+      throw ApiError.badRequest('当前专家不使用模板填充输出；请按该专家自身的交付方式操作。')
+    }
+    try {
+      const rendered = renderExpertTemplateFill(binding.outputTemplate.content, payload)
+      return { content: rendered.content, templateId: rendered.schema.templateId }
+    } catch (error) {
+      throw ApiError.badRequest(`专家模板字段校验未通过：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   async runExpertAgent(sessionId: string, input: { expertId?: string; projectRoot?: string; title?: string; notes?: string } = {}): Promise<{ expert: ExpertSessionMetadata; materialRef: ExpertMaterialRef }> {

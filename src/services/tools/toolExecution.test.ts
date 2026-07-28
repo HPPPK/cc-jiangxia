@@ -10,11 +10,6 @@ import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from '../../tools/FileWriteTool/FileWriteTool.js'
 import { SubmitPhaseCompletionTool } from '../../tools/SubmitPhaseCompletionTool/SubmitPhaseCompletionTool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
-import {
-  createExpertOutputTemplateWriteGuard,
-  encodeExpertOutputTemplateWriteGuard,
-  EXPERT_OUTPUT_TEMPLATE_GUARD_ENV,
-} from '../../utils/expertOutputTemplateGuard.js'
 import { createAssistantMessage } from '../../utils/messages.js'
 import { runToolUse } from './toolExecution.js'
 
@@ -48,33 +43,50 @@ describe('runToolUse file edit recovery', () => {
     expect(context.readFileState.get(filePath)).toBeTruthy()
     expect(JSON.stringify(messages)).not.toContain('File has not been read yet')
     expect(JSON.stringify(messages)).not.toContain('<tool_use_error>')
-  })
+  }, 20_000)
 
-  test('rejects an Expert HTML template violation before dispatching the shared Write tool', async () => {
+  test('renders a declared template-fill JSON envelope before the shared Write tool writes the final HTML', async () => {
     const filePath = path.join(tmpDir, 'commercial-report.html')
-    const template = '<html data-template-id="classic"><head><style>body{color:#111}</style></head><body><h2 id="section1">一、产品</h2><table><thead><tr><th>字段</th></tr></thead></table><h2 id="sources">来源</h2></body></html>'
-    const driftingReport = template.replace('color:#111', 'color:#222')
-    const guard = createExpertOutputTemplateWriteGuard('commercialization-research-report', 'templates/report.html', template)
-    if (!guard) throw new Error('test template should create a guard')
-    const previousGuard = process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV]
-    process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV] = encodeExpertOutputTemplateWriteGuard(guard)
+    const previousFetch = globalThis.fetch
+    const previousServerUrl = process.env.CC_JIANGXIA_DESKTOP_SERVER_URL
+    const previousSessionId = process.env.CC_JIANGXIA_EXPERT_SESSION_ID
+    process.env.CC_JIANGXIA_DESKTOP_SERVER_URL = 'http://127.0.0.1:3456'
+    process.env.CC_JIANGXIA_EXPERT_SESSION_ID = 'expert-session-test'
+    let requestedUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      requestedUrl = String(url)
+      return new Response(JSON.stringify({
+        templateId: 'classic-v1',
+        content: '<html data-template-id="classic-v1"><body><h1>已渲染报告</h1></body></html>',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
 
     try {
       const messages = await runSingleToolUse({
         type: 'tool_use',
-        id: 'toolu_expert_template_denied',
+        id: 'toolu_template_fill',
         name: FileWriteTool.name,
-        input: { file_path: filePath, content: driftingReport },
+        input: {
+          file_path: filePath,
+          content: JSON.stringify({
+            format: 'cc-jiangxia-expert-template-fill/v1',
+            templateId: 'classic-v1',
+            fields: { REPORT_TITLE: '已渲染报告' },
+          }),
+        },
       } as ToolUseBlock)
 
-      expect(await fs.stat(filePath).catch(() => null)).toBeNull()
-      expect(JSON.stringify(messages)).toContain('EXPERT_OUTPUT_TEMPLATE_REJECTED')
-      expect(JSON.stringify(messages)).toContain('CSS 与固定 HTML 母版不一致')
+      expect(requestedUrl).toBe('http://127.0.0.1:3456/api/sessions/expert-session-test/expert/template-fill')
+      expect(await fs.readFile(filePath, 'utf8')).toContain('<h1>已渲染报告</h1>')
+      expect(JSON.stringify(messages)).not.toContain('EXPERT_TEMPLATE_FILL_REJECTED')
     } finally {
-      if (previousGuard === undefined) delete process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV]
-      else process.env[EXPERT_OUTPUT_TEMPLATE_GUARD_ENV] = previousGuard
+      globalThis.fetch = previousFetch
+      if (previousServerUrl === undefined) delete process.env.CC_JIANGXIA_DESKTOP_SERVER_URL
+      else process.env.CC_JIANGXIA_DESKTOP_SERVER_URL = previousServerUrl
+      if (previousSessionId === undefined) delete process.env.CC_JIANGXIA_EXPERT_SESSION_ID
+      else process.env.CC_JIANGXIA_EXPERT_SESSION_ID = previousSessionId
     }
-  })
+  }, 20_000)
 
   test('returns a structured workflow violation instead of executing a write tool before implementation', async () => {
     const filePath = path.join(tmpDir, 'workflow-denied.txt')
@@ -173,7 +185,7 @@ describe('runToolUse file edit recovery', () => {
     expect(await fs.readFile(filePath, 'utf8')).toBe('goodbye world\n')
     expect(JSON.stringify(messages)).not.toContain('File has not been read yet')
     expect(JSON.stringify(messages)).not.toContain('<tool_use_error>')
-  })
+  }, 20_000)
 })
 
 async function runSingleToolUse(

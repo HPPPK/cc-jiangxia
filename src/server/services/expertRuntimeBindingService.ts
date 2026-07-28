@@ -1,9 +1,5 @@
 import { getToolsForDefaultPreset } from '../../tools.js'
-import { isWebSearchEnabledForModel } from '../../tools/WebSearchTool/backend.js'
-import {
-  createExpertOutputTemplateWriteGuard,
-  encodeExpertOutputTemplateWriteGuard,
-} from '../../utils/expertOutputTemplateGuard.js'
+import { deriveExpertTemplateFillSchema, EXPERT_TEMPLATE_FILL_FORMAT } from '../../utils/expertTemplateFill.js'
 import type { ExpertRuntimeContext } from './expertRuntimeService.js'
 import type { ExpertHostTool, ExpertRuntimeBinding, ExpertSessionMetadata, ExpertToolManifest } from './expertPackRegistryService.js'
 
@@ -15,7 +11,7 @@ const MAX_OUTPUT_TEMPLATE_CHARACTERS = 12_000
 // Expert packs may describe recommended tools, but they do not narrow the
 // desktop's actual tool pool. Edit is intentionally unavailable to every
 // Expert Mode session; use Write or Bash when an expert needs to create output.
-const EXPERT_GLOBALLY_DISABLED_TOOL_NAMES = new Set(['Edit'])
+const EXPERT_GLOBALLY_DISABLED_TOOL_NAMES = new Set(['Edit', 'WebSearch'])
 
 export class ExpertRuntimeBindingError extends Error {
   readonly code = 'EXPERT_RUNTIME_BINDING_MISSING'
@@ -34,7 +30,6 @@ export type ExpertRuntimeTurnOptions = {
 type ExpertRuntimeToolAvailability = {
   hostTools: ExpertHostTool[]
   toolNames: string[]
-  webSearchUnavailable: boolean
 }
 
 function bounded(value: string | undefined, limit: number): string {
@@ -57,29 +52,22 @@ function isDeclaredHostToolAvailable(
 }
 
 export function resolveCurrentExpertRuntimeToolNames(
-  modelId?: string,
+  _modelId?: string,
   baseToolNames: Iterable<string> = getToolsForDefaultPreset(),
-  webSearchEnabledForModel: (model: string) => boolean = isWebSearchEnabledForModel,
 ): string[] {
-  const enabled = new Set(baseToolNames)
-  if (modelId?.trim()) {
-    if (webSearchEnabledForModel(modelId)) enabled.add('WebSearch')
-    else enabled.delete('WebSearch')
-  }
-  return [...enabled].filter((toolName) => !EXPERT_GLOBALLY_DISABLED_TOOL_NAMES.has(toolName))
+  return unique([...new Set(baseToolNames)].filter((toolName) => !EXPERT_GLOBALLY_DISABLED_TOOL_NAMES.has(toolName)))
 }
 
 export function resolveExpertRuntimeToolAvailability(
   binding: ExpertRuntimeBinding,
   enabledToolNames: Iterable<string> = getToolsForDefaultPreset(),
 ): ExpertRuntimeToolAvailability {
-  const enabled = new Set(enabledToolNames)
+  const enabled = new Set([...enabledToolNames].filter((toolName) => !EXPERT_GLOBALLY_DISABLED_TOOL_NAMES.has(toolName)))
   const hostTools = binding.hostTools.filter((tool) => tool.supported !== false && enabled.has(tool.id))
-  const toolNames = unique([...enabled].filter((toolName) => !EXPERT_GLOBALLY_DISABLED_TOOL_NAMES.has(toolName)))
+  const toolNames = unique([...enabled])
   return {
     hostTools,
     toolNames,
-    webSearchUnavailable: !enabled.has('WebSearch'),
   }
 }
 
@@ -109,14 +97,12 @@ export function resolveExpertRuntimeToolPolicy(
   }
 }
 
-function adaptSkillContentForRuntime(content: string, availability: ExpertRuntimeToolAvailability): string {
-  if (!availability.webSearchUnavailable) return content
-  const replacement = '[public web search is unavailable: ask the user for URLs, screenshots, copied page text, or source files instead]'
-  const adapted = content.replace(/\bWebSearch(?:Tool)?\b/g, replacement)
-  return [
-    'Runtime availability substitution: public web discovery is unavailable in this session. Do not invoke a search tool. Ask the user to provide URLs, screenshots, copied text, exported pages, or files; use WebFetch only for a URL the user has supplied or confirmed.',
-    adapted,
-  ].join('\n\n')
+function adaptSkillContentForRuntime(content: string): string {
+  // Existing imported packs may still contain obsolete names. Do not expose a
+  // non-Expert research mechanism to the model through a package-local Skill.
+  return content
+    .replace(/\bWebSearch(?:Tool)?\b/g, 'BrowserResearch candidate-URL workflow')
+    .replace(/\bweb search\b/gi, 'candidate-URL browser research')
 }
 
 export function createExpertRuntimeBinding(
@@ -152,6 +138,9 @@ export function createExpertRuntimeBinding(
           },
         }
       : {}),
+    ...(context.expert.outputMode
+      ? { outputMode: context.expert.outputMode }
+      : {}),
     ...(context.outputTemplate
       ? {
           outputTemplate: {
@@ -162,19 +151,6 @@ export function createExpertRuntimeBinding(
       : {}),
     activatedAt,
   }
-}
-
-export function buildExpertOutputTemplateWriteGuard(
-  expert: ExpertSessionMetadata | undefined,
-): string | null {
-  if (!hasActiveExpertRuntime(expert) || !expert.runtimeBinding.outputTemplate) return null
-  const template = expert.runtimeBinding.outputTemplate
-  const guard = createExpertOutputTemplateWriteGuard(
-    expert.runtimeBinding.expertId,
-    template.path,
-    template.content,
-  )
-  return guard ? encodeExpertOutputTemplateWriteGuard(guard) : null
 }
 
 export function hasActiveExpertRuntime(
@@ -200,7 +176,7 @@ export function buildExpertRuntimeTurnInstruction(
   const skills = binding.skills.map((skill) => [
     `## Skill: ${skill.title || skill.skillId}`,
     `Source: ${skill.path} (sha256:${skill.sha256})`,
-    adaptSkillContentForRuntime(skill.content, availability),
+    adaptSkillContentForRuntime(skill.content),
   ].join('\n')).join('\n\n---\n\n')
   const permissionLines = binding.permissions.map((permission) =>
     `- ${permission.id}: ${permission.description || 'explicit user authorization is required'}`,
@@ -213,9 +189,14 @@ export function buildExpertRuntimeTurnInstruction(
     'Keep normal conversational and streamed responses. Do not turn this into a blocking form flow.',
     'Enabled host tools for this turn. Call no other tool, even if the Expert ZIP or a Skill mentions it:',
     availability.toolNames.length ? availability.toolNames.map((name) => `- ${name}`).join('\n') : '- No additional host tool is available for this expert turn.',
-    ...(availability.webSearchUnavailable
-      ? ['Public research fallback: web discovery is unavailable for the current model/runtime. Ask the user for URLs, screenshots, copied page text, exported pages, or files. Do not call a search tool. WebFetch may only be used for a URL the user supplied or confirmed.']
-      : []),
+    ...(availability.toolNames.includes('BrowserResearch')
+      ? [
+          'Public research protocol: when product names, competitor names, or a research question need public evidence, construct candidate URLs from trusted domains, public entry points, task terms, and links discovered on successfully opened pages. Use BrowserResearch to open each candidate before treating it as a discovery or citation.',
+          'A candidate URL is not evidence. Record accessible pages, relevant links, access limits, and failed attempts. For a key field, try other relevant candidate URLs or discovered links before asking the user for material. If BrowserResearch still cannot obtain the needed evidence after reasonable attempts, use AskUserQuestion to request a replacement link, screenshot, source file, or permission to retain an evidence gap.',
+        ]
+      : [
+          'Public research limitation: BrowserResearch is not available for this turn. Do not claim that public pages were checked. Use AskUserQuestion to request a link, screenshot, copied page text, exported page, source file, or permission to retain an evidence gap.',
+        ]),
     'Permissions:',
     permissionLines.length ? permissionLines.join('\n') : '- Follow normal desktop permissions.',
     'Expert system prompt snapshot:',
@@ -225,15 +206,32 @@ export function buildExpertRuntimeTurnInstruction(
     ...(binding.outputProtocol
       ? ['Expert output protocol:', binding.outputProtocol.content]
       : []),
-    ...(binding.outputTemplate
+    ...(binding.outputMode === 'template-fill' && binding.outputTemplate
       ? [
-          'Mandatory expert output template:',
-          `Source: ${binding.outputTemplate.path}`,
-          'Use the following file as the exact starting document for the final output. Preserve its CSS, heading hierarchy, table headers, anchors, and all non-slot structure. Replace only {{...}} placeholders and <!-- SLOT: ... --> regions. Do not generate a new HTML layout.',
-          binding.outputTemplate.content,
-          'Before calling Write, check that no unresolved {{...}} placeholder or SLOT comment remains, and that every evidence-limited claim is visibly labeled as verified evidence, observation, hypothesis, or evidence gap.',
+          'Final report delivery uses server-rendered template filling:',
+          `Template source: ${binding.outputTemplate.path}`,
+          'Do not generate a complete HTML document, CSS, headings, table headers, or any other page structure for the final report.',
+          'After the user confirms the final .html path, call the existing Write tool once with that path and a strictly valid JSON object as content. The desktop server will render the fixed expert template; ordinary HTML text is not a formal report delivery.',
+          'Use this exact JSON protocol:',
+          JSON.stringify({
+            format: EXPERT_TEMPLATE_FILL_FORMAT,
+            templateId: deriveExpertTemplateFillSchema(binding.outputTemplate.content).templateId,
+            fields: { FIELD_ID: 'text, paragraph array, or table row arrays matching the schema below' },
+          }, null, 2),
+          'Allowed field schema (field IDs and table columns are authoritative):',
+          JSON.stringify(deriveExpertTemplateFillSchema(binding.outputTemplate.content), null, 2),
+          'Each final-report field must be present. Write evidence gaps as visible content such as “待验证 / 未取得 / 无法确认”; do not invent HTML or omit required fields.',
+          'Bash may create drafts or helper files, but it does not produce a server-verified formal report.',
         ]
-      : []),
+      : binding.outputTemplate
+        ? [
+            'Mandatory expert output template:',
+            `Source: ${binding.outputTemplate.path}`,
+            'Use the following file as the exact starting document for the final output. Preserve its CSS, heading hierarchy, table headers, anchors, and all non-slot structure. Replace only {{...}} placeholders and <!-- SLOT: ... --> regions. Do not generate a new HTML layout.',
+            binding.outputTemplate.content,
+            'Before calling Write, check that no unresolved {{...}} placeholder or SLOT comment remains, and that every evidence-limited claim is visibly labeled as verified evidence, observation, hypothesis, or evidence gap.',
+          ]
+        : []),
     'When a durable expert report is required, tell the user that the desktop Expert material control creates the downloadable material package. Do not fabricate a successful package write.',
     '</expert-runtime>',
   ].join('\n\n')

@@ -90,7 +90,7 @@ type SessionStartOptions = {
   workflowSystemPrompt?: string
   expertSystemPrompt?: string
   appendSystemPromptFile?: string
-  expertOutputTemplateWriteGuard?: string
+  expertSessionId?: string
 }
 
 type RuntimeEnvironmentVariables = Record<string, string | null>
@@ -1085,6 +1085,9 @@ export class ConversationService {
     delete cleanEnv.CC_JIANGXIA_WORKFLOW_SESSION_ID
     delete cleanEnv.CC_HAHA_WORKFLOW_SESSION_ID
     delete cleanEnv.CC_JIANGXIA_EXPERT_OUTPUT_TEMPLATE_GUARD
+    delete cleanEnv.CC_HAHA_EXPERT_OUTPUT_TEMPLATE_GUARD
+    delete cleanEnv.CC_JIANGXIA_EXPERT_SESSION_ID
+    delete cleanEnv.CC_HAHA_EXPERT_SESSION_ID
     if (this.shouldStripInheritedProviderEnv(options?.providerId)) {
       for (const key of PROVIDER_ENV_KEYS) {
         delete cleanEnv[key]
@@ -1154,8 +1157,8 @@ export class ConversationService {
       if (options?.workflowSessionId) {
         setJiangxiaEnvAliases(childEnv, 'WORKFLOW_SESSION_ID', options.workflowSessionId)
       }
-      if (options?.expertOutputTemplateWriteGuard) {
-        childEnv.CC_JIANGXIA_EXPERT_OUTPUT_TEMPLATE_GUARD = options.expertOutputTemplateWriteGuard
+      if (options?.expertSessionId) {
+        setJiangxiaEnvAliases(childEnv, 'EXPERT_SESSION_ID', options.expertSessionId)
       }
     }
     if (desktopServerUrl) {

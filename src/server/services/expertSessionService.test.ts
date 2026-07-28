@@ -22,8 +22,9 @@ async function installExpert(configRoot: string) {
   resetExpertPackRegistryForTests()
   await new ExpertPackRegistryService().importExpertPackZip(await adapter.write({
     'manifest.json': JSON.stringify({ packId: 'session-pack', name: 'Session Pack', version: '1.0.0', schemaVersion: 1, type: 'expert-pack', entrypoints: { experts: ['experts/session/expert.json'], skills: ['session-skill'] } }),
-    'experts/session/expert.json': JSON.stringify({ id: 'session-expert', name: 'Session Expert', description: 'Session test expert', promptPaths: { system: 'experts/session/system.md' }, skillIds: ['session-skill'] }),
+    'experts/session/expert.json': JSON.stringify({ id: 'session-expert', name: 'Session Expert', description: 'Session test expert', promptPaths: { system: 'experts/session/system.md' }, outputMode: 'template-fill', outputTemplatePath: 'experts/session/templates/report.html', skillIds: ['session-skill'] }),
     'experts/session/system.md': 'Session package prompt',
+    'experts/session/templates/report.html': '<html data-template-id="session-v1"><body><h1>{{REPORT_TITLE}}</h1><table><thead><tr><th>编号</th><th>链接（URL）</th></tr></thead><tbody><!-- SLOT: SOURCE_ROWS --></tbody></table></body></html>',
     'skills/session-skill/SKILL.md': 'Session package skill',
   }))
 }
@@ -57,6 +58,18 @@ describe('ExpertSessionService', () => {
     expect(expertSession?.expert?.runtimeBinding?.active).toBe(true)
     expect(expertSession?.expert).not.toHaveProperty('researchLedger')
     expect(expertSession?.workflow).toBeUndefined()
+
+    const rendered = await service.renderTemplateFill(sessionId, {
+      format: 'cc-jiangxia-expert-template-fill/v1',
+      templateId: 'session-v1',
+      fields: {
+        REPORT_TITLE: 'Session report',
+        SOURCE_ROWS: [['[1]', 'https://example.com']],
+      },
+    })
+    expect(rendered.templateId).toBe('session-v1')
+    expect(rendered.content).toContain('<h1>Session report</h1>')
+    expect(rendered.content).toContain('href="https://example.com/"')
 
     const written = await service.writeMaterialPackage(sessionId, { title: 'Session result' })
     const afterWrite = await sessionService.getSession(sessionId)

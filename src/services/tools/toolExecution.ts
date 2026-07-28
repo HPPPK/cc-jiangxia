@@ -51,7 +51,7 @@ import {
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
 import { getAllBaseTools } from '../../tools.js'
-import { getExpertOutputTemplateToolPolicyViolation } from '../../server/services/expertOutputTemplateToolPolicy.js'
+import { renderExpertTemplateFillForWrite } from './expertTemplateFillRuntime.js'
 import { isWorkflowPhaseToolDenied } from '../../server/services/workflowToolPolicy.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
@@ -765,30 +765,32 @@ async function checkPermissionsAndCallTool(
     ]
   }
 
-  // Expert output rules are session-scoped runtime policy, not part of the shared Write tool.
-  // They run after the tool schema is parsed and before the tool can validate or touch the filesystem.
-  const expertOutputTemplateViolation = getExpertOutputTemplateToolPolicyViolation(
-    tool.name,
-    parsedInput.data,
-  )
-  if (expertOutputTemplateViolation) {
-    logForDebugging(expertOutputTemplateViolation)
-    return [
-      {
-        message: createUserMessage({
-          content: [
-            {
+  // Template-fill is an Expert Runtime delivery protocol. It only activates for
+  // a deliberate JSON envelope and renders server-side before shared Write runs.
+  if (tool.name === FILE_WRITE_TOOL_NAME) {
+    try {
+      const rendered = await renderExpertTemplateFillForWrite(parsedInput.data)
+      if (rendered.kind === 'rendered') {
+        parsedInput.data.content = rendered.content
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logForDebugging(message)
+      return [
+        {
+          message: createUserMessage({
+            content: [{
               type: 'tool_result',
-              content: `<tool_use_error>${expertOutputTemplateViolation}</tool_use_error>`,
+              content: `<tool_use_error>${message}</tool_use_error>`,
               is_error: true,
               tool_use_id: toolUseID,
-            },
-          ],
-          toolUseResult: `Error: ${expertOutputTemplateViolation}`,
-          sourceToolAssistantUUID: assistantMessage.uuid,
-        }),
-      },
-    ]
+            }],
+            toolUseResult: `Error: ${message}`,
+            sourceToolAssistantUUID: assistantMessage.uuid,
+          }),
+        },
+      ]
+    }
   }
 
   // Validate input values. Each tool has its own validation logic

@@ -66,7 +66,7 @@ describe('ExpertPackRegistryService', () => {
     expect(getExpertPackStorageDir()).toBe(path.join(process.env.CLAUDE_CONFIG_DIR!, 'cc-jiangxia', 'experts', 'packs'))
   })
 
-  it('seeds a bundled Expert ZIP into user configuration on first load, then keeps it as the local override', async () => {
+  it('loads a bundled Expert ZIP without copying it into user configuration, then creates a local override on edit', async () => {
     const service = await makeService()
     const bundleDir = await mkdtemp(path.join(tmpdir(), 'bundled-expert-pack-'))
     tempRoots.push(bundleDir)
@@ -78,9 +78,6 @@ describe('ExpertPackRegistryService', () => {
     expect(await service.getExpert('custom-expert')).toEqual(expect.objectContaining({ id: 'custom-expert' }))
     expect(await service.readPackText('custom-expert-pack', 'experts/custom/prompts/system.md')).toContain('Custom Expert')
     expect(await service.exportExpertPackZip('custom-expert-pack')).toEqual(expect.objectContaining({ filename: 'custom-expert-pack.zip' }))
-    expect((await service.listPacks()).find((pack) => pack.packId === 'custom-expert-pack')).toEqual(expect.objectContaining({
-      storage: expect.objectContaining({ source: 'stored', path: 'custom-expert-pack.zip' }),
-    }))
 
     await service.updateExpertPack('custom-expert-pack', { name: 'Local override' })
     expect((await service.listPacks()).find((pack) => pack.packId === 'custom-expert-pack')).toEqual(expect.objectContaining({
@@ -332,6 +329,45 @@ describe('ExpertPackRegistryService', () => {
       outputTemplatePath: 'experts/custom/templates/report.html',
       outputTemplateContent: '<html>{{REPORT_TITLE}}</html>',
     }))
+  })
+
+  it('loads a template-fill expert only when its self-contained template exposes a valid schema', async () => {
+    const service = await makeService()
+    const entries = validPackEntries()
+    entries['experts/custom/expert.json'] = JSON.stringify({
+      id: 'custom-expert',
+      name: 'Custom expert',
+      description: 'Custom expert package',
+      promptPaths: { system: 'experts/custom/prompts/system.md' },
+      outputMode: 'template-fill',
+      outputTemplatePath: 'experts/custom/templates/report.html',
+      skillIds: ['custom-guide'],
+      formPaths: [],
+    })
+    entries['experts/custom/templates/report.html'] = '<html data-template-id="custom-v1"><body><h1>{{REPORT_TITLE}}</h1></body></html>'
+
+    const preview = await service.previewExpertPackZip(await adapter.write(entries))
+    expect(preview.experts[0]).toEqual(expect.objectContaining({
+      outputMode: 'template-fill',
+      outputTemplatePath: 'experts/custom/templates/report.html',
+    }))
+  })
+
+  it('rejects template-fill packs whose template has no fillable fields', async () => {
+    const service = await makeService()
+    const entries = validPackEntries()
+    entries['experts/custom/expert.json'] = JSON.stringify({
+      id: 'custom-expert',
+      name: 'Custom expert',
+      description: 'Custom expert package',
+      outputMode: 'template-fill',
+      outputTemplatePath: 'experts/custom/templates/report.html',
+      skillIds: ['custom-guide'],
+      formPaths: [],
+    })
+    entries['experts/custom/templates/report.html'] = '<html data-template-id="custom-v1"><body>static</body></html>'
+
+    await expect(service.previewExpertPackZip(await adapter.write(entries))).rejects.toThrow('专家包 HTML 母版不能用于模板填充')
   })
 
 })

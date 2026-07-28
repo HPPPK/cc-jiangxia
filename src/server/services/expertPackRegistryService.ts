@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { getAppStoragePath } from '../../utils/appIdentity.js'
 import { ZipPackAdapter, assertSafeZipPath, type ZipPackArchive } from './zipPackAdapter.js'
+import { deriveExpertTemplateFillSchema } from '../../utils/expertTemplateFill.js'
 
 export type ExpertSessionStatus = 'active' | 'collecting' | 'running' | 'completed' | 'exited' | 'failed'
 
@@ -50,6 +51,8 @@ export type ExpertIntakeState = {
   updatedAt: string
 }
 
+export type ExpertOutputMode = 'template-fill'
+
 export type ExpertRuntimeBinding = {
   schemaVersion: 1
   active: true
@@ -69,6 +72,7 @@ export type ExpertRuntimeBinding = {
   tools: ExpertToolManifest[]
   permissions: ExpertPermission[]
   outputProtocol?: { path: string; content: string }
+  outputMode?: ExpertOutputMode
   outputTemplate?: { path: string; content: string }
   activatedAt: string
 }
@@ -168,6 +172,7 @@ export type ExpertDefinition = {
   formPaths: string[]
   outputProtocolPath?: string
   outputProtocolContent?: string
+  outputMode?: ExpertOutputMode
   outputTemplatePath?: string
   outputTemplateContent?: string
   skillIds: string[]
@@ -603,33 +608,10 @@ export class ExpertPackRegistryService {
   private async loadAllPacks(): Promise<ExpertPackIndexEntry[]> {
     if (packsCache) return packsCache
 
-    await this.seedBundledExpertPacks()
     const bundled = await this.loadPacksFromDirectories(bundledExpertPackDirectories(), 'bundled')
     const stored = await this.loadPacksFromDirectories([getExpertPackStorageDir()], 'stored')
     packsCache = keepNewestExpertDefinitions([...bundled, ...stored])
     return packsCache
-  }
-
-  private async seedBundledExpertPacks(): Promise<void> {
-    const bundled = await this.loadPacksFromDirectories(bundledExpertPackDirectories(), 'bundled')
-    if (bundled.length === 0) return
-
-    const storageDir = getExpertPackStorageDir()
-    const stored = await this.loadPacksFromDirectories([storageDir], 'stored')
-    const storedPackIds = new Set(stored.map((pack) => pack.packId))
-
-    for (const pack of bundled) {
-      // A pack in the user store is user-owned, including a customized pack
-      // with the same id. Seed only missing defaults; never overwrite it.
-      if (storedPackIds.has(pack.packId)) continue
-      try {
-        await fs.mkdir(storageDir, { recursive: true })
-        await fs.copyFile(pack.storage.path, path.join(storageDir, `${safeFileSegment(pack.packId)}.zip`))
-        storedPackIds.add(pack.packId)
-      } catch {
-        // Keep the immutable bundled source available even if user storage is unavailable.
-      }
-    }
   }
 
   private async loadPacksFromDirectories(
@@ -698,6 +680,19 @@ export class ExpertPackRegistryService {
       assertSafeZipPath(entrypoint)
       if (!zip.has(entrypoint)) throw new Error(`\u4e13\u5bb6\u5305\u7f3a\u5c11\u4e13\u5bb6\u8bf4\u660e\uff1a${entrypoint}`)
       const expert = normalizeExpert(await zip.readJson(entrypoint), manifest, entrypoint, tools)
+      if (expert.outputMode === 'template-fill') {
+        if (!expert.outputTemplatePath) {
+          throw new ExpertPackValidationError('专家包声明 template-fill 输出模式时必须提供 outputTemplatePath。')
+        }
+        if (!zip.has(expert.outputTemplatePath)) {
+          throw new ExpertPackValidationError(`专家包不完整，缺少 HTML 母版：${expert.outputTemplatePath}。请重新导入完整专家 ZIP。`)
+        }
+        try {
+          deriveExpertTemplateFillSchema(await zip.readText(expert.outputTemplatePath))
+        } catch (error) {
+          throw new ExpertPackValidationError(`专家包 HTML 母版不能用于模板填充：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
       for (const skillId of expert.skillIds) {
         if (!manifest.entrypoints.skills.includes(skillId)) {
           throw new ExpertPackValidationError(`专家包 Skill 声明不一致：专家引用了未在 manifest 中声明的 Skill：${skillId}`)
@@ -902,8 +897,12 @@ function normalizeExpert(raw: unknown, manifest: ExpertPackManifest, entrypoint:
   formPaths.forEach(assertSafeZipPath)
   const outputProtocolPath = isNonEmptyString(raw.outputProtocolPath) ? raw.outputProtocolPath : undefined
   if (outputProtocolPath) assertSafeZipPath(outputProtocolPath)
+  const outputMode = raw.outputMode === 'template-fill' ? 'template-fill' as const : undefined
   const outputTemplatePath = isNonEmptyString(raw.outputTemplatePath) ? raw.outputTemplatePath : undefined
   if (outputTemplatePath) assertSafeZipPath(outputTemplatePath)
+  if (outputMode === 'template-fill' && !outputTemplatePath) {
+    throw new ExpertPackValidationError('专家包声明 template-fill 输出模式时必须提供 outputTemplatePath。')
+  }
   const skillIds = normalizeStringArray(raw.skillIds)
   const intakeFlow = normalizeIntakeFlow(raw.intakeFlow)
   const profile = normalizeExpertProfile(raw.profile)
@@ -922,6 +921,7 @@ function normalizeExpert(raw: unknown, manifest: ExpertPackManifest, entrypoint:
     promptPaths,
     formPaths,
     outputProtocolPath,
+    ...(outputMode ? { outputMode } : {}),
     outputTemplatePath,
     skillIds,
     hostTools: manifest.hostTools ?? [],

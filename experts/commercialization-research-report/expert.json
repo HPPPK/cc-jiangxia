@@ -138,13 +138,13 @@
       "boundaries": [
         "业务规则来源优先级为：真实运行时边界 > 本轮用户明确输入 > 本次 AGENTS.md 风格规则文档 > 可编辑默认业务规则 > 通用 Skill 方法 > 模型既有知识。",
         "15 个 Skill 是通用方法；没有匹配证据时只给假设和验证计划，不因默认金舟预设而强行套用 C 端、国内、应用商店、SEM 或自媒体逻辑。",
-        "规则文件不能授予当前会话不存在的 Read、WebSearch、WebFetch 或 Write 能力；无 Read 时要求粘贴文本，无 WebSearch 时要求 URL、截图、文本或文件。",
+        "规则文件不能授予当前会话不存在的 Read、BrowserResearch、WebFetch 或 Write 能力；无 Read 时要求粘贴文本，无 BrowserResearch 时要求 URL、截图、文本或文件。",
         "没有真实用户数据时不伪造情绪分析、分群或精确市场规模。",
         "用户确认结论并提供目录后，才在 Write 可用时写 HTML 报告。"
       ]
     },
     "starterPrompts": [
-      "用 GPT-5.6 或 Gemini 的可用搜索工具，调研一个新品方向并给出立项建议；每项关键结论都要标明来源与时效。",
+      "使用当前会话可用的 BrowserResearch，调研一个新品方向并给出立项建议；每项关键结论都要标明来源与时效。",
       "我会提供竞品链接、价格截图和应用商店评论；请先建立证据台账，再给出平台、定价与渠道建议。",
       "先只做立项预审：列出最大的不确定性、最低成本验证实验和继续调研所需资料。"
     ],
@@ -204,5 +204,6 @@
   },
   "version": "0.10.9-local",
   "status": "候选可信 URL + BrowserResearch 来源发现/访问台账 + 四子代理复核 + 固定 HTML Write/Bash v1.0.7-local",
-  "outputTemplatePath": "experts/commercialization-research-report/templates/commercialization-research-report-template.html"
+  "outputTemplatePath": "experts/commercialization-research-report/templates/commercialization-research-report-template.html",
+  "outputMode": "template-fill"
 }
