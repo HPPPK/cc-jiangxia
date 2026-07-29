@@ -86,7 +86,7 @@ describe('ExpertSessionService', () => {
     expect(exited.materialRefs[0]?.runId).toBe(written.materialRef.runId)
   })
 
-  it('fails expert entry when the metadata cannot be read back from the session', async () => {
+  it('keeps template filling available when transcript Expert metadata cannot be read back', async () => {
     const configRoot = await makeTempRoot('expert-session-readback-config-')
     const projectRoot = await makeTempRoot('expert-session-readback-project-')
     await installExpert(configRoot)
@@ -97,16 +97,22 @@ describe('ExpertSessionService', () => {
     sessionService.getSession = async (targetSessionId: string) => {
       reads += 1
       const session = await originalGetSession(targetSessionId)
-      return reads === 2 && session && session.expert
-        ? { ...session, expert: { ...session.expert, runtimeBinding: undefined } }
-        : session
+      return reads >= 2 && session ? { ...session, expert: undefined } : session
     }
 
     try {
-      await expect(service.enterExpertMode(sessionId, 'session-expert')).rejects.toMatchObject({
-        statusCode: 500,
-        code: 'EXPERT_MODE_PERSISTENCE_FAILED',
+      const entered = await service.enterExpertMode(sessionId, 'session-expert')
+      expect(entered.runtimeBinding?.active).toBe(true)
+
+      const rendered = await service.renderTemplateFill(sessionId, {
+        format: 'cc-jiangxia-expert-template-fill/v1',
+        templateId: 'session-v1',
+        fields: {
+          REPORT_TITLE: 'Recovered session report',
+          SOURCE_ROWS: [['[1]', 'https://example.com']],
+        },
       })
+      expect(rendered.content).toContain('Recovered session report')
     } finally {
       sessionService.getSession = originalGetSession
     }

@@ -156,7 +156,7 @@ function createQueueCancellationError(): Error {
   return new Error('Workflow parallelism queue entry was cancelled')
 }
 
-const HOST_MANAGED_DEFAULT_MAX_PARALLEL = 2
+const HOST_MANAGED_UNBOUNDED_MAX_PARALLEL = Number.MAX_SAFE_INTEGER
 
 function phaseMaxParallel(phase: Record<string, unknown>): number | null {
   const contract = isRecord(phase.contract) ? phase.contract : null
@@ -179,7 +179,7 @@ function phaseMaxParallel(phase: Record<string, unknown>): number | null {
     }
   }
 
-  return usesHostManagedParallelism ? HOST_MANAGED_DEFAULT_MAX_PARALLEL : null
+  return usesHostManagedParallelism ? HOST_MANAGED_UNBOUNDED_MAX_PARALLEL : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

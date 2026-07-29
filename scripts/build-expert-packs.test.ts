@@ -22,6 +22,7 @@ describe('buildBundledExpertPacks', () => {
     await mkdir(path.join(packDir, 'skills', 'research'), { recursive: true })
     await mkdir(path.join(packDir, 'tools', 'write'), { recursive: true })
     await mkdir(path.join(packDir, 'prompts'), { recursive: true })
+    await mkdir(path.join(packDir, 'third_party', 'sample'), { recursive: true })
     await writeFile(path.join(packDir, 'manifest.json'), JSON.stringify({
       packId: 'research-pack',
       name: 'Research Pack',
@@ -38,6 +39,8 @@ describe('buildBundledExpertPacks', () => {
     await writeFile(path.join(packDir, 'prompts', 'system.md'), '# System')
     await writeFile(path.join(packDir, 'skills', 'research', 'SKILL.md'), '# Research')
     await writeFile(path.join(packDir, 'tools', 'write', 'tool.json'), JSON.stringify({ id: 'write' }))
+    await writeFile(path.join(packDir, 'THIRD_PARTY_NOTICES.md'), '# Notices')
+    await writeFile(path.join(packDir, 'third_party', 'sample', 'LICENSE'), 'MIT')
 
     const outputs = await buildBundledExpertPacks({ sourceDir, outputDir })
     expect(outputs).toEqual([path.join(outputDir, 'research-pack.zip')])
@@ -48,7 +51,39 @@ describe('buildBundledExpertPacks', () => {
     expect(zip.has('experts/research-pack/prompts/system.md')).toBe(true)
     expect(zip.has('skills/research/SKILL.md')).toBe(true)
     expect(zip.has('tools/write/tool.json')).toBe(true)
+    expect(zip.has('THIRD_PARTY_NOTICES.md')).toBe(true)
+    expect(zip.has('third_party/sample/LICENSE')).toBe(true)
   })
+  it('builds only the requested pack without creating ZIPs for sibling packs', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'filtered-expert-pack-'))
+    roots.push(root)
+    const sourceDir = path.join(root, 'experts')
+    const outputDir = path.join(root, 'out')
+
+    for (const packId of ['first-pack', 'second-pack']) {
+      const packDir = path.join(sourceDir, packId)
+      await mkdir(path.join(packDir, 'prompts'), { recursive: true })
+      await writeFile(path.join(packDir, 'manifest.json'), JSON.stringify({
+        packId,
+        name: packId,
+        version: '1.0.0',
+        schemaVersion: 1,
+        type: 'expert-pack',
+        entrypoints: { experts: [`experts/${packId}/expert.json`], skills: [] },
+      }))
+      await writeFile(path.join(packDir, 'expert.json'), JSON.stringify({ id: packId }))
+      await writeFile(path.join(packDir, 'prompts', 'system.md'), '# System')
+    }
+
+    await expect(buildBundledExpertPacks({ sourceDir, outputDir, packId: 'second-pack' })).resolves.toEqual([
+      path.join(outputDir, 'second-pack.zip'),
+    ])
+    await expect(readFile(path.join(outputDir, 'first-pack.zip'))).rejects.toThrow()
+    await expect(buildBundledExpertPacks({ sourceDir, outputDir, packId: 'missing-pack' })).rejects.toThrow(
+      'No Expert Pack with packId missing-pack was found',
+    )
+  })
+
   it('rejects a source pack that declares a missing Skill before writing a ZIP', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'incomplete-expert-pack-'))
     roots.push(root)
@@ -85,8 +120,9 @@ describe('buildBundledExpertPacks', () => {
     const skillPath = 'skills/external-demand-evidence/SKILL.md'
     const channelSkillPath = 'skills/channel-acquisition-evidence/SKILL.md'
     const systemPrompt = await zip.readText('experts/commercialization-research-report/prompts/system.md')
+    const outputProtocol = await zip.readText('experts/commercialization-research-report/outputs/material-protocol.json')
 
-    expect(manifest.version).toBe('0.10.9-local')
+    expect(manifest.version).toBe('0.11.0-local')
     expect(manifest.entrypoints.skills.slice(0, 3)).toEqual([
       'commercialization-research-method',
       'source-graph-research',
@@ -104,6 +140,9 @@ describe('buildBundledExpertPacks', () => {
     expect(await zip.readText(channelSkillPath)).toContain('渠道证据包')
     expect(systemPrompt).toContain('external-demand-evidence')
     expect(systemPrompt).toContain('channel-acquisition-evidence')
+    expect(systemPrompt).toContain('expert-template-fill --data')
+    expect(outputProtocol).toContain('templateFieldGuide')
+    expect(outputProtocol).toContain('AI 视频翻译')
     expect(systemPrompt).toContain('来源集中')
     expect(systemPrompt).toContain('品牌不同不等于外部用户/内容证据')
     expect(systemPrompt).toContain('不是证据缺口标签')

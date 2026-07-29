@@ -7,6 +7,7 @@ const {
   sendWorkflowTransitionMock,
   isConnectedMock,
   onConnectionStateMock,
+  onMessageMock,
   clearConnectionStateHandlersMock,
   getMemberBySessionIdMock,
   sendMessageToMemberMock,
@@ -30,6 +31,7 @@ const {
   sendWorkflowTransitionMock: vi.fn<(...args: unknown[]) => Promise<'sent' | 'unavailable'>>(async () => 'sent'),
   isConnectedMock: vi.fn(() => false),
   onConnectionStateMock: vi.fn<(sessionId: string, handler: (state: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void) => () => void>(() => () => {}),
+  onMessageMock: vi.fn<(sessionId: string, handler: (message: any) => void) => () => void>(() => () => {}),
   clearConnectionStateHandlersMock: vi.fn(),
   getMemberBySessionIdMock: vi.fn<(sessionId: string) => any>(() => null),
   sendMessageToMemberMock: vi.fn(async () => {}),
@@ -85,7 +87,7 @@ vi.mock('../api/websocket', () => ({
     onConnectionState: onConnectionStateMock,
     clearConnectionStateHandlers: clearConnectionStateHandlersMock,
     disconnect: vi.fn(),
-    onMessage: vi.fn(() => () => {}),
+    onMessage: onMessageMock,
     clearHandlers: vi.fn(),
     send: sendMock,
     sendWorkflowTransition: sendWorkflowTransitionMock,
@@ -196,6 +198,8 @@ describe('chatStore history mapping', () => {
     isConnectedMock.mockReturnValue(false)
     onConnectionStateMock.mockReset()
     onConnectionStateMock.mockReturnValue(() => {})
+    onMessageMock.mockReset()
+    onMessageMock.mockReturnValue(() => {})
     clearConnectionStateHandlersMock.mockReset()
     getMemberBySessionIdMock.mockReset()
     getMemberBySessionIdMock.mockReturnValue(null)
@@ -1796,19 +1800,22 @@ Phase instructions: collect inputs
     expect(setTasksFromTodosMock).toHaveBeenCalledWith(todos, TEST_SESSION_ID)
   })
 
-  it('replays saved runtime selection when reconnecting a session', () => {
+  it('replays the final runtime selection before prewarming after server connection', () => {
+    let reportServerMessage: ((message: any) => void) | undefined
+    onMessageMock.mockImplementation((_sessionId, handler) => {
+      reportServerMessage = handler
+      return () => {}
+    })
     useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, {
       providerId: 'provider-1',
       modelId: 'kimi-k2.6',
     })
 
     useChatStore.getState().connectToSession(TEST_SESSION_ID)
+    expect(sendMock).not.toHaveBeenCalled()
 
-    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
-      type: 'set_runtime_config',
-      providerId: 'provider-1',
-      modelId: 'kimi-k2.6',
-    })
+    reportServerMessage?.({ type: 'connected' })
+
     expect(sendMock.mock.calls.slice(0, 2)).toEqual([
       [
         TEST_SESSION_ID,
@@ -1822,15 +1829,46 @@ Phase instructions: collect inputs
     ])
   })
 
-  it('prewarms regular desktop sessions when connecting', () => {
-    useChatStore.getState().connectToSession(TEST_SESSION_ID)
-
-    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
-      type: 'prewarm_session',
+  it('uses the most recent runtime selection when the server connection becomes ready', () => {
+    let reportServerMessage: ((message: any) => void) | undefined
+    onMessageMock.mockImplementation((_sessionId, handler) => {
+      reportServerMessage = handler
+      return () => {}
     })
+
+    useChatStore.getState().connectToSession(TEST_SESSION_ID)
+    useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, {
+      providerId: 'provider-latest',
+      modelId: 'deepseek-v4-pro',
+    })
+    reportServerMessage?.({ type: 'connected' })
+
+    expect(sendMock.mock.calls.slice(0, 2)).toEqual([
+      [TEST_SESSION_ID, { type: 'set_runtime_config', providerId: 'provider-latest', modelId: 'deepseek-v4-pro' }],
+      [TEST_SESSION_ID, { type: 'prewarm_session' }],
+    ])
   })
 
-  it('does not prewarm team member sessions', () => {
+  it('prewarms regular desktop sessions only after server connection', () => {
+    let reportServerMessage: ((message: any) => void) | undefined
+    onMessageMock.mockImplementation((_sessionId, handler) => {
+      reportServerMessage = handler
+      return () => {}
+    })
+
+    useChatStore.getState().connectToSession(TEST_SESSION_ID)
+    expect(sendMock).not.toHaveBeenCalled()
+    reportServerMessage?.({ type: 'connected' })
+
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, { type: 'prewarm_session' })
+  })
+
+  it('does not prewarm team member sessions after connection', () => {
+    let reportServerMessage: ((message: any) => void) | undefined
+    onMessageMock.mockImplementation((_sessionId, handler) => {
+      reportServerMessage = handler
+      return () => {}
+    })
     getMemberBySessionIdMock.mockReturnValue({
       agentId: 'reviewer@test-team',
       role: 'reviewer',
@@ -1838,18 +1876,22 @@ Phase instructions: collect inputs
     })
 
     useChatStore.getState().connectToSession(TEST_SESSION_ID)
+    reportServerMessage?.({ type: 'connected' })
 
-    expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, {
-      type: 'prewarm_session',
-    })
+    expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, { type: 'prewarm_session' })
   })
 
-  it('does not prewarm synthetic app tabs', () => {
-    useChatStore.getState().connectToSession('__settings__')
-
-    expect(sendMock).not.toHaveBeenCalledWith('__settings__', {
-      type: 'prewarm_session',
+  it('does not prewarm synthetic app tabs after connection', () => {
+    let reportServerMessage: ((message: any) => void) | undefined
+    onMessageMock.mockImplementation((_sessionId, handler) => {
+      reportServerMessage = handler
+      return () => {}
     })
+
+    useChatStore.getState().connectToSession('__settings__')
+    reportServerMessage?.({ type: 'connected' })
+
+    expect(sendMock).not.toHaveBeenCalledWith('__settings__', { type: 'prewarm_session' })
   })
 
   it('sends explicit runtime overrides over websocket', () => {

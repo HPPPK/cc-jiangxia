@@ -55,6 +55,7 @@ import {
 } from '../../lib/composerAttachments'
 import { useComposerFileDrop } from './useComposerFileDrop'
 import {
+  UNVERIFIED_IMAGE_INPUT_MESSAGE,
   UNSUPPORTED_IMAGE_INPUT_MESSAGE,
   evaluateDesktopModelRequirements,
   getDesktopModelCapability,
@@ -291,6 +292,13 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     })
   }, [])
 
+  const showUnverifiedImageInputToast = useCallback(() => {
+    useUIStore.getState().addToast({
+      type: 'warning',
+      message: UNVERIFIED_IMAGE_INPUT_MESSAGE,
+    })
+  }, [])
+
   const filterImageAttachmentsForCurrentModel = useCallback(async (nextAttachments: Attachment[]) => {
     const hasImageAttachment = nextAttachments.some((attachment) => isImageLikeAttachment(attachment))
     if (!hasImageAttachment) return nextAttachments
@@ -299,10 +307,20 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       ? currentModelCapability
       : await resolveCurrentModelCapability()
     if (resolvedCapability.capabilities.imageInput === true) return nextAttachments
+    if (resolvedCapability.source === 'unknown') {
+      showUnverifiedImageInputToast()
+      return nextAttachments
+    }
 
     showUnsupportedImageInputToast()
     return nextAttachments.filter((attachment) => !isImageLikeAttachment(attachment))
-  }, [currentModelCapability, resolveCurrentModelCapability, showUnsupportedImageInputToast, supportsImageInput])
+  }, [
+    currentModelCapability,
+    resolveCurrentModelCapability,
+    showUnsupportedImageInputToast,
+    showUnverifiedImageInputToast,
+    supportsImageInput,
+  ])
   const activeSession = useSessionStore((state) => activeTabId ? state.sessions.find((session) => session.id === activeTabId) ?? null : null)
   const messageCount = Math.max(loadedMessageCount, activeSession?.messageCount ?? 0)
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
@@ -1016,8 +1034,12 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       event.preventDefault()
       void resolveCurrentModelCapability().then((resolvedCapability) => {
         if (resolvedCapability.capabilities.imageInput !== true) {
-          showUnsupportedImageInputToast()
-          return
+          if (resolvedCapability.source === 'unknown') {
+            showUnverifiedImageInputToast()
+          } else {
+            showUnsupportedImageInputToast()
+            return
+          }
         }
 
         for (const file of imageFiles) {

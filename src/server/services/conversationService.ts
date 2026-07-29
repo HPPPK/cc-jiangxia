@@ -21,6 +21,7 @@ import {
 } from './repositoryLaunchService.js'
 import {
   buildClaudeCliArgs,
+  resolveBundledCliPathFromExecPath,
   resolveClaudeCliLauncher,
 } from '../../utils/desktopBundledCli.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
@@ -1159,6 +1160,18 @@ export class ConversationService {
       }
       if (options?.expertSessionId) {
         setJiangxiaEnvAliases(childEnv, 'EXPERT_SESSION_ID', options.expertSessionId)
+        setJiangxiaEnvAliases(childEnv, 'EXPERT_TEMPLATE_FILL_WRITE', '1')
+
+        // Final Expert template filling must re-enter this application's CLI,
+        // not an unrelated claude executable inherited from PATH. A packaged
+        // desktop sidecar is discovered from the running executable, so these
+        // values remain portable across user installations and dev paths.
+        const bundledCliPath = resolveBundledCliPathFromExecPath()
+        if (bundledCliPath) {
+          childEnv.CLAUDE_CLI_PATH = bundledCliPath
+          childEnv.CLAUDE_APP_ROOT =
+            process.env.CLAUDE_APP_ROOT?.trim() || path.dirname(bundledCliPath)
+        }
       }
     }
     if (desktopServerUrl) {
@@ -1591,21 +1604,24 @@ export class ConversationService {
     sessionId: string,
     attachments?: AttachmentRef[],
   ): Array<Record<string, unknown>> {
-    const prefix = this.materializeAttachments(sessionId, attachments)
+    const { fileReferencePrefix, imageBlocks } = this.materializeAttachments(sessionId, attachments)
     const trimmed = content.trim()
-    const text = prefix
-      ? `${prefix}${trimmed || 'Please analyze the attached files.'}`.trim()
-      : trimmed
+    const text = fileReferencePrefix
+      ? `${fileReferencePrefix}${trimmed || 'Please analyze the attached files.'}`.trim()
+      : trimmed || (imageBlocks.length > 0 ? 'Please analyze the attached images.' : '')
 
-    return [{ type: 'text', text }]
+    return [...imageBlocks, { type: 'text', text }]
   }
 
   private materializeAttachments(
     sessionId: string,
     attachments?: AttachmentRef[],
-  ): string {
+  ): {
+    fileReferencePrefix: string
+    imageBlocks: Array<Record<string, unknown>>
+  } {
     if (!attachments || attachments.length === 0) {
-      return ''
+      return { fileReferencePrefix: '', imageBlocks: [] }
     }
 
     const uploadDir = path.join(
@@ -1615,53 +1631,115 @@ export class ConversationService {
     )
     fs.mkdirSync(uploadDir, { recursive: true })
 
-    const savedPaths: string[] = []
+    const savedFilePaths: string[] = []
+    const imageBlocks: Array<Record<string, unknown>> = []
     for (const attachment of attachments) {
-      if (attachment.path) {
-        savedPaths.push(attachment.path)
+      const payload = this.readAttachmentPayload(attachment)
+      const isImage = this.isImageAttachment(attachment)
+      const imageMimeType = isImage ? this.resolveImageMimeType(attachment) : null
+
+      let materializedPath = attachment.path
+      if (!materializedPath && payload) {
+        const ext = this.getAttachmentExtension(attachment)
+        const fileName = this.sanitizeAttachmentName(attachment.name, attachment.type, ext)
+        materializedPath = path.join(uploadDir, `${crypto.randomUUID()}-${fileName}`)
+        fs.writeFileSync(materializedPath, payload)
+      }
+
+      if (payload && imageMimeType) {
+        imageBlocks.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: imageMimeType,
+            data: payload.toString('base64'),
+          },
+        })
         continue
       }
 
-      if (!attachment.data) continue
-
-      const payload = this.parseAttachmentData(attachment.data)
-      if (!payload) continue
-
-      const ext = this.getAttachmentExtension(attachment)
-      const fileName = this.sanitizeAttachmentName(attachment.name, attachment.type, ext)
-      const outPath = path.join(uploadDir, `${crypto.randomUUID()}-${fileName}`)
-      fs.writeFileSync(outPath, payload)
-      savedPaths.push(outPath)
+      if (materializedPath) {
+        savedFilePaths.push(materializedPath)
+      }
     }
 
-    if (savedPaths.length === 0) {
-      return ''
+    return {
+      fileReferencePrefix: savedFilePaths.length > 0
+        ? savedFilePaths.map((filePath) => `@"${filePath}"`).join(' ') + ' '
+        : '',
+      imageBlocks,
+    }
+  }
+
+  private readAttachmentPayload(attachment: AttachmentRef): Buffer | null {
+    if (attachment.data) {
+      return this.parseAttachmentData(attachment.data)
     }
 
-    return savedPaths.map((filePath) => `@"${filePath}"`).join(' ') + ' '
+    if (!attachment.path) return null
+
+    try {
+      return fs.readFileSync(attachment.path)
+    } catch {
+      return null
+    }
+  }
+
+  private isImageAttachment(attachment: AttachmentRef): boolean {
+    if (attachment.type === 'image') return true
+    if (attachment.mimeType?.toLowerCase().startsWith('image/')) return true
+    if (attachment.data?.match(/^data:image\//i)) return true
+    return /\.(avif|gif|jpe?g|png|webp)$/i.test(attachment.name || attachment.path || '')
+  }
+
+  private resolveImageMimeType(attachment: AttachmentRef): string | null {
+    const dataMimeType = attachment.data?.match(/^data:([^;,]+);base64,/i)?.[1]
+    const candidate = (dataMimeType || attachment.mimeType || this.mimeTypeFromExtension(attachment))?.toLowerCase()
+    return candidate && new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']).has(candidate)
+      ? candidate
+      : null
+  }
+
+  private mimeTypeFromExtension(attachment: AttachmentRef): string | null {
+    const ext = path.extname(attachment.name || attachment.path || '').toLowerCase()
+    switch (ext) {
+      case '.gif': return 'image/gif'
+      case '.jpg':
+      case '.jpeg': return 'image/jpeg'
+      case '.png': return 'image/png'
+      case '.webp': return 'image/webp'
+      default: return null
+    }
   }
 
   private parseAttachmentData(data: string): Buffer | null {
     const match = data.match(/^data:.*?;base64,(.*)$/)
-    const encoded = match ? match[1] : data
+    const encoded = (match ? match[1] : data).replace(/\s/g, '')
+    if (!encoded || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return null
 
-    try {
-      return Buffer.from(encoded, 'base64')
-    } catch {
-      return null
-    }
+    const padded = encoded.length % 4 === 0
+      ? encoded
+      : encoded.length % 4 === 1
+        ? ''
+        : encoded.padEnd(encoded.length + (4 - (encoded.length % 4)), '=')
+    if (!padded) return null
+
+    const payload = Buffer.from(padded, 'base64')
+    return payload.length > 0 ? payload : null
   }
 
   private getAttachmentExtension(attachment: AttachmentRef): string {
     const byName = attachment.name?.match(/\.([a-z0-9]+)$/i)?.[1]
     if (byName) return byName
 
+    const byPath = attachment.path?.match(/\.([a-z0-9]+)$/i)?.[1]
+    if (byPath) return byPath
+
     const byMime = attachment.mimeType?.split('/')[1]?.split('+')[0]
     if (byMime) return byMime
 
     return attachment.type === 'image' ? 'png' : 'bin'
   }
-
   private sanitizeAttachmentName(
     name: string | undefined,
     type: AttachmentRef['type'],

@@ -769,10 +769,7 @@ async function checkPermissionsAndCallTool(
   // a deliberate JSON envelope and renders server-side before shared Write runs.
   if (tool.name === FILE_WRITE_TOOL_NAME) {
     try {
-      const rendered = await renderExpertTemplateFillForWrite(parsedInput.data)
-      if (rendered.kind === 'rendered') {
-        parsedInput.data.content = rendered.content
-      }
+      await renderExpertTemplateFillForWrite(parsedInput.data)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logForDebugging(message)

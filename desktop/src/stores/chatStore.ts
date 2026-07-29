@@ -909,21 +909,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }))
     })
     wsManager.connect(sessionId)
+    let startupMessagesSent = false
     wsManager.onMessage(sessionId, (msg) => {
       if (msg.type === 'connected') {
         set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({ connectionState: 'connected' })) }))
+
+        // The runtime selection must reach the server before prewarming. Sending
+        // both immediately after wsManager.connect() races their async server
+        // handlers, which can start a default CLI and then kill it just to apply
+        // the saved selection.
+        if (!startupMessagesSent) {
+          startupMessagesSent = true
+          const runtimeSelection = useSessionRuntimeStore.getState().selections[sessionId]
+          if (runtimeSelection) {
+            rememberRuntimeRollback(sessionId, null)
+            wsManager.send(sessionId, { type: 'set_runtime_config', ...runtimeSelection })
+          }
+          if (!sessionId.startsWith('__') && !useTeamStore.getState().getMemberBySessionId(sessionId)) {
+            wsManager.send(sessionId, { type: 'prewarm_session' })
+          }
+        }
       }
       get().handleServerMessage(sessionId, msg)
     })
-
-    const runtimeSelection = useSessionRuntimeStore.getState().selections[sessionId]
-    if (runtimeSelection) {
-      rememberRuntimeRollback(sessionId, null)
-      wsManager.send(sessionId, { type: 'set_runtime_config', ...runtimeSelection })
-    }
-    if (!sessionId.startsWith('__') && !useTeamStore.getState().getMemberBySessionId(sessionId)) {
-      wsManager.send(sessionId, { type: 'prewarm_session' })
-    }
 
     get().loadHistory(sessionId)
     sessionsApi.getSlashCommands(sessionId)

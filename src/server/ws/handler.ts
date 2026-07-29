@@ -66,6 +66,7 @@ import {
   hasActiveExpertRuntime,
   resolveExpertRuntimeToolPolicy,
 } from '../services/expertRuntimeBindingService.js'
+import { expertRuntimeSessionStore } from '../services/expertRuntimeSessionStore.js'
 import { setSessionChatState } from '../api/conversations.js'
 
 const settingsService = new SettingsService()
@@ -3641,9 +3642,14 @@ async function getRuntimeSettingsWithWorkflowPolicy(
   // but it must never contribute a prompt or tool restriction to the CLI while
   // the workflow is active. Otherwise an unrelated Expert can silently hide a
   // workflow-required tool or give the model contradictory instructions.
-  const expert = workflowIsActive
+  const transcriptExpert = workflowIsActive
     ? undefined
     : (await sessionService.getSession(sessionId).catch(() => null))?.expert
+  const expert = workflowIsActive
+    ? undefined
+    : (hasActiveExpertRuntime(transcriptExpert)
+      ? transcriptExpert
+      : await expertRuntimeSessionStore.get(sessionId))
   if (expert?.mode === 'expert' && expert.status === 'active' && !hasActiveExpertRuntime(expert)) {
     throw new ExpertRuntimeBindingError()
   }

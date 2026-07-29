@@ -2,7 +2,6 @@
 import {
   deriveExpertTemplateFillSchema,
   EXPERT_TEMPLATE_FILL_FORMAT,
-  parseExpertTemplateFillPayload,
   renderExpertTemplateFill,
 } from './expertTemplateFill.js'
 
@@ -77,12 +76,5 @@ describe('expert template fill', () => {
     })).toThrow('必须是 http 或 https 链接')
   })
 
-  test('only recognizes the explicit template-fill envelope', () => {
-    expect(parseExpertTemplateFillPayload('{"anything":"else"}')).toBeNull()
-    expect(parseExpertTemplateFillPayload(JSON.stringify({
-      format: EXPERT_TEMPLATE_FILL_FORMAT,
-      templateId: 'demo-v1',
-      fields: {},
-    }))).not.toBeNull()
-  })
+
 })

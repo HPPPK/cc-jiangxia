@@ -121,17 +121,27 @@ describe('Expert Runtime tool availability', () => {
     expect(resolveCurrentExpertRuntimeToolNames('gpt-5.6', ['Read', 'WebSearch', 'BrowserResearch'])).toEqual(['Read', 'BrowserResearch'])
   })
 
-  test('instructs a template-fill expert to submit field JSON without injecting the complete HTML document', () => {
+  test('instructs a template-fill expert to write compact fields JSON then invoke the fixed-template CLI', () => {
     const runtimeBinding = binding()
     runtimeBinding.outputMode = 'template-fill'
+    runtimeBinding.outputProtocol = {
+      path: 'outputs/material-protocol.json',
+      content: '{"templateFieldGuide":{"purpose":"字段说明","twoWorkedExamples":["示例"]}}',
+    }
     runtimeBinding.outputTemplate = {
       path: 'experts/commercialization/templates/report.html',
       content: '<html data-template-id="classic-v1"><head><style>body{color:#111}</style></head><body><h1>{{REPORT_TITLE}}</h1><table><thead><tr><th>编号</th><th>链接（URL）</th></tr></thead><tbody><!-- SLOT: SOURCE_ROWS --></tbody></table></body></html>',
     }
 
     const instruction = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames: ['AskUserQuestion', 'Read', 'Write'] })
-    expect(instruction).toContain('Final report delivery uses server-rendered template filling:')
-    expect(instruction).toContain('cc-jiangxia-expert-template-fill/v1')
+    expect(instruction).toContain('Final report delivery uses fixed-template CLI filling:')
+    expect(instruction).toContain('report-fields.json')
+    expect(instruction).toContain('"$CLAUDE_CLI_PATH" cli --app-root "$CLAUDE_APP_ROOT" expert-template-fill --data')
+    expect(instruction).toContain('Do not generate or copy a complete HTML document')
+    expect(instruction).toContain('If this CLI exits non-zero, stop final-report delivery immediately.')
+    expect(instruction).toContain('Do not write or generate a complete HTML report')
+    expect(instruction).toContain('字段说明')
+    expect(instruction).toContain('示例')
     expect(instruction).toContain('REPORT_TITLE')
     expect(instruction).toContain('SOURCE_ROWS')
     expect(instruction).toContain('table-rows')

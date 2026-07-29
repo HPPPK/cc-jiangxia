@@ -137,7 +137,10 @@ import { useTeamStore } from '../../stores/teamStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useExpertStore } from '../../stores/expertStore'
-import { UNSUPPORTED_IMAGE_INPUT_MESSAGE } from '../../lib/modelCapabilities'
+import {
+  UNVERIFIED_IMAGE_INPUT_MESSAGE,
+  UNSUPPORTED_IMAGE_INPUT_MESSAGE,
+} from '../../lib/modelCapabilities'
 
 const USER_WORKFLOW_TEMPLATE = {
   id: 'requirements-to-implementation',
@@ -417,13 +420,65 @@ describe('ChatInput file mentions', () => {
     expect(screen.getByTestId('chat-submit-button')).toBeInTheDocument()
   })
 
-  it('blocks pasted image attachments when the selected model lacks image input capability', async () => {
+  it('keeps pasted image attachments when the selected model image capability is unknown', async () => {
     useSettingsStore.setState({
       locale: 'zh',
-      currentModel: { id: 'unknown-text-only-model', name: 'Unknown Text Model' } as never,
+      currentModel: { id: 'unknown-model', name: 'Unknown Model' } as never,
     })
 
     render(<ChatInput />)
+
+    const input = screen.getByRole('textbox')
+    const imageFile = new File(['image-bytes'], 'screen.png', { type: 'image/png' })
+    fireEvent.paste(input, {
+      clipboardData: {
+        items: [{ type: 'image/png', getAsFile: () => imageFile }],
+        getData: () => '',
+      },
+    })
+
+    expect(await screen.findByAltText(/pasted-image/i)).toBeInTheDocument()
+    expect(useUIStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: 'warning',
+      message: UNVERIFIED_IMAGE_INPUT_MESSAGE,
+    }))
+    expect(useUIStore.getState().toasts).not.toContainEqual(expect.objectContaining({
+      message: UNSUPPORTED_IMAGE_INPUT_MESSAGE,
+    }))
+  })
+
+  it('blocks pasted image attachments when provider metadata confirms image input is unsupported', async () => {
+    mocks.getModelCapability.mockResolvedValue({
+      schemaVersion: 1,
+      capability: {
+        provider: 'custom-provider',
+        modelId: 'vendor-text-model',
+        capabilities: {
+          textInput: true,
+          imageInput: false,
+          audioInput: false,
+          videoInput: false,
+          fileTextInput: true,
+          pdfInput: false,
+          toolCalling: true,
+          structuredOutput: true,
+          jsonMode: true,
+          longContext: true,
+          codeReasoning: true,
+        },
+        source: 'provider-metadata',
+      },
+    })
+    useSettingsStore.setState({
+      locale: 'zh',
+      currentModel: { id: 'vendor-text-model', name: 'Vendor Text Model' } as never,
+    })
+
+    render(<ChatInput />)
+
+    await waitFor(() => {
+      expect(mocks.getModelCapability).toHaveBeenCalledWith(null, 'vendor-text-model')
+    })
 
     const input = screen.getByRole('textbox')
     const imageFile = new File(['image-bytes'], 'screen.png', { type: 'image/png' })
@@ -440,7 +495,7 @@ describe('ChatInput file mentions', () => {
         message: UNSUPPORTED_IMAGE_INPUT_MESSAGE,
       }))
     })
-    expect(screen.queryByText(/pasted-image/i)).not.toBeInTheDocument()
+    expect(screen.queryByAltText(/pasted-image/i)).not.toBeInTheDocument()
   })
 
   it('allows pasted image attachments when the selected model supports image input', async () => {
@@ -2029,6 +2084,32 @@ describe('ChatInput file mentions', () => {
         }),
       ],
     })
+  })
+
+  it('keeps native image attachments when the selected model image capability is unknown', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    mocks.dialogOpen.mockResolvedValueOnce(['/Users/nanmi/tmp/screen.png'])
+    useSettingsStore.setState({
+      locale: 'en',
+      currentModel: { id: 'unknown-model', name: 'Unknown Model' } as never,
+    })
+
+    render(<ChatInput compact />)
+
+    fireEvent.click(screen.getByLabelText('Open composer tools'))
+    fireEvent.click(screen.getByText('Add files or photos'))
+
+    expect(await screen.findByText('screen.png')).toBeInTheDocument()
+    expect(useUIStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: 'warning',
+      message: UNVERIFIED_IMAGE_INPUT_MESSAGE,
+    }))
+    expect(useUIStore.getState().toasts).not.toContainEqual(expect.objectContaining({
+      message: UNSUPPORTED_IMAGE_INPUT_MESSAGE,
+    }))
   })
 
   it('accepts native desktop file drops on the active session composer as path-only attachments', async () => {

@@ -260,6 +260,8 @@ const MANAGED_BUNDLED_EXPERT_PACKS_FILE = 'managed-bundled-expert-packs.json'
 const KNOWN_LEGACY_BUNDLED_EXPERT_FINGERPRINTS = new Map<string, ReadonlySet<string>>([
   ['commercialization-research-report', new Set([
     'f3b5f95f5188ebdf43d07f141385769b21febd91f0210e717bb91e656bba0936',
+    // v0.10.9-local package seeded before template-fill delivery existed.
+    '09c987c5c8d727a59596b7aee139273a96008cdb48b544f9207fb73caae722b9',
   ])],
 ])
 let packsCache: ExpertPackIndexEntry[] | null = null

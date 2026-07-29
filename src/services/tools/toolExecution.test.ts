@@ -45,46 +45,54 @@ describe('runToolUse file edit recovery', () => {
     expect(JSON.stringify(messages)).not.toContain('<tool_use_error>')
   }, 20_000)
 
-  test('renders a declared template-fill JSON envelope before the shared Write tool writes the final HTML', async () => {
-    const filePath = path.join(tmpDir, 'commercial-report.html')
-    const previousFetch = globalThis.fetch
-    const previousServerUrl = process.env.CC_JIANGXIA_DESKTOP_SERVER_URL
-    const previousSessionId = process.env.CC_JIANGXIA_EXPERT_SESSION_ID
-    process.env.CC_JIANGXIA_DESKTOP_SERVER_URL = 'http://127.0.0.1:3456'
-    process.env.CC_JIANGXIA_EXPERT_SESSION_ID = 'expert-session-test'
-    let requestedUrl = ''
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      requestedUrl = String(url)
-      return new Response(JSON.stringify({
-        templateId: 'classic-v1',
-        content: '<html data-template-id="classic-v1"><body><h1>已渲染报告</h1></body></html>',
-      }), { status: 200, headers: { 'content-type': 'application/json' } })
-    }) as typeof fetch
+  test('rejects direct HTML delivery in a template-fill Expert session before Write creates the file', async () => {
+    const filePath = path.join(tmpDir, 'must-use-cli.html')
+    const previousTemplateFillWrite = process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE
+    process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE = '1'
 
     try {
+      const context = createContext()
+      context.options.tools = [FileReadTool, FileWriteTool, FileEditTool]
       const messages = await runSingleToolUse({
         type: 'tool_use',
-        id: 'toolu_template_fill',
+        id: 'toolu_direct_html',
         name: FileWriteTool.name,
         input: {
           file_path: filePath,
-          content: JSON.stringify({
-            format: 'cc-jiangxia-expert-template-fill/v1',
-            templateId: 'classic-v1',
-            fields: { REPORT_TITLE: '已渲染报告' },
-          }),
+          content: '<!doctype html><html><body>Free-form report</body></html>',
         },
-      } as ToolUseBlock)
+      } as ToolUseBlock, context)
 
-      expect(requestedUrl).toBe('http://127.0.0.1:3456/api/sessions/expert-session-test/expert/template-fill')
-      expect(await fs.readFile(filePath, 'utf8')).toContain('<h1>已渲染报告</h1>')
+      expect(await fs.stat(filePath).catch(() => null)).toBeNull()
+      expect(JSON.stringify(messages)).toContain('EXPERT_TEMPLATE_FILL_REJECTED')
+      expect(JSON.stringify(messages)).toContain('expert-template-fill')
+    } finally {
+      if (previousTemplateFillWrite === undefined) delete process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE
+      else process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE = previousTemplateFillWrite
+    }
+  })
+
+  test('keeps compact report-fields JSON writable for the CLI in a template-fill Expert session', async () => {
+    const filePath = path.join(tmpDir, 'report-fields.json')
+    const previousTemplateFillWrite = process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE
+    process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE = '1'
+
+    try {
+      const context = createContext()
+      context.options.tools = [FileReadTool, FileWriteTool, FileEditTool]
+      const content = JSON.stringify({ templateId: 'classic-v1', fields: { REPORT_TITLE: 'AI 视频翻译' } })
+      const messages = await runSingleToolUse({
+        type: 'tool_use',
+        id: 'toolu_fields_json',
+        name: FileWriteTool.name,
+        input: { file_path: filePath, content },
+      } as ToolUseBlock, context)
+
+      expect(await fs.readFile(filePath, 'utf8')).toBe(content)
       expect(JSON.stringify(messages)).not.toContain('EXPERT_TEMPLATE_FILL_REJECTED')
     } finally {
-      globalThis.fetch = previousFetch
-      if (previousServerUrl === undefined) delete process.env.CC_JIANGXIA_DESKTOP_SERVER_URL
-      else process.env.CC_JIANGXIA_DESKTOP_SERVER_URL = previousServerUrl
-      if (previousSessionId === undefined) delete process.env.CC_JIANGXIA_EXPERT_SESSION_ID
-      else process.env.CC_JIANGXIA_EXPERT_SESSION_ID = previousSessionId
+      if (previousTemplateFillWrite === undefined) delete process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE
+      else process.env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE = previousTemplateFillWrite
     }
   }, 20_000)
 

@@ -1809,8 +1809,10 @@ export class SessionService {
     }
   ): Promise<void> {
     const matches = await this.findSessionFiles(sessionId)
-    if (matches.length === 0) return
 
+    // A just-created desktop session can enter Expert Mode before the CLI has
+    // appended its first transcript entry. Metadata is still authoritative and
+    // must be written to the canonical session path instead of being dropped.
     let repository = metadata.repository
     if (!repository) {
       for (const match of matches) {

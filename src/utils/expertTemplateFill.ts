@@ -88,14 +88,6 @@ export function isExpertTemplateFillPayload(value: unknown): value is ExpertTemp
   )
 }
 
-export function parseExpertTemplateFillPayload(content: string): ExpertTemplateFillPayload | null {
-  try {
-    const parsed = JSON.parse(content) as unknown
-    return isExpertTemplateFillPayload(parsed) ? parsed : null
-  } catch {
-    return null
-  }
-}
 
 function safeHttpUrl(value: string): string | null {
   try {

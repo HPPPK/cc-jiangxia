@@ -41,6 +41,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Fast-path for Expert fixed-template rendering. This runs before the interactive CLI.
+  if (args[0] === 'expert-template-fill') {
+    const { expertTemplateFillMain } = await import('../cli/expertTemplateFill.js')
+    await expertTemplateFillMain(args.slice(1))
+    return
+  }
+
   // For all other paths, load the startup profiler
   const {
     profileCheckpoint

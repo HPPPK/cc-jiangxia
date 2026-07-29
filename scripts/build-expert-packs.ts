@@ -5,6 +5,8 @@ import { ZipPackAdapter } from '../src/server/services/zipPackAdapter.js'
 type BuildBundledExpertPacksOptions = {
   sourceDir?: string
   outputDir?: string
+  /** Build only one declared pack ID, without touching other bundled Expert ZIPs. */
+  packId?: string
 }
 
 const repoRoot = path.resolve(import.meta.dir, '..')
@@ -16,7 +18,10 @@ export async function buildBundledExpertPacks(options: BuildBundledExpertPacksOp
   const sourceDir = path.resolve(options.sourceDir ?? defaultSourceDir)
   const outputDir = path.resolve(options.outputDir ?? defaultOutputDir)
   const entries = await readdir(sourceDir, { withFileTypes: true })
+  const requestedPackId = options.packId?.trim()
+  if (options.packId !== undefined && !requestedPackId) throw new Error('A non-empty Expert Pack ID is required when filtering the build.')
   const outputs: string[] = []
+  let matchedRequestedPack = false
 
   await mkdir(outputDir, { recursive: true })
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -31,6 +36,8 @@ export async function buildBundledExpertPacks(options: BuildBundledExpertPacksOp
     if (manifest.type !== 'expert-pack' || typeof manifest.packId !== 'string' || !manifest.packId.trim()) {
       throw new Error(`Invalid Expert Pack manifest in ${packRoot}`)
     }
+    if (requestedPackId && manifest.packId !== requestedPackId) continue
+    matchedRequestedPack = true
     const expertEntrypoint = Array.isArray(manifest.entrypoints?.experts) ? manifest.entrypoints?.experts[0] : undefined
     if (typeof expertEntrypoint !== 'string' || !expertEntrypoint.startsWith('experts/') || !expertEntrypoint.endsWith('/expert.json')) {
       throw new Error(`Expert Pack must declare one experts/<id>/expert.json entrypoint: ${packRoot}`)
@@ -52,7 +59,7 @@ export async function buildBundledExpertPacks(options: BuildBundledExpertPacksOp
     const zipEntries: Record<string, Uint8Array> = {}
     for (const filePath of files) {
       const relativePath = path.relative(packRoot, filePath).replaceAll('\\', '/')
-      const zipPath = relativePath === 'manifest.json'
+      const zipPath = relativePath === 'manifest.json' || relativePath === 'THIRD_PARTY_NOTICES.md' || relativePath.startsWith('third_party/')
         ? relativePath
         : relativePath.startsWith('tools/') || relativePath.startsWith('skills/')
           ? relativePath
@@ -65,7 +72,18 @@ export async function buildBundledExpertPacks(options: BuildBundledExpertPacksOp
     outputs.push(outputPath)
   }
 
+  if (requestedPackId && !matchedRequestedPack) {
+    throw new Error(`No Expert Pack with packId ${requestedPackId} was found in ${sourceDir}`)
+  }
   return outputs
+}
+
+function requestedPackIdFromArgs(args: string[]): string | undefined {
+  const index = args.indexOf('--pack')
+  if (index === -1) return undefined
+  const packId = args[index + 1]
+  if (!packId || packId.startsWith('--')) throw new Error('Usage: bun run scripts/build-expert-packs.ts --pack <pack-id>')
+  return packId
 }
 
 async function collectFiles(root: string): Promise<string[]> {
@@ -80,6 +98,7 @@ async function collectFiles(root: string): Promise<string[]> {
 }
 
 if (import.meta.main) {
-  const outputs = await buildBundledExpertPacks()
+  const packId = requestedPackIdFromArgs(process.argv.slice(2))
+  const outputs = await buildBundledExpertPacks({ packId })
   console.log(`[build-expert-packs] Built ${outputs.length} bundled Expert Pack ZIP(s).`)
 }

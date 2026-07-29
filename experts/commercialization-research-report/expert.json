@@ -1,8 +1,8 @@
 {
   "id": "commercialization-research-report",
   "name": "新品商业化调研报告专家",
-  "description": "基于可编辑 AGENTS.md 业务规则与经典 HTML 母版的新品商业化调研专家。按字段研究，以多源渠道证据包支撑 SEO/SEM/内容渠道判断，并用 Write 输出 HTML；Bash 仅用于必要的本地报告校验。资料不足时如实标注，不把业务规则当作市场证据。",
-  "statusLabel": "分章节子代理 + 多源渠道证据包 + 证据复核 + 来源图谱 BrowserResearch + Write/Bash v1.0.6-local",
+  "description": "基于可编辑 AGENTS.md 业务规则与固定 HTML 母版的新品商业化调研专家。按字段研究，以多源渠道证据包支撑 SEO/SEM/内容渠道判断；先生成紧凑字段 JSON，再由内置 CLI 填充最终 HTML。资料不足时如实标注，不把业务规则当作市场证据。",
+  "statusLabel": "分章节子代理 + 多源渠道证据包 + 证据复核 + 固定母版 CLI 填充 v1.0.8-local",
   "promptPaths": {
     "system": "experts/commercialization-research-report/prompts/system.md"
   },
@@ -186,8 +186,8 @@
       },
       {
         "id": "delivery",
-        "title": "Write 输出并校验 HTML",
-        "description": "用户确认输出路径后用 Write 生成 HTML；仅必要时用 Bash 校验本地文件。"
+        "title": "字段 JSON + CLI 输出固定 HTML",
+        "description": "用户确认输出路径后先用 Write 创建字段 JSON，再由内置 CLI 填充并校验固定 HTML；仅必要时用 Bash 执行该命令或检查结果。"
       },
       {
         "id": "evidence-review",
@@ -196,14 +196,14 @@
       }
     ],
     "knowledgeBase": {
-      "version": "v1.0.5-local",
-      "notes": "16 个商业化研究 Skill：按产品与竞品、需求与市场、商业化与渠道三类子代理分工；从网页链接扩展来源图谱；独立证据复核完成前不输出最终 HTML。"
+      "version": "v1.0.6-local",
+      "notes": "16 个商业化研究 Skill：按产品与竞品、需求与市场、商业化与渠道三类子代理分工；从网页链接扩展来源图谱；字段教学指南帮助模型理解固定 HTML 表格含义；独立证据复核完成前不输出最终 HTML。"
     },
-    "version": "v1.0.7-local",
-    "notes": "16 个商业化研究 Skill：模型从可信来源范围动态构造候选 URL，BrowserResearch 实际打开并扩展到具体内容页；所有最终 HTML 使用的网页信息必须可回溯到已打开 URL，独立证据复核完成前不输出最终 HTML。"
+    "version": "v1.0.8-local",
+    "notes": "16 个商业化研究 Skill：模型从可信来源范围动态构造候选 URL，BrowserResearch 实际打开并扩展到具体内容页；所有最终 HTML 使用的网页信息必须可回溯到已打开 URL，字段 JSON 经内置 CLI 校验并填充固定母版。"
   },
-  "version": "0.10.9-local",
-  "status": "候选可信 URL + BrowserResearch 来源发现/访问台账 + 四子代理复核 + 固定 HTML Write/Bash v1.0.7-local",
+  "version": "0.11.0-local",
+  "status": "候选可信 URL + BrowserResearch 来源发现/访问台账 + 四子代理复核 + 固定 HTML CLI 填充 v1.0.8-local",
   "outputTemplatePath": "experts/commercialization-research-report/templates/commercialization-research-report-template.html",
   "outputMode": "template-fill"
 }
