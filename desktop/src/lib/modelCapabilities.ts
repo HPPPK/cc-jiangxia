@@ -60,6 +60,9 @@ const REGISTRY = [
 export const UNSUPPORTED_IMAGE_INPUT_MESSAGE =
   '当前选择的模型不支持直接看图片。你可以：1. 换成支持图片的模型（推荐）2. 上传图片但先用工具转成文字说明3. 不上传图片，改用文字描述'
 
+export const UNVERIFIED_IMAGE_INPUT_MESSAGE =
+  '当前选择的模型未提供可验证的图片能力信息，图片已保留。是否能识别图片将以实际模型响应为准。'
+
 function normalize(value: string | null | undefined): string {
   return (value ?? '').trim().toLowerCase()
 }

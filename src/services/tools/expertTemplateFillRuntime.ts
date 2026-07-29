@@ -1,50 +1,24 @@
 import { getJiangxiaEnvValue } from '../../utils/appIdentity.js'
-import { parseExpertTemplateFillPayload } from '../../utils/expertTemplateFill.js'
 
-export type ExpertTemplateFillWriteResult =
-  | { kind: 'not-template-fill' }
-  | { kind: 'rendered'; content: string; templateId: string }
+export type ExpertTemplateFillWriteResult = { kind: 'not-template-fill' }
 
-async function responseMessage(response: Response): Promise<string> {
-  try {
-    const body = await response.json() as { message?: unknown; error?: unknown }
-    if (typeof body.message === 'string' && body.message.trim()) return body.message
-    if (typeof body.error === 'string' && body.error.trim()) return body.error
-  } catch {
-    // Fall through to the response status below.
-  }
-  return `Desktop Expert template renderer returned HTTP ${response.status}.`
+function isTemplateFillWriteSession(): boolean {
+  return getJiangxiaEnvValue('EXPERT_TEMPLATE_FILL_WRITE')?.trim() === '1'
 }
 
+function isHtmlTarget(input: Record<string, unknown>): boolean {
+  return typeof input.file_path === 'string' && /\.html?$/i.test(input.file_path.trim())
+}
+
+/**
+ * Keep the shared Write tool generic. In a template-fill Expert session it can
+ * create the compact fields JSON, but the final HTML must be rendered by the
+ * expert-template-fill CLI against the session-bound template.
+ */
 export async function renderExpertTemplateFillForWrite(input: Record<string, unknown>): Promise<ExpertTemplateFillWriteResult> {
-  const content = input.content
-  if (typeof content !== 'string') return { kind: 'not-template-fill' }
-  const payload = parseExpertTemplateFillPayload(content)
-  if (!payload) return { kind: 'not-template-fill' }
-
-  const desktopServerUrl = getJiangxiaEnvValue('DESKTOP_SERVER_URL')?.trim()
-  const sessionId = getJiangxiaEnvValue('EXPERT_SESSION_ID')?.trim()
-  if (!desktopServerUrl || !sessionId) {
-    throw new Error('EXPERT_TEMPLATE_FILL_REJECTED: 当前 Write 没有绑定模板填充专家会话。请重新进入该专家后再输出正式报告。')
+  if (!isTemplateFillWriteSession() || !isHtmlTarget(input)) return { kind: 'not-template-fill' }
+  if (input.expert_output !== undefined) {
+    throw new Error('EXPERT_TEMPLATE_FILL_REJECTED: The former Write.expert_output delivery is no longer used. Write a compact report-fields.json file, then run the expert-template-fill CLI to render the fixed HTML template.')
   }
-
-  let response: Response
-  try {
-    response = await fetch(`${desktopServerUrl.replace(/\/$/, '')}/api/sessions/${encodeURIComponent(sessionId)}/expert/template-fill`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ payload }),
-    })
-  } catch (error) {
-    throw new Error(`EXPERT_TEMPLATE_FILL_REJECTED: 无法连接本地专家模板渲染服务：${error instanceof Error ? error.message : String(error)}`)
-  }
-
-  if (!response.ok) {
-    throw new Error(`EXPERT_TEMPLATE_FILL_REJECTED: ${await responseMessage(response)}`)
-  }
-  const body = await response.json() as { content?: unknown; templateId?: unknown }
-  if (typeof body.content !== 'string' || !body.content.trim() || typeof body.templateId !== 'string' || !body.templateId.trim()) {
-    throw new Error('EXPERT_TEMPLATE_FILL_REJECTED: 本地专家模板渲染服务返回了无效结果。')
-  }
-  return { kind: 'rendered', content: body.content, templateId: body.templateId }
+  throw new Error('EXPERT_TEMPLATE_FILL_REJECTED: This Expert does not write final HTML through Write. Use Write only for report-fields.json, then run "$CLAUDE_CLI_PATH" expert-template-fill --data "<report-fields.json>" --output "<final-report.html>". The CLI validates fields and fills the session-bound fixed template.')
 }

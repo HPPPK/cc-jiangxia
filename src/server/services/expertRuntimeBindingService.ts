@@ -1,11 +1,11 @@
 import { getToolsForDefaultPreset } from '../../tools.js'
-import { deriveExpertTemplateFillSchema, EXPERT_TEMPLATE_FILL_FORMAT } from '../../utils/expertTemplateFill.js'
+import { deriveExpertTemplateFillSchema } from '../../utils/expertTemplateFill.js'
 import type { ExpertRuntimeContext } from './expertRuntimeService.js'
 import type { ExpertHostTool, ExpertRuntimeBinding, ExpertSessionMetadata, ExpertToolManifest } from './expertPackRegistryService.js'
 
 const MAX_PROMPT_CHARACTERS = 24_000
 const MAX_SKILL_CHARACTERS = 28_000
-const MAX_OUTPUT_PROTOCOL_CHARACTERS = 12_000
+const MAX_OUTPUT_PROTOCOL_CHARACTERS = 16_000
 const MAX_OUTPUT_TEMPLATE_CHARACTERS = 12_000
 
 // Expert packs may describe recommended tools, but they do not narrow the
@@ -215,20 +215,18 @@ export function buildExpertRuntimeTurnInstruction(
       : []),
     ...(binding.outputMode === 'template-fill' && binding.outputTemplate
       ? [
-          'Final report delivery uses server-rendered template filling:',
+          'Final report delivery uses fixed-template CLI filling:',
           `Template source: ${binding.outputTemplate.path}`,
-          'Do not generate a complete HTML document, CSS, headings, table headers, or any other page structure for the final report.',
-          'After the user confirms the final .html path, call the existing Write tool once with that path and a strictly valid JSON object as content. The desktop server will render the fixed expert template; ordinary HTML text is not a formal report delivery.',
-          'Use this exact JSON protocol:',
-          JSON.stringify({
-            format: EXPERT_TEMPLATE_FILL_FORMAT,
-            templateId: deriveExpertTemplateFillSchema(binding.outputTemplate.content).templateId,
-            fields: { FIELD_ID: 'text, paragraph array, or table row arrays matching the schema below' },
-          }, null, 2),
+          'Do not generate or copy a complete HTML document, CSS, headings, table headers, or page structure.',
+          'After the user confirms the final .html path, first use the normal Write tool to create a compact UTF-8 report-fields.json document containing only { templateId, fields }. Do not put the format envelope, HTML, CSS, Markdown table, or top-level expert_output in that file.',
+          'Then use Bash for this single render command (keep the environment variable exactly as written):',
+          '"$CLAUDE_CLI_PATH" cli --app-root "$CLAUDE_APP_ROOT" expert-template-fill --data "<report-fields.json>" --output "<final-report.html>"',
+          'The CLI submits the fields to the active Expert session, validates every field/table row/URL against the session-bound template, and writes the rendered HTML. A direct Write to .html is intentionally rejected in this Expert.',
+          'If this CLI exits non-zero, stop final-report delivery immediately. Do not write or generate a complete HTML report, do not retry through Write, curl, unzip, another CLI, or server probing. State the CLI error plainly and ask the user to re-enter Expert Mode before retrying.',
           'Allowed field schema (field IDs and table columns are authoritative):',
           JSON.stringify(deriveExpertTemplateFillSchema(binding.outputTemplate.content), null, 2),
-          'Each final-report field must be present. Write evidence gaps as visible content such as “待验证 / 未取得 / 无法确认”; do not invent HTML or omit required fields.',
-          'Bash may create drafts or helper files, but it does not produce a server-verified formal report.',
+          'The Expert output protocol contains the field meanings, column differences, and worked examples. Use it as teaching guidance; examples are not facts to copy into this report.',
+          'Each final-report field must be present. Write evidence gaps as visible content such as “待验证 / 未取得 / 无法确认”; do not invent data or omit required fields.',
         ]
       : binding.outputTemplate
         ? [

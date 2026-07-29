@@ -132,6 +132,86 @@ describe('ConversationService', () => {
     )
   }
 
+  test('buildUserContent sends uploaded image data as a multimodal image block', () => {
+    const service = new ConversationService() as any
+    const imageData = Buffer.from('screenshot-bytes').toString('base64')
+
+    const content = service.buildUserContent('Inspect this screenshot', 'vision-session', [{
+      type: 'image',
+      name: 'checkout.png',
+      mimeType: 'image/png',
+      data: `data:image/png;base64,${imageData}`,
+    }]) as Array<Record<string, unknown>>
+
+    expect(content).toEqual([
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: imageData,
+        },
+      },
+      { type: 'text', text: 'Inspect this screenshot' },
+    ])
+  })
+
+  test('buildUserContent reads path-only PNG attachments as multimodal images', async () => {
+    const service = new ConversationService() as any
+    const imagePath = path.join(tmpDir, 'native-screenshot.png')
+    const imageData = Buffer.from('native-screenshot-bytes')
+    await fs.writeFile(imagePath, imageData)
+
+    const content = service.buildUserContent('Review the image', 'vision-session', [{
+      type: 'file',
+      name: 'native-screenshot.png',
+      path: imagePath,
+    }]) as Array<Record<string, unknown>>
+
+    expect(content).toEqual([
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: imageData.toString('base64'),
+        },
+      },
+      { type: 'text', text: 'Review the image' },
+    ])
+  })
+
+  test('buildUserContent keeps non-image files as local path references', async () => {
+    const service = new ConversationService() as any
+    const filePath = path.join(tmpDir, 'notes.txt')
+    await fs.writeFile(filePath, 'notes')
+
+    const content = service.buildUserContent('Read this file', 'file-session', [{
+      type: 'file',
+      name: 'notes.txt',
+      path: filePath,
+    }]) as Array<Record<string, unknown>>
+
+    expect(content).toEqual([
+      { type: 'text', text: `@"${filePath}" Read this file` },
+    ])
+  })
+
+  test('buildUserContent never creates an image block from malformed image data', () => {
+    const service = new ConversationService() as any
+
+    const content = service.buildUserContent('Use the valid prompt text', 'broken-image-session', [{
+      type: 'image',
+      name: 'broken.png',
+      mimeType: 'image/png',
+      data: 'data:image/png;base64,not-valid-base64!',
+    }]) as Array<Record<string, unknown>>
+
+    expect(content).toEqual([
+      { type: 'text', text: 'Use the valid prompt text' },
+    ])
+  })
+
   test('keeps inherited provider env when no desktop provider config exists', async () => {
     const service = new ConversationService() as any
     const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\cc-jiangxia')) as Record<string, string>
@@ -412,6 +492,8 @@ describe('ConversationService', () => {
 
     expect(env.CC_JIANGXIA_EXPERT_SESSION_ID).toBe('template-fill-session')
     expect(env.CC_HAHA_EXPERT_SESSION_ID).toBe('template-fill-session')
+    expect(env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE).toBe('1')
+    expect(env.CC_HAHA_EXPERT_TEMPLATE_FILL_WRITE).toBe('1')
   })
 
   test('reports SDK connection authorization status reasons', () => {
@@ -525,6 +607,36 @@ describe('ConversationService', () => {
     expect(sdkEnv.CC_JIANGXIA_WORKFLOW_SESSION_ID).toBe('workflow-session')
     expect(sdkEnv.CC_JIANGXIA_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
     expect(dialogueEnv.CC_JIANGXIA_WORKFLOW_SESSION_ID).toBeUndefined()
+  })
+
+  test('buildChildEnv gives template-fill Expert sessions this app bundled CLI instead of PATH claude', async () => {
+    const service = new ConversationService() as any
+    const originalCliPath = process.env.CLAUDE_CLI_PATH
+    const originalAppRoot = process.env.CLAUDE_APP_ROOT
+    try {
+      // In this Bun test process there is no sidecar executable, so this is the
+      // development fallback. Packaged desktop runs prefer process.execPath.
+      process.env.CLAUDE_CLI_PATH = 'C:\\portable\\claude-sidecar.exe'
+      process.env.CLAUDE_APP_ROOT = 'C:\\portable\\app-root'
+      resetTerminalShellEnvironmentCacheForTests()
+
+      const env = (await service.buildChildEnv(
+        '/tmp',
+        'ws://127.0.0.1:3456/sdk/expert-session?token=test-token',
+        { expertSessionId: 'expert-session' },
+      )) as Record<string, string>
+
+      expect(env.CLAUDE_CLI_PATH).toBe('C:\\portable\\claude-sidecar.exe')
+      expect(env.CLAUDE_APP_ROOT).toBe('C:\\portable\\app-root')
+      expect(env.CC_JIANGXIA_EXPERT_SESSION_ID).toBe('expert-session')
+      expect(env.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE).toBe('1')
+    } finally {
+      if (originalCliPath === undefined) delete process.env.CLAUDE_CLI_PATH
+      else process.env.CLAUDE_CLI_PATH = originalCliPath
+      if (originalAppRoot === undefined) delete process.env.CLAUDE_APP_ROOT
+      else process.env.CLAUDE_APP_ROOT = originalAppRoot
+      resetTerminalShellEnvironmentCacheForTests()
+    }
   })
 
   test('buildChildEnv asks desktop SDK sessions to wait briefly for MCP tools', async () => {

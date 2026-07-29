@@ -8,6 +8,7 @@ import { ExpertPackRegistryService, ExpertPackValidationError, type ExpertIntake
 import { ExpertRuntimeService } from './expertRuntimeService.js'
 import { createExpertRuntimeBinding, hasActiveExpertRuntime } from './expertRuntimeBindingService.js'
 import { renderExpertTemplateFill } from '../../utils/expertTemplateFill.js'
+import { expertRuntimeSessionStore } from './expertRuntimeSessionStore.js'
 
 const registry = new ExpertPackRegistryService()
 const runtime = new ExpertRuntimeService()
@@ -42,11 +43,12 @@ export class ExpertSessionService {
       startedAt: session.expert?.startedAt ?? now,
       updatedAt: now,
     }
+    await expertRuntimeSessionStore.save(sessionId, metadata)
     await sessionService.appendSessionMetadata(sessionId, {
       workDir: session.workDir || session.projectRoot || session.projectPath,
       expert: metadata,
     })
-    const persistedExpert = (await sessionService.getSession(sessionId))?.expert
+    const persistedExpert = (await sessionService.getSession(sessionId))?.expert ?? await expertRuntimeSessionStore.get(sessionId)
     if (
       !persistedExpert ||
       persistedExpert.expertId !== metadata.expertId ||
@@ -77,6 +79,7 @@ export class ExpertSessionService {
       workDir: session.workDir || session.projectRoot || session.projectPath,
       expert: metadata,
     })
+    await expertRuntimeSessionStore.remove(sessionId)
     // Exit has to remove the prior expert deny list before normal chat resumes.
     await conversationService.stopSessionAndWait(sessionId)
     return metadata
@@ -124,9 +127,11 @@ export class ExpertSessionService {
   async renderTemplateFill(sessionId: string, payload: unknown): Promise<{ content: string; templateId: string }> {
     const session = await sessionService.getSession(sessionId)
     if (!session) throw ApiError.notFound(`Session not found: ${sessionId}`)
-    const expert = session.expert
+    const expert = hasActiveExpertRuntime(session.expert)
+      ? session.expert
+      : await expertRuntimeSessionStore.get(sessionId)
     if (!hasActiveExpertRuntime(expert)) {
-      throw ApiError.badRequest('当前会话没有启用可用的专家模板填充输出。请重新进入专家 Mode 后重试。')
+      throw ApiError.badRequest('当前会话没有启用可用的专家模板填充输出。请重新进入专家 Mode 后重试；不要改为手写 HTML、调用 Write 写 .html，或继续试探模板/服务器。')
     }
     const binding = expert.runtimeBinding
     if (binding.outputMode !== 'template-fill' || !binding.outputTemplate) {

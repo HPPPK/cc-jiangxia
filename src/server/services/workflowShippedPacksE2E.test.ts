@@ -380,6 +380,28 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
     expect(phase?.instructions).toContain('write scopes')
   })
 
+  test('keeps every shipped subagent phase host-managed and unbounded', async () => {
+    const adapter = new ZipPackAdapter()
+
+    for (const workflow of SHIPPED_WORKFLOWS) {
+      const source = path.join(process.cwd(), 'src', 'server', 'packs', workflow.packFile)
+      const archive = await adapter.read(new Uint8Array(await fs.readFile(source)))
+      const workflowEntry = archive.entries.find((entry) => entry.path.startsWith('workflows/') && entry.path.endsWith('.workflow.json'))
+      if (!workflowEntry) throw new Error('Workflow entry is missing from ' + workflow.packFile)
+      const template = await archive.readJson<{ phases: Array<{ subagentPolicy?: Record<string, unknown>; contract?: { subagentPolicy?: Record<string, unknown> } }> }>(workflowEntry.path)
+      const policies = template.phases.flatMap((phase) => [phase.subagentPolicy, phase.contract?.subagentPolicy].filter(Boolean))
+
+      expect(policies.length).toBeGreaterThan(0)
+      for (const policy of policies) {
+        expect(policy).toMatchObject({
+          parallelSubagentsAllowed: true,
+          maxParallel: null,
+          controlledBy: 'host-runtime',
+        })
+      }
+    }
+  })
+
   test('runs every actual ZIP workflow through stage permissions, malformed completion rejection, pause/resume, invalid routes, repair loops, and final completion', async () => {
     await initializeIsolatedPackRegistry()
     const service = runtimeService()

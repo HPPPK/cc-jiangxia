@@ -1837,6 +1837,48 @@ describe('SessionService', () => {
     expect(workDir).toBe('/tmp/from-cwd')
   })
 
+  it('persists session metadata at the canonical path when the transcript is not available yet', async () => {
+    const sessionId = '11111111-2222-3333-4444-555555555555'
+    const workDir = path.join(tmpDir, 'workspace', 'metadata-race')
+    await fs.mkdir(workDir, { recursive: true })
+
+    await service.appendSessionMetadata(sessionId, {
+      workDir,
+      expert: {
+        mode: 'expert',
+        expertId: 'metadata-race-expert',
+        expertName: 'Metadata race expert',
+        packId: 'metadata-race-pack',
+        packVersion: '1.0.0',
+        status: 'active',
+        runtimeBinding: {
+          schemaVersion: 1,
+          active: true,
+          expertId: 'metadata-race-expert',
+          expertName: 'Metadata race expert',
+          packId: 'metadata-race-pack',
+          packVersion: '1.0.0',
+          promptSnapshot: 'test',
+          skills: [],
+          hostTools: [],
+          tools: [],
+          permissions: [],
+          activatedAt: '2026-07-29T00:00:00.000Z',
+        },
+        materialRefs: [],
+        startedAt: '2026-07-29T00:00:00.000Z',
+        updatedAt: '2026-07-29T00:00:00.000Z',
+      },
+    })
+
+    const recovered = await service.getSession(sessionId)
+    expect(recovered?.expert).toMatchObject({
+      expertId: 'metadata-race-expert',
+      status: 'active',
+      runtimeBinding: { active: true },
+    })
+  })
+
   // --------------------------------------------------------------------------
   // createSession
   // --------------------------------------------------------------------------

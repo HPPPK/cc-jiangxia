@@ -49,7 +49,7 @@ describe('workflow parallelism', () => {
     })).toBeNull()
   })
 
-  test('uses the host-managed default for an explicitly host-controlled workflow phase', () => {
+  test('does not impose a numeric cap for an explicitly host-controlled workflow phase', () => {
     expect(resolveWorkflowParallelism({
       sessionId: 'session-1',
       activePhaseId: 'delegate-implement',
@@ -67,7 +67,7 @@ describe('workflow parallelism', () => {
       },
     })).toEqual({
       key: 'session-1:delegate-implement',
-      maxParallel: 2,
+      maxParallel: Number.MAX_SAFE_INTEGER,
     })
   })
 

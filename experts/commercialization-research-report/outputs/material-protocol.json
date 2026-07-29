@@ -1,9 +1,18 @@
 {
-  "version": 2,
+  "version": 3,
   "primaryOutput": {
     "kind": "html",
     "templatePath": "experts/commercialization-research-report/templates/commercialization-research-report-template.html",
-    "writeTool": "Write",
+    "delivery": "Use Write to create a compact report-fields.json document, then run the built-in expert-template-fill CLI once to render the fixed HTML template.",
+    "fieldsDocument": {
+      "requiredKeys": [
+        "templateId",
+        "fields"
+      ],
+      "writeTool": "Write",
+      "content": "JSON only; never HTML, CSS, headings, table headers, or a template copy."
+    },
+    "renderCommand": "\"$CLAUDE_CLI_PATH\" expert-template-fill --data \"<report-fields.json>\" --output \"<final-report.html>\"",
     "destination": "Only the user-confirmed output folder and filename."
   },
   "requiredBeforeWrite": [
@@ -13,11 +22,478 @@
     "Every URL actually used by the final HTML is listed in the final sources table with a source type, date, and field coverage; accessed but unused URLs remain only in the research ledger.",
     "The evidence-review subagent has completed claim-by-claim and source-coverage review.",
     "The user has confirmed the output path.",
-    "The original HTML template structure, CSS, chapter order, and table headers are preserved."
+    "The fields JSON is complete and the expert-template-fill CLI will render the session-bound fixed HTML template."
   ],
   "supportingArtifacts": [
     "Candidate-and-access ledger: candidate or discovered URL, source type, discovery method, BrowserResearch status, date, field coverage, result or limitation, and final-report usage.",
     "Claim-to-source map: final claim or table row -> source number -> BrowserResearch-opened URL or user-provided material.",
     "Evidence-review findings and unresolved evidence gaps."
-  ]
+  ],
+  "templateFieldGuide": {
+    "purpose": "这是“字段是什么意思”的教学指南。它帮助解释字段和相邻列的差别；示例是写法参考，不是要求把示例中的产品、数据或结论照搬。",
+    "twoWorkedExamples": [
+      {
+        "product": "AI 视频翻译",
+        "example": "功能表的一行可写：[\"字幕翻译与配音\", \"把外语视频变成目标语言可观看版本\", \"减少人工听译、翻译、配音之间的反复切换\", \"高\"]。这里“解决什么问题”写用户的阻碍，不重复功能名称；“用户价值”写结果或收益。"
+      },
+      {
+        "product": "鼠标快捷效率工具",
+        "example": "竞品全景的一行可写：[\"直接竞品\", \"uTools\", \"Windows/macOS\", \"本地效率工具与插件生态\", \"未公开确认\", \"本品若只做鼠标手势，需要比较上手成本、插件扩展和快捷触发覆盖\"]。这里“类型”写竞争关系，不是软件分类；“与本品差距”写本品相对不足或待验证的差异。"
+      }
+    ],
+    "fields": [
+      {
+        "field": "REPORT_TITLE",
+        "meaning": "报告要研究的新品名称或方向，不是宣传口号。",
+        "example": "AI 视频翻译工具"
+      },
+      {
+        "field": "REPORT_DATE",
+        "meaning": "本次报告形成或最后整理的日期；不把网页发布日期、统计年度混进来。",
+        "example": "2026-07-29"
+      },
+      {
+        "field": "REPORT_SCOPE",
+        "meaning": "本轮实际覆盖的市场、地区、平台、用户或问题边界；用来说明这份报告没有研究什么。",
+        "example": "中国 C 端桌面端 AI 视频翻译立项预研；覆盖公开官网、应用商店、社区与内容平台线索。"
+      },
+      {
+        "field": "DATA_DECLARATION",
+        "meaning": "数据来源和可靠性总说明。区分已核验公开信息、观察、方向性推演和证据缺口。",
+        "example": "公开页面与社区讨论已在来源表列出；用户付费频次暂无一手数据，以下相关判断为待验证假设。"
+      },
+      {
+        "field": "PRODUCT_ONE_SENTENCE_DEFINITION",
+        "meaning": "“给谁，在什么情境下，用什么方式解决什么任务”的一句话定义，不是堆功能。",
+        "example": "面向需要跨语种复用短视频的内容创作者，把字幕翻译、配音和成片导出整合为可复核的桌面工作流。"
+      },
+      {
+        "field": "PRODUCT_FORM_AND_SCENARIOS",
+        "meaning": "说明产品形态、关键使用场景和触发时刻；不要在此重复用户画像或定价。",
+        "example": "桌面端工具；用户拿到外语访谈视频后，先生成字幕，再校对术语并导出双语配音版本。"
+      },
+      {
+        "field": "CORE_DECISION_CONCLUSION",
+        "meaning": "立项结论本身：推荐、验证后再做或暂不推荐，并点出最关键的依据和风险。",
+        "example": "建议进入小范围验证：竞品供给和内容需求线索存在，但中文创作者的真实付费路径仍需访谈和落地页测试。"
+      },
+      {
+        "field": "MARKET_WINDOW_CONTENT",
+        "meaning": "为什么是现在值得关注的外部变化，例如能力、平台、政策、内容供给或竞品空缺；没有明确变化就写待验证。",
+        "example": "推演：生成式配音和自动字幕降低了基础制作门槛；依据为相关产品公开功能更新，仍需验证其是否带来独立付费需求。"
+      },
+      {
+        "field": "USER_NEEDS_AND_PAIN_POINTS",
+        "meaning": "按任务链描述需求、卡点、现有替代方案和未验证处；不要把竞品功能数当成高频需求。",
+        "example": "待验证假设：跨语种短视频复用时，术语校对与音画同步会造成反复返工；现有替代方案是剪辑软件加翻译/配音服务。"
+      },
+      {
+        "field": "MARKET_TIMING_CONTENT",
+        "meaning": "说明进入时机、等待理由或验证门槛；它回答“现在做、晚点做还是不做”。",
+        "example": "先用 4 周验证高意图场景与价格接受度；若访谈中可替代方案已足够且转化低，则不扩大投入。"
+      },
+      {
+        "field": "RECOMMENDED_MONETIZATION_MODEL",
+        "meaning": "明确推荐哪一种收费组合及适用条件；与上表“可选模式”不同，这里要作出当前选择。",
+        "example": "建议免费试用 + 按时长/导出额度订阅；前提是用户对批量翻译与配音有持续任务。"
+      },
+      {
+        "field": "PRICING_STRATEGY_CONTENT",
+        "meaning": "给出价格结构、免费边界、升级触发和待验证项；不要把竞品页面价格直接当作本品最优价。",
+        "example": "先测试基础免费额度与专业版月订阅两档；升级触发放在批量处理、术语库和无水印导出，具体价格需结合访谈与支付测试。"
+      },
+      {
+        "field": "OPPORTUNITY_GAP_CONTENT",
+        "meaning": "竞争格局中可切入、但尚未被充分满足的任务或人群；必须说清证据或假设。",
+        "example": "待验证机会：面向中文内容团队的“术语校对 + 配音一致性”闭环，可能比通用翻译更贴近工作流。"
+      },
+      {
+        "field": "SEARCH_ACQUISITION_NOTE",
+        "meaning": "解释这张搜索获客表的采集范围、日期、查询词或限制；不是重复表中数据。",
+        "example": "本轮仅核验公开可访问搜索结果页和官网落地页；未取得广告后台数据，因此 SEM 项均按“未公开确认”处理。"
+      },
+      {
+        "field": "SEARCH_ACQUISITION_CONCLUSION",
+        "meaning": "根据搜索表给出渠道优先级和下一步验证，不用未观察到的广告数据硬下结论。",
+        "example": "优先测试“视频翻译/字幕翻译/AI 配音”任务词的内容落地页；是否投放 SEM 需取得真实关键词和转化数据后决定。"
+      },
+      {
+        "field": "REPORT_FOOTNOTE",
+        "meaning": "对报告时效、访问限制、用户材料和未完成验证做最后说明，不新增关键结论。",
+        "example": "本报告基于 2026-07-29 可访问公开材料；登录墙、动态页面和未公开数据已标为证据缺口。"
+      }
+    ],
+    "tables": [
+      {
+        "field": "CORE_FUNCTION_ROWS",
+        "meaning": "每行是一项核心能力及其业务价值，不按按钮或页面元素拆碎。",
+        "columns": [
+          [
+            "功能",
+            "能力名称或任务动作。",
+            "字幕翻译与术语校对"
+          ],
+          [
+            "解决什么问题",
+            "用户完成任务时被阻断的具体问题。",
+            "减少外语字幕逐句翻译和多轮返工"
+          ],
+          [
+            "用户价值",
+            "完成后获得的时间、质量、风险或体验收益。",
+            "更快产出可发布的双语版本"
+          ],
+          [
+            "优先级",
+            "MVP 相对优先级，不是市场热度。",
+            "高"
+          ]
+        ],
+        "rowExample": [
+          "字幕翻译与术语校对",
+          "减少外语字幕逐句翻译和多轮返工",
+          "更快产出可发布的双语版本",
+          "高"
+        ]
+      },
+      {
+        "field": "RECOMMENDATION_RATIONALE_ROWS",
+        "meaning": "每行是一条支持或反驳立项的论据；具体说明必须标出事实、观察、推演或待验证。",
+        "columns": [
+          [
+            "论据",
+            "论据标题。",
+            "内容供给增长带来跨语种复用任务"
+          ],
+          [
+            "具体说明",
+            "说明来源、逻辑和限制，不能只写结论。",
+            "观察：公开内容平台存在相关教程与需求讨论；是否形成付费需求仍需访谈验证。"
+          ]
+        ],
+        "rowExample": [
+          "内容供给增长带来跨语种复用任务",
+          "观察：公开内容平台存在相关教程与需求讨论；是否形成付费需求仍需访谈验证。"
+        ]
+      },
+      {
+        "field": "PLATFORM_HEAT_ROWS",
+        "meaning": "每行是一种平台或渠道上的可复核信号；不是把不同口径的数字相加成市场规模。",
+        "columns": [
+          [
+            "平台/渠道",
+            "信号来自哪里。",
+            "B站搜索结果页"
+          ],
+          [
+            "热度指标",
+            "该平台实际可见的指标名称。",
+            "相关视频与讨论线索"
+          ],
+          [
+            "具体数据",
+            "原始数字或可见现象；不确定则写未取得。",
+            "2026-07-29 可访问结果中存在多条相关教程，精确播放量未统一采集"
+          ],
+          [
+            "趋势判断",
+            "基于该信号的有限判断。",
+            "仅说明内容供给存在，不能证明需求规模"
+          ],
+          [
+            "数据时效",
+            "数字或页面的日期/采集日。",
+            "采集于 2026-07-29"
+          ]
+        ],
+        "rowExample": [
+          "B站搜索结果页",
+          "相关视频与讨论线索",
+          "存在多条相关教程，精确播放量未统一采集",
+          "内容供给存在，不等于付费需求",
+          "采集于 2026-07-29"
+        ]
+      },
+      {
+        "field": "TARGET_USER_PROFILE_ROWS",
+        "meaning": "每行是一个画像维度。结论写当前画像，说明写任务、证据或待验证原因；不要凭功能数量写“高频”。",
+        "columns": [
+          [
+            "维度",
+            "画像维度，而不是用户昵称。",
+            "角色与任务"
+          ],
+          [
+            "结论",
+            "当前已验证画像或待验证假设。",
+            "待验证：跨语种复用视频的内容创作者"
+          ],
+          [
+            "说明",
+            "触发、痛点、替代方案、购买者和证据情况。",
+            "触发为拿到外语素材后需快速发布；现用剪辑软件+翻译工具；购买者是否为创作者本人需访谈。"
+          ]
+        ],
+        "rowExample": [
+          "角色与任务",
+          "待验证：跨语种复用视频的内容创作者",
+          "触发为拿到外语素材后需快速发布；现用剪辑软件+翻译工具；购买者是否为创作者本人需访谈。"
+        ]
+      },
+      {
+        "field": "MARKET_SIZING_ROWS",
+        "meaning": "每行说明 TAM/SAM/SOM 或其他市场层级的定义和当前估算状态。估算不能由无来源比例推出来。",
+        "columns": [
+          [
+            "层级",
+            "市场层级或范围名称。",
+            "SAM（可服务市场）"
+          ],
+          [
+            "定义",
+            "该层级覆盖的人群、地区、产品和时间口径。",
+            "中国有跨语种视频处理任务、且可通过桌面端服务的付费场景"
+          ],
+          [
+            "估算",
+            "已核验数字、计算公式或明确的证据缺口。",
+            "未取得可复核的付费人群基数；本轮不输出金额规模，建议以访谈和投放测试补齐。"
+          ]
+        ],
+        "rowExample": [
+          "SAM（可服务市场）",
+          "中国有跨语种视频处理任务、且可通过桌面端服务的付费场景",
+          "未取得可复核的付费人群基数；本轮不输出金额规模，建议以访谈和投放测试补齐。"
+        ]
+      },
+      {
+        "field": "MONETIZATION_MODEL_ROWS",
+        "meaning": "每行是一种可选收费模式；适配性解释为什么适合或不适合当前任务，不等于最终推荐。",
+        "columns": [
+          [
+            "模式",
+            "收费方式。",
+            "订阅制"
+          ],
+          [
+            "说明",
+            "用户为何付费、按什么计费。",
+            "按月提供批量翻译、配音和术语库额度"
+          ],
+          [
+            "适配性",
+            "与任务频率、成本和替代方案的匹配。",
+            "若用户持续处理视频则较适配；任务偶发时需与按量包对照验证"
+          ]
+        ],
+        "rowExample": [
+          "订阅制",
+          "按月提供批量翻译、配音和术语库额度",
+          "若用户持续处理视频则较适配；任务偶发时需与按量包对照验证"
+        ]
+      },
+      {
+        "field": "COMPETITOR_LANDSCAPE_ROWS",
+        "meaning": "每行是一名竞品或替代方案。竞争类型写关系，覆盖范围写实际解决的任务范围。",
+        "columns": [
+          [
+            "类型",
+            "直接竞品、间接竞品或替代方案。",
+            "直接竞品"
+          ],
+          [
+            "代表产品",
+            "产品或方案名称。",
+            "讯飞译制"
+          ],
+          [
+            "所在平台",
+            "用户实际接触的平台。",
+            "Web"
+          ],
+          [
+            "覆盖范围",
+            "已公开的任务或能力范围。",
+            "视频翻译、字幕与配音"
+          ],
+          [
+            "SEM投放实况",
+            "本轮真实观察到的广告情况；未核验不可猜。",
+            "未公开确认"
+          ],
+          [
+            "与本品差距",
+            "相对于本品的已知差异或待验证差异。",
+            "待验证：本品若强调术语协作，需比较团队校对闭环"
+          ]
+        ],
+        "rowExample": [
+          "直接竞品",
+          "讯飞译制",
+          "Web",
+          "视频翻译、字幕与配音",
+          "未公开确认",
+          "待验证：本品若强调术语协作，需比较团队校对闭环"
+        ]
+      },
+      {
+        "field": "COMPETITOR_PRICING_ROWS",
+        "meaning": "每行比较一个竞品的公开价格和免费边界；“价格区间”要有币种、周期或使用单位。",
+        "columns": [
+          [
+            "竞品类型",
+            "竞争关系。",
+            "直接竞品"
+          ],
+          [
+            "代表产品",
+            "产品名称。",
+            "示例产品"
+          ],
+          [
+            "平台",
+            "公开价格所在的平台。",
+            "Web"
+          ],
+          [
+            "定价模式",
+            "订阅、按量、买断等。",
+            "订阅+额度"
+          ],
+          [
+            "价格区间",
+            "公开价格和计费周期。",
+            "官网套餐页显示的月费区间，采集于 2026-07-29"
+          ],
+          [
+            "免费策略",
+            "免费额度、试用或限制。",
+            "提供有限试用，具体额度以套餐页为准"
+          ],
+          [
+            "SEM投放",
+            "真实观察或未公开确认。",
+            "未公开确认"
+          ]
+        ],
+        "rowExample": [
+          "直接竞品",
+          "示例产品",
+          "Web",
+          "订阅+额度",
+          "官网套餐页显示的月费区间，采集于 2026-07-29",
+          "提供有限试用，具体额度以套餐页为准",
+          "未公开确认"
+        ]
+      },
+      {
+        "field": "COMPETITOR_GTM_ROWS",
+        "meaning": "每行描述竞品如何变现、获客和留存；不要用官网存在就推断完整增长策略。",
+        "columns": [
+          [
+            "竞品",
+            "名称。",
+            "示例产品"
+          ],
+          [
+            "怎么卖",
+            "套餐、渠道或销售方式。",
+            "官网自助订阅"
+          ],
+          [
+            "怎么获客",
+            "已观察的内容、搜索、应用商店、合作等渠道。",
+            "公开帮助中心与内容页；其他渠道待验证"
+          ],
+          [
+            "搜索引擎投放实况",
+            "本轮搜索页可见的付费广告观察。",
+            "未公开确认"
+          ],
+          [
+            "怎么留存",
+            "可见的复购或留存机制。",
+            "项目历史、额度续费与模板；实际留存数据未公开"
+          ]
+        ],
+        "rowExample": [
+          "示例产品",
+          "官网自助订阅",
+          "公开帮助中心与内容页；其他渠道待验证",
+          "未公开确认",
+          "项目历史、额度续费与模板；实际留存数据未公开"
+        ]
+      },
+      {
+        "field": "SEARCH_ACQUISITION_ROWS",
+        "meaning": "每行是一个关键词方向上的搜索格局。SEM 与 SEO 必须分别填写，避免把自然结果误当广告。",
+        "columns": [
+          [
+            "关键词方向",
+            "用户表达的任务词或问题词。",
+            "视频翻译"
+          ],
+          [
+            "付费广告位（SEM）",
+            "当次可见广告主/未观察到/未公开确认。",
+            "未取得完整搜索结果快照，未公开确认"
+          ],
+          [
+            "自然搜索占位（SEO）",
+            "可见的自然结果类型或站点。",
+            "工具官网、教程页与内容平台结果"
+          ],
+          [
+            "竞争强度评估",
+            "基于结果数量、品牌占位或广告观察的工作判断，并说明依据。",
+            "中；依据为多类结果并存，广告强度仍需同口径快照验证"
+          ]
+        ],
+        "rowExample": [
+          "视频翻译",
+          "未取得完整搜索结果快照，未公开确认",
+          "工具官网、教程页与内容平台结果",
+          "中；依据为多类结果并存，广告强度仍需同口径快照验证"
+        ]
+      },
+      {
+        "field": "SOURCE_ROWS",
+        "meaning": "每行是一条最终报告实际使用的来源。内容摘要说明“它支持哪条信息”，不是只放网站名。",
+        "columns": [
+          [
+            "编号",
+            "与正文 [n] 对应的编号。",
+            "[1]"
+          ],
+          [
+            "来源类型",
+            "官网、套餐页、应用商店、社区讨论、行业资料、用户材料等。",
+            "竞品官网套餐页"
+          ],
+          [
+            "内容摘要",
+            "该页支持的具体功能、价格、数字、规则或观察。",
+            "列出示例产品的公开套餐与试用说明，用于 3.2 定价对比"
+          ],
+          [
+            "数据时效",
+            "发布日期、统计年度或本次访问日期。",
+            "访问于 2026-07-29"
+          ],
+          [
+            "链接（URL）",
+            "实际打开且被报告使用的 http/https 链接。",
+            "https://example.com/pricing"
+          ]
+        ],
+        "rowExample": [
+          "[1]",
+          "竞品官网套餐页",
+          "列出示例产品的公开套餐与试用说明，用于 3.2 定价对比",
+          "访问于 2026-07-29",
+          "https://example.com/pricing"
+        ]
+      }
+    ]
+  }
 }
