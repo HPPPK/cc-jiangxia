@@ -1,6 +1,6 @@
 [package]
 name = "cc-jiangxia-desktop"
-version = "0.2.54"
+version = "0.2.55"
 edition = "2021"
 
 [lib]
