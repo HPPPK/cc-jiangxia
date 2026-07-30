@@ -2167,6 +2167,11 @@ type WorkflowTerminalRecovery = {
   kind: 'ask-user-question' | 'continue-workflow'
 }
 
+type StrictVisualTerminalRecovery = {
+  kind: 'ask-user-question' | 'design-direction'
+  expertId: string
+}
+
 function beginStreamedAssistantTurn(streamState: SessionStreamState): void {
   streamState.usedAskUserQuestion = false
   streamState.assistantText = ''
@@ -2264,6 +2269,94 @@ function assistantTextRequestsUserDecision(text: string): boolean {
   const hasQuestionSignal = /[?？]/.test(normalized)
   const hasDecisionLanguage = /(?:要我|还是|请(?:你)?(?:选择|确认|告诉)|你(?:想|要|希望)|是否|需不需要|下一步|怎么做|would you like|do you want|should i|which (?:option|one)|please (?:choose|confirm|tell)|let me know|what would you like)/i.test(normalized)
   return hasQuestionSignal && hasDecisionLanguage
+}
+
+function assistantTextRequestsStrictVisualBoundedDecision(text: string): boolean {
+  const normalized = text.trim()
+  if (!normalized) return false
+
+  // A strict visual Expert may still ask for an uploaded screenshot, a pasted
+  // URL, or free-form design context in prose. Only intercept decisions that
+  // can truthfully become an AskUserQuestion card with bounded choices.
+  return /(?:还是|是否|需不需要|要不要|请(?:你)?(?:选择|确认)|选(?:择)?\s*(?:[A-D]|方案|方向|其一)|二选一|would you like|do you want|should i|which (?:option|one)|please (?:choose|confirm))/i.test(normalized)
+}
+
+function assistantTextPresentsMultipleDesignDirections(text: string): boolean {
+  const normalized = text.trim()
+  if (!normalized) return false
+
+  const chineseDirections = normalized.match(/方向\s*(?:[一二三四五六七八九十]|\d+)/g) ?? []
+  const englishDirections = normalized.match(/(?:design\s+)?directions?\s*(?:[1-9]|one|two|three|four|five)/gi) ?? []
+  const directions = new Set(
+    [...chineseDirections, ...englishDirections]
+      .map((value) => value.replace(/\s+/g, '').toLowerCase()),
+  )
+  return directions.size >= 2
+}
+
+async function strictVisualTerminalRecoveryForResult(
+  sessionId: string,
+  turn: WorkflowInteractionTurn,
+): Promise<StrictVisualTerminalRecovery | null> {
+  if (turn.usedAskUserQuestion || hasPendingAskUserQuestion(sessionId)) return null
+
+  const transcriptExpert = (await sessionService.getSession(sessionId).catch(() => null))?.expert
+  const expert = hasActiveExpertRuntime(transcriptExpert)
+    ? transcriptExpert
+    : await expertRuntimeSessionStore.get(sessionId)
+  if (
+    !hasActiveExpertRuntime(expert)
+    || expert.runtimeBinding.runtimePolicy?.mode !== 'strict-visual-workflow'
+  ) {
+    return null
+  }
+
+  if (assistantTextPresentsMultipleDesignDirections(turn.assistantText)) {
+    return { kind: 'design-direction', expertId: expert.expertId }
+  }
+  if (assistantTextRequestsStrictVisualBoundedDecision(turn.assistantText)) {
+    return { kind: 'ask-user-question', expertId: expert.expertId }
+  }
+  return null
+}
+
+function buildStrictVisualTerminalRecoveryInstruction(
+  recovery: StrictVisualTerminalRecovery,
+): string {
+  const requirement = recovery.kind === 'design-direction'
+    ? [
+        'You just presented multiple design directions without the mandatory selection card.',
+        'Immediately call AskUserQuestion with exactly one question whose id is design_direction.',
+        'Its 2–4 bounded choices must map one-to-one to the directions already shown. Preserve their actual names and intent; do not invent a replacement direction.',
+      ]
+    : [
+        'Your previous response asked the user for a bounded choice or confirmation in prose.',
+        'Immediately convert that exact decision into one AskUserQuestion card with 2–4 bounded choices and stable ids.',
+      ]
+
+  return [
+    '<strict-visual-ask-user-question-recovery>',
+    ...requirement,
+    'Until the AskUserQuestion call is emitted, do not output any more prose, do not end the turn, and do not call any other tool.',
+    'Do not ask the user to type a direction, letter, number, confirmation, path, or choice in the free-form composer.',
+    'This is a server-enforced strict visual workflow for Expert ' + recovery.expertId + '.',
+    '</strict-visual-ask-user-question-recovery>',
+  ].join('\n')
+}
+
+function sendStrictVisualTerminalProtocolError(
+  sessionId: string,
+  code: 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED' | 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE',
+): void {
+  const message = code === 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED'
+    ? 'The strict UIUX Expert ended a choice turn without AskUserQuestion twice. No production action was started; retry the choice step.'
+    : 'The strict UIUX Expert could not deliver its required AskUserQuestion recovery turn. No production action was started; retry the choice step.'
+  sendToSession(sessionId, {
+    type: 'error',
+    code,
+    message,
+    retryable: true,
+  })
 }
 
 function hasPendingAskUserQuestion(sessionId: string): boolean {
@@ -3456,11 +3549,48 @@ async function finalizeClientResult(sessionId: string, cliMsg: any): Promise<voi
   if (await recoverWorkflowProtocolInputValidation(sessionId, cliMsg)) return
 
   const turn = workflowInteractionTurnForResult(sessionId)
-  const recovery = !cliMsg.is_error
+  const workflowRecovery = !cliMsg.is_error
     ? await workflowTerminalRecoveryForResult(sessionId, turn)
     : null
+  const strictVisualRecovery = !cliMsg.is_error && !workflowRecovery
+    ? await strictVisualTerminalRecoveryForResult(sessionId, turn)
+    : null
 
-  if (recovery) {
+  if (strictVisualRecovery) {
+    if (turn.recoveryAttempts >= 1) {
+      sendStrictVisualTerminalProtocolError(sessionId, 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED')
+      finishWorkflowInteractionTurn(sessionId)
+      return
+    }
+
+    if (!conversationService.hasSession(sessionId)) {
+      sendStrictVisualTerminalProtocolError(sessionId, 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE')
+      finishWorkflowInteractionTurn(sessionId)
+      return
+    }
+
+    const streamState = getStreamState(sessionId)
+    streamState.structuredInteractionRecoveryAttempts += 1
+    sendToSession(sessionId, {
+      type: 'status',
+      state: 'thinking',
+      verb: strictVisualRecovery.kind === 'design-direction'
+        ? 'Generating required design-direction choices'
+        : 'Generating required choices',
+    })
+    const sent = conversationService.sendMessage(
+      sessionId,
+      buildStrictVisualTerminalRecoveryInstruction(strictVisualRecovery),
+    )
+    if (sent) return
+
+    sendStrictVisualTerminalProtocolError(sessionId, 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE')
+    finishWorkflowInteractionTurn(sessionId)
+    return
+  }
+
+  if (workflowRecovery) {
+    const recovery = workflowRecovery
     if (turn.recoveryAttempts >= 1) {
       sendWorkflowTerminalProtocolError(sessionId, recovery, 'WORKFLOW_TERMINAL_PROTOCOL_REQUIRED')
       finishWorkflowInteractionTurn(sessionId)

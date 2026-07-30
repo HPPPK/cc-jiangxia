@@ -126,7 +126,30 @@ const KNOWN_BUNDLED_WORKFLOW_UPGRADES = new Map<string, ReadonlyArray<{ version:
       fingerprint: 'ba06243dd41f45402dfb8822de33203115449e5a5a4f9474c820deeae038f6f2',
     },
   ]],
+  ['feature-extension-workflow-v8', [
+    {
+      version: '8',
+      fingerprint: '10c6ce40b2235ebbf19d50dc3e2faac643801e679729b29a3679d1f1acd8b162',
+    },
+    {
+      version: '9',
+      fingerprint: 'eae927c98cc23d453abc9168fbc84f0efe462efd830cfcf0fe80726cc8f3061e',
+    },
+  ]],
+  ['debug-repair-workflow-v8', [
+    {
+      version: '8',
+      fingerprint: '1622266e6f5553c7c2845059f49018541511ce8137d24da79608b0f859c63457',
+    },
+
+
+    {
+      version: '9',
+      fingerprint: '40661f772db4c161a83c1314b87272efef1bc639756afdca020b9aecdc70fb99',
+    },
+  ]],
 ])
+
 let cachedIndex: PackRegistryIndex | null = null
 let cachedIndexPath: string | null = null
 

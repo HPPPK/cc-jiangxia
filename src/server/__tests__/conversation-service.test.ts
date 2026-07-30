@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { ConversationService } from '../services/conversationService.js'
 import { ProviderService } from '../services/providerService.js'
 import { resetTerminalShellEnvironmentCacheForTests } from '../../utils/terminalShellEnvironment.js'
+import { getBrowserResearchRuntimeDir } from '../../tools/BrowserResearchTool/runtime.js'
 
 describe('ConversationService', () => {
   let tmpDir: string
@@ -636,6 +637,57 @@ describe('ConversationService', () => {
       if (originalAppRoot === undefined) delete process.env.CLAUDE_APP_ROOT
       else process.env.CLAUDE_APP_ROOT = originalAppRoot
       resetTerminalShellEnvironmentCacheForTests()
+    }
+  })
+
+  test('buildChildEnv exposes the installed BrowserResearch renderer to standard Expert sessions only', async () => {
+    const browserExecutable = path.join(
+      getBrowserResearchRuntimeDir(tmpDir),
+      'chromium-test',
+      'chrome-headless-shell.exe',
+    )
+    await fs.mkdir(path.dirname(browserExecutable), { recursive: true })
+    await fs.writeFile(browserExecutable, 'placeholder browser executable')
+
+    const service = new ConversationService() as any
+    const expertEnv = (await service.buildChildEnv(
+      '/tmp',
+      'ws://127.0.0.1:3456/sdk/expert-session?token=test-token',
+      { expertSystemPrompt: '<expert-runtime />' },
+    )) as Record<string, string>
+    const ordinaryEnv = (await service.buildChildEnv(
+      '/tmp',
+      'ws://127.0.0.1:3456/sdk/ordinary-session?token=test-token',
+    )) as Record<string, string>
+
+    expect(expertEnv.CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE).toBe(browserExecutable)
+    expect(expertEnv.CC_JIANGXIA_EXPERT_TEMPLATE_FILL_WRITE).toBeUndefined()
+    expect(ordinaryEnv.CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE).toBeUndefined()
+  })
+
+  test('buildChildEnv falls back to the Sidecar-bundled visual QA browser for Expert sessions', async () => {
+    const bundledRuntimeDir = path.join(tmpDir, 'bundled-browser-runtime')
+    const browserExecutable = path.join(
+      bundledRuntimeDir,
+      'chromium-test',
+      'chrome-headless-shell.exe',
+    )
+    await fs.mkdir(path.dirname(browserExecutable), { recursive: true })
+    await fs.writeFile(browserExecutable, 'placeholder bundled browser executable')
+    const originalBundledBrowserRuntime = process.env.CLAUDE_BROWSER_RUNTIME_DIR
+    try {
+      process.env.CLAUDE_BROWSER_RUNTIME_DIR = bundledRuntimeDir
+      const service = new ConversationService() as any
+      const expertEnv = (await service.buildChildEnv(
+        '/tmp',
+        'ws://127.0.0.1:3456/sdk/expert-session?token=test-token',
+        { expertSystemPrompt: '<expert-runtime />' },
+      )) as Record<string, string>
+
+      expect(expertEnv.CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE).toBe(browserExecutable)
+    } finally {
+      if (originalBundledBrowserRuntime === undefined) delete process.env.CLAUDE_BROWSER_RUNTIME_DIR
+      else process.env.CLAUDE_BROWSER_RUNTIME_DIR = originalBundledBrowserRuntime
     }
   })
 

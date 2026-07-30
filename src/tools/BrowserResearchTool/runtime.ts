@@ -81,7 +81,7 @@ export function getUnsafeBrowserResearchUrlReason(rawUrl: string): string | null
   return null
 }
 
-function getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir: string): string | null {
+export function getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir: string): string | null {
   if (!existsSync(runtimeDir)) return null
 
   try {

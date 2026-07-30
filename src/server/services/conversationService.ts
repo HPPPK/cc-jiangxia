@@ -25,6 +25,10 @@ import {
   resolveClaudeCliLauncher,
 } from '../../utils/desktopBundledCli.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import {
+  getBrowserResearchExecutablePath,
+  getBrowserResearchExecutablePathFromRuntimeDir,
+} from '../../tools/BrowserResearchTool/runtime.js'
 import { findCanonicalGitRoot } from '../../utils/git.js'
 import { sanitizePath } from '../../utils/path.js'
 import { getProcessEnvWithTerminalShellEnvironment } from '../../utils/terminalShellEnvironment.js'
@@ -1158,6 +1162,25 @@ export class ConversationService {
       if (options?.workflowSessionId) {
         setJiangxiaEnvAliases(childEnv, 'WORKFLOW_SESSION_ID', options.workflowSessionId)
       }
+      // A BrowserResearch-installed Chromium is also the approved local
+      // visual-QA renderer for Expert HTML. This applies to every active Expert
+      // runtime, not only template-fill Experts: UIUX redesign packs use the
+      // normal Expert output protocol and still must render their QA screenshots.
+      // The sidecar's browser runtime is injected into process.env by Tauri,
+      // but terminal-shell environment collection intentionally does not inherit
+      // all sidecar-only variables. Prefer an installed user runtime, then fall
+      // back to that bundled runtime explicitly before passing it to the CLI.
+      if (options?.expertSystemPrompt || options?.expertSessionId) {
+        const bundledBrowserRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR
+        const visualQaBrowserExecutable = getBrowserResearchExecutablePath()
+          ?? (bundledBrowserRuntimeDir
+            ? getBrowserResearchExecutablePathFromRuntimeDir(bundledBrowserRuntimeDir)
+            : null)
+        if (visualQaBrowserExecutable) {
+          setJiangxiaEnvAliases(childEnv, 'VISUAL_QA_BROWSER_EXECUTABLE', visualQaBrowserExecutable)
+        }
+      }
+
       if (options?.expertSessionId) {
         setJiangxiaEnvAliases(childEnv, 'EXPERT_SESSION_ID', options.expertSessionId)
         setJiangxiaEnvAliases(childEnv, 'EXPERT_TEMPLATE_FILL_WRITE', '1')

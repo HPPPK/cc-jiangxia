@@ -190,6 +190,126 @@ function activePhaseDefinition(
   }
 }
 
+const SKILLS_DEVELOPMENT_TEMPLATE_ID = 'skills-development'
+const SKILLS_DEVELOPMENT_SCOPE_PLAN_PHASE_ID = 'scope-plan'
+
+type SkillsDevelopmentScopePlanQuestionPolicy = {
+  exactQuestionCount: number
+  minChoices: number
+  maxChoices: number
+  firstChoiceLabelIncludes: string
+  requireChoiceDescriptions: boolean
+  disallowComputerUse: boolean
+}
+
+function workflowTemplateId(state: WorkflowSessionState): string | null {
+  return state.templateIdentity?.id ?? state.templateSnapshot?.id ?? state.template?.id ?? null
+}
+
+function isSkillsDevelopmentScopePlan(state: WorkflowSessionState): boolean {
+  return state.activePhaseId === SKILLS_DEVELOPMENT_SCOPE_PLAN_PHASE_ID
+    && workflowTemplateId(state) === SKILLS_DEVELOPMENT_TEMPLATE_ID
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null
+}
+
+function getSkillsDevelopmentScopePlanQuestionPolicy(
+  state: WorkflowSessionState | null | undefined,
+): SkillsDevelopmentScopePlanQuestionPolicy | null {
+  if (!isActiveWorkflowState(state) || !isSkillsDevelopmentScopePlan(state)) return null
+
+  const policy = activePhaseDefinition(state)?.runtimeContract?.questionPolicy
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return null
+
+  const exactQuestionCount = positiveInteger(policy.exactQuestionCount)
+  const minChoices = positiveInteger(policy.minChoices)
+  const maxChoices = positiveInteger(policy.maxChoices)
+  const firstChoiceLabelIncludes = typeof policy.firstChoiceLabelIncludes === 'string'
+    ? policy.firstChoiceLabelIncludes.trim()
+    : ''
+
+  if (
+    !exactQuestionCount
+    || !minChoices
+    || !maxChoices
+    || minChoices > maxChoices
+    || !firstChoiceLabelIncludes
+    || policy.requireChoiceDescriptions !== true
+    || policy.disallowComputerUse !== true
+  ) {
+    return null
+  }
+
+  return {
+    exactQuestionCount,
+    minChoices,
+    maxChoices,
+    firstChoiceLabelIncludes,
+    requireChoiceDescriptions: true,
+    disallowComputerUse: true,
+  }
+}
+
+export function getWorkflowQuestionCardContractViolation(
+  toolName: string,
+  input: unknown,
+  state: WorkflowSessionState | null | undefined,
+): string | null {
+  if (toolName !== 'AskUserQuestion') return null
+
+  const policy = getSkillsDevelopmentScopePlanQuestionPolicy(state)
+  if (!policy) return null
+
+  const questions = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as Record<string, unknown>).questions
+    : undefined
+  if (!Array.isArray(questions) || questions.length !== policy.exactQuestionCount) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: skills-development/scope-plan requires exactly '
+      + policy.exactQuestionCount + ' decision question per AskUserQuestion call. Reissue one question only.'
+  }
+
+  const question = questions[0]
+  if (!question || typeof question !== 'object' || Array.isArray(question)) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: skills-development/scope-plan requires one structured decision question.'
+  }
+
+  const choices = (question as Record<string, unknown>).choices
+    ?? (question as Record<string, unknown>).options
+  if (!Array.isArray(choices) || choices.length < policy.minChoices || choices.length > policy.maxChoices) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: skills-development/scope-plan decision cards require exactly '
+      + policy.minChoices + '–' + policy.maxChoices + ' choices. Reissue the same decision with '
+      + policy.minChoices + ' or ' + policy.maxChoices + ' choices.'
+  }
+
+  const firstChoice = choices[0]
+  const firstLabel = firstChoice && typeof firstChoice === 'object' && !Array.isArray(firstChoice)
+    ? (firstChoice as Record<string, unknown>).label
+    : undefined
+  if (typeof firstLabel !== 'string' || !firstLabel.includes(policy.firstChoiceLabelIncludes)) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: the first choice label must include "'
+      + policy.firstChoiceLabelIncludes + '". Reissue the question with the recommended choice first.'
+  }
+
+  const missingDescription = choices.some((choice) => {
+    if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return true
+    const description = (choice as Record<string, unknown>).description
+    return typeof description !== 'string' || !description.trim()
+  })
+  if (missingDescription) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: every choice needs a non-empty user-facing description. Reissue the question with descriptions for all choices.'
+  }
+
+  return null
+}
+
+export function isWorkflowComputerUseDenied(
+  state: WorkflowSessionState | null | undefined,
+): boolean {
+  return getSkillsDevelopmentScopePlanQuestionPolicy(state)?.disallowComputerUse === true
+}
+
 function toolsForCapabilities(values: readonly string[] | undefined): Set<string> {
   return new Set((values ?? []).flatMap(concreteToolNamesForWorkflowCapability))
 }

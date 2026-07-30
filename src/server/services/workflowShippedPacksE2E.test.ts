@@ -402,6 +402,59 @@ describe('shipped workflow packs deterministic end-to-end protocol coverage', ()
     }
   })
 
+  test('requires Feature Extension and Debug packs to inventory every requested task and account for every accepted task', async () => {
+    const adapter = new ZipPackAdapter()
+    const cases = [
+      {
+        packFile: 'feature-extension-workflow-v8.zip',
+        intakePhaseId: 'feature-memory-plan',
+        workPhaseIds: ['feature-implement'],
+        qualityPhaseId: 'feature-quality-preview',
+      },
+      {
+        packFile: 'debug-repair-workflow-v8.zip',
+        intakePhaseId: 'debug-memory-intake',
+        workPhaseIds: ['debug-investigate', 'debug-fix'],
+        qualityPhaseId: 'debug-quality-preview',
+      },
+    ]
+
+    for (const workflow of cases) {
+      const source = path.join(process.cwd(), 'src', 'server', 'packs', workflow.packFile)
+      const archive = await adapter.read(new Uint8Array(await fs.readFile(source)))
+      const workflowEntry = archive.entries.find((entry) => entry.path.startsWith('workflows/') && entry.path.endsWith('.workflow.json'))
+      if (!workflowEntry) throw new Error('Workflow entry is missing from ' + workflow.packFile)
+      const template = await archive.readJson<{
+        phases: Array<{
+          id: string
+          instructions?: string
+          handoffRules?: string[]
+          completionCriteria?: { description?: string }
+          subagentPolicy?: { parallelSubagentsAllowed?: boolean; maxParallel?: number | null; controlledBy?: string }
+        }>
+      }>(workflowEntry.path)
+      const intake = template.phases.find((phase) => phase.id === workflow.intakePhaseId)
+      const quality = template.phases.find((phase) => phase.id === workflow.qualityPhaseId)
+
+      expect(intake?.instructions).toContain('every user-requested item')
+      expect(intake?.handoffRules).toEqual(expect.arrayContaining([
+        expect.stringContaining('task inventory'),
+      ]))
+      expect(quality?.instructions).toContain('every accepted task')
+      expect(quality?.completionCriteria?.description).toContain('every accepted task')
+
+      for (const phaseId of workflow.workPhaseIds) {
+        const phase = template.phases.find((candidate) => candidate.id === phaseId)
+        expect(phase?.instructions).toContain('every accepted task')
+        expect(phase?.instructions).toContain('write scopes')
+        expect(phase?.subagentPolicy).toMatchObject({
+          parallelSubagentsAllowed: true,
+          maxParallel: null,
+          controlledBy: 'host-runtime',
+        })
+      }
+    }
+  })
   test('runs every actual ZIP workflow through stage permissions, malformed completion rejection, pause/resume, invalid routes, repair loops, and final completion', async () => {
     await initializeIsolatedPackRegistry()
     const service = runtimeService()

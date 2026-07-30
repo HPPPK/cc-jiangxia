@@ -1605,15 +1605,25 @@ fn select_bundled_expert_packs_dir(resource_dir: Option<&Path>) -> Option<PathBu
     })
 }
 
-fn select_bundled_browser_runtime_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    let resource_dir = resource_dir?;
-    let runtime_dir = resource_dir
-        .join("binaries")
+fn select_bundled_browser_runtime_dir(resource_dir: Option<&Path>, app_root: &Path) -> Option<PathBuf> {
+    let runtime_relative_path = Path::new("binaries")
         .join("browser-runtime")
         .join("playwright");
-    runtime_dir.is_dir().then_some(runtime_dir)
-}
+    let mut candidates = Vec::new();
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join(&runtime_relative_path));
+    }
 
+    // During `tauri dev`, Tauri exposes `target/debug` as the resource
+    // directory, while build-sidecars writes managed runtimes into
+    // `desktop/src-tauri/binaries`. Search app-root ancestors so the dev
+    // sidecar receives the same Chromium path as a packaged desktop app.
+    for ancestor in app_root.ancestors() {
+        candidates.push(ancestor.join(&runtime_relative_path));
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_dir())
+}
 
 #[cfg(target_os = "windows")]
 fn select_bundled_git_executable(resource_dir: Option<&Path>) -> Option<PathBuf> {
@@ -1763,7 +1773,7 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
         .map(|path| path.to_string_lossy().to_string());
     let bundled_expert_packs_dir = select_bundled_expert_packs_dir(resource_dir.as_deref())
         .map(|path| path.to_string_lossy().to_string());
-    let bundled_browser_runtime_dir = select_bundled_browser_runtime_dir(resource_dir.as_deref())
+    let bundled_browser_runtime_dir = select_bundled_browser_runtime_dir(resource_dir.as_deref(), &app_root)
         .map(|path| path.to_string_lossy().to_string());
     let bundled_git_executable = select_bundled_git_executable(resource_dir.as_deref())
         .map(|path| path.to_string_lossy().to_string());
@@ -2337,11 +2347,37 @@ mod tests {
     fn bundled_browser_runtime_dir_uses_the_packaged_resource_directory_when_present() {
         let root = std::env::temp_dir().join(format!("cchh-bundled-browser-runtime-test-{}", std::process::id()));
         let resource_dir = root.join("Contents").join("Resources");
+        let app_root = root.join("app");
         let browser_runtime_dir = resource_dir.join("binaries").join("browser-runtime").join("playwright");
 
         fs::create_dir_all(&browser_runtime_dir).expect("create bundled browser runtime dir");
 
-        assert_eq!(select_bundled_browser_runtime_dir(Some(&resource_dir)), Some(browser_runtime_dir));
+        assert_eq!(
+            select_bundled_browser_runtime_dir(Some(&resource_dir), &app_root),
+            Some(browser_runtime_dir),
+        );
+
+        fs::remove_dir_all(root).expect("remove temp app tree");
+    }
+
+    #[test]
+    fn bundled_browser_runtime_dir_falls_back_to_the_tauri_dev_binaries_directory() {
+        let root = std::env::temp_dir().join(format!("cchh-dev-browser-runtime-test-{}", std::process::id()));
+        let app_root = root.join("desktop").join("src-tauri").join("target").join("debug");
+        let browser_runtime_dir = root
+            .join("desktop")
+            .join("src-tauri")
+            .join("binaries")
+            .join("browser-runtime")
+            .join("playwright");
+
+        fs::create_dir_all(&app_root).expect("create dev app root");
+        fs::create_dir_all(&browser_runtime_dir).expect("create dev browser runtime dir");
+
+        assert_eq!(
+            select_bundled_browser_runtime_dir(Some(&app_root), &app_root),
+            Some(browser_runtime_dir),
+        );
 
         fs::remove_dir_all(root).expect("remove temp app tree");
     }

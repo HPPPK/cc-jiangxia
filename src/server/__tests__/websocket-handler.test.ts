@@ -917,6 +917,140 @@ describe('WebSocket handler session isolation', () => {
     }
   })
 
+  it('forces the strict UIUX Expert to issue design_direction through AskUserQuestion after prose directions', async () => {
+    const sessionId = `strict-uiux-direction-card-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion'],
+      requiredSkillIds: [],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'text',
+            text: '方向一：保留原有布局。\n方向二：强化套餐比较。\n方向三：先展示会员权益。',
+          }],
+        },
+      })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('<strict-visual-ask-user-question-recovery>')
+      ))
+
+      expect(sendMessage).toHaveBeenCalledWith(
+        sessionId,
+        expect.stringContaining('id is design_direction'),
+      )
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+        type: 'status',
+        state: 'thinking',
+        verb: 'Generating required design-direction choices',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('does not force AskUserQuestion for strict UIUX screenshot and reference intake', async () => {
+    const sessionId = `strict-uiux-open-intake-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion'],
+      requiredSkillIds: [],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'text',
+            text: '请上传截图，说明想改善的目标；如果有参考网站，也可以直接粘贴链接。',
+          }],
+        },
+      })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => parseSentMessages(ws).some((message) => message.type === 'message_complete'))
+
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({
+        type: 'error',
+        code: 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
   it('recovers an English streamed prose decision with structured AskUserQuestion guidance', async () => {
     const sessionId = `workflow-streamed-english-question-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)

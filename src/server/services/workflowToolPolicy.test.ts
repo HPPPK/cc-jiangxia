@@ -5,6 +5,7 @@ import {
   WORKFLOW_TEMPLATE_AUTHORING_MUTATING_OPERATIONS,
   WORKFLOW_TEMPLATE_AUTHORING_READ_ONLY_OPERATIONS,
   concreteToolNamesForWorkflowCapability,
+  getWorkflowQuestionCardContractViolation,
   getWorkflowTemplateAuthoringOperationPolicy,
   getWorkflowUnavailableSearchToolNames,
   getWorkflowPhaseActionPolicy,
@@ -13,6 +14,7 @@ import {
   isWorkflowTemplateAuthoringMutatingOperation,
   isWorkflowTemplateAuthoringReadOnlyOperation,
   isWorkflowPhaseToolDenied,
+  isWorkflowComputerUseDenied,
 } from './workflowToolPolicy.js'
 
 const SUBMIT_PHASE_COMPLETION_TOOL_NAME = 'submit_phase_completion'
@@ -879,5 +881,115 @@ describe('workflowToolPolicy', () => {
     expect(guidance).toContain('attention')
     expect(guidance).toContain('not a safety override')
     expect(getToolNames(state)).not.toContain('SkillTool')
+  })
+})
+
+
+describe('skills-development scope-plan question-card contract', () => {
+  function stateWithScopePlanQuestionPolicy(templateId = 'skills-development'): WorkflowSessionState {
+    const state = stateFor('scope-plan')
+    state.templateIdentity = {
+      id: templateId,
+      source: 'user',
+      version: '13',
+    }
+    state.templateSnapshot = {
+      schemaVersion: 1,
+      id: templateId,
+      source: 'user',
+      version: '13',
+      displayName: 'Skills development',
+      description: 'Question card contract fixture',
+      phases: [{
+        id: 'scope-plan',
+        label: 'Scope plan',
+        instructions: 'Ask structured decision cards.',
+        requestedModel: null,
+        skillDeclarations: [],
+        requiredArtifacts: [],
+        completionCriteria: [],
+        transitionAuthority: 'user-confirmation',
+        runtimeContract: {
+          questionPolicy: {
+            exactQuestionCount: 1,
+            minChoices: 2,
+            maxChoices: 3,
+            firstChoiceLabelIncludes: '(Recommended)',
+            requireChoiceDescriptions: true,
+            disallowComputerUse: true,
+          },
+        },
+      }],
+    }
+    return state
+  }
+
+  const validQuestionCard = {
+    questions: [{
+      prompt: 'Which scope should the MVP include first?',
+      choices: [
+        { label: 'Focused MVP (Recommended)', description: 'Deliver the smallest validated user path first.' },
+        { label: 'Broader MVP', description: 'Include the requested secondary flow in the first release.' },
+      ],
+    }],
+  }
+
+  test('rejects invalid scope-plan decision-card shapes before a permission card can be emitted', () => {
+    const state = stateWithScopePlanQuestionPolicy()
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{ prompt: 'What should we build?' }],
+    }, state)).toContain('decision cards require exactly 2–3 choices')
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{
+        ...validQuestionCard.questions[0],
+        choices: [
+          ...validQuestionCard.questions[0].choices,
+          { label: 'Everything now', description: 'Include all requested ideas immediately.' },
+          { label: 'Custom', description: 'Let the user define a separate scope.' },
+        ],
+      }],
+    }, state)).toContain('decision cards require exactly 2–3 choices')
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{
+        ...validQuestionCard.questions[0],
+        choices: validQuestionCard.questions[0].choices.map((choice) => ({
+          ...choice,
+          label: choice.label.replace(' (Recommended)', ''),
+        })),
+      }],
+    }, state)).toContain('first choice label must include')
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{
+        ...validQuestionCard.questions[0],
+        choices: [
+          { label: 'Focused MVP (Recommended)', description: '' },
+          validQuestionCard.questions[0].choices[1],
+        ],
+      }],
+    }, state)).toContain('every choice needs a non-empty')
+  })
+
+  test('allows a compliant card and leaves other templates untouched', () => {
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      validQuestionCard,
+      stateWithScopePlanQuestionPolicy(),
+    )).toBeNull()
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      { questions: [{ prompt: 'Free form legacy card?' }] },
+      stateWithScopePlanQuestionPolicy('efficient-constrained-dev-debug-workflow-v5'),
+    )).toBeNull()
+  })
+
+  test('denies Computer Use only for the contracted skills-development scope-plan', () => {
+    expect(isWorkflowComputerUseDenied(stateWithScopePlanQuestionPolicy())).toBe(true)
+    expect(isWorkflowComputerUseDenied(
+      stateWithScopePlanQuestionPolicy('efficient-constrained-dev-debug-workflow-v5'),
+    )).toBe(false)
   })
 })

@@ -135,6 +135,30 @@ describe('PackRegistryService', () => {
     expect(isKnownBundledWorkflowFingerprint(workflowId, '11', officialV10Fingerprint)).toBe(false)
   })
 
+  test('recognizes the official v8 Feature Extension and Debug workflow defaults as auto-upgradeable', () => {
+    expect(isKnownBundledWorkflowFingerprint(
+      'feature-extension-workflow-v8',
+      '8',
+      '10c6ce40b2235ebbf19d50dc3e2faac643801e679729b29a3679d1f1acd8b162',
+    )).toBe(true)
+    expect(isKnownBundledWorkflowFingerprint(
+      'debug-repair-workflow-v8',
+      '8',
+      '1622266e6f5553c7c2845059f49018541511ce8137d24da79608b0f859c63457',
+    )).toBe(true)
+    expect(isKnownBundledWorkflowFingerprint(
+      'feature-extension-workflow-v8',
+      '9',
+      'eae927c98cc23d453abc9168fbc84f0efe462efd830cfcf0fe80726cc8f3061e',
+    )).toBe(true)
+
+
+    expect(isKnownBundledWorkflowFingerprint(
+      'debug-repair-workflow-v8',
+      '9',
+      '40661f772db4c161a83c1314b87272efef1bc639756afdca020b9aecdc70fb99',
+    )).toBe(true)
+  })
   test('imports a workflow ZIP pack and lists schemaVersion 2 workflows from registry', async () => {
     const service = new PackRegistryService()
     const archive = await makeWorkflowPackZip()

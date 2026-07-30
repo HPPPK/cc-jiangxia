@@ -14,6 +14,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import type { CuPermissionRequest } from '../../vendor/computer-use-mcp/types.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
+import { WorkflowSessionStateService } from '../services/workflowSessionStateService.js'
+import { isWorkflowComputerUseDenied } from '../services/workflowToolPolicy.js'
 import { detectPythonRuntime } from './computer-use-python.js'
 import {
   DEFAULT_DESKTOP_GRANT_FLAGS,
@@ -38,6 +40,7 @@ const claudeHome = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const runtimeStateRoot = join(claudeHome, '.runtime')
 const venvRoot = join(runtimeStateRoot, 'venv')
 const installStampPath = join(runtimeStateRoot, 'requirements.sha256')
+const workflowSessionStateService = new WorkflowSessionStateService()
 // 记录上次创建 venv 时所用的 config.pythonPath 原值。读取该文件来判断当前
 // venv 是否仍与最新的自定义路径配置一致。
 const baseInterpreterMarkerPath = join(runtimeStateRoot, 'venv-base-interpreter.txt')
@@ -573,6 +576,14 @@ export async function handleComputerUseApi(
           { error: 'BAD_REQUEST', message: 'sessionId and request are required' },
           { status: 400 },
         )
+      }
+
+      const workflowState = await workflowSessionStateService.readState(body.sessionId)
+      if (workflowState.state && isWorkflowComputerUseDenied(workflowState.state)) {
+        return Response.json({
+          error: 'WORKFLOW_TOOL_FORBIDDEN',
+          message: 'Computer Use is not allowed during skills-development scope-plan. Use the phase-approved tools or reissue a structured AskUserQuestion decision card.',
+        }, { status: 403 })
       }
 
       const response = await computerUseApprovalService.requestApproval(
