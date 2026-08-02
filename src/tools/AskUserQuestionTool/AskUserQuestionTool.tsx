@@ -24,6 +24,8 @@ const questionSchema = lazySchema(() => z.object({
   question: z.string().min(1).optional().describe('Legacy alias for prompt. Use prompt for new workflow questions.'),
   header: z.string().optional().describe(`Very short label displayed as a chip/tag (max ${ASK_USER_QUESTION_TOOL_CHIP_WIDTH} chars). Examples: "Auth method", "Library", "Approach".`),
   blocksCompletion: z.boolean().optional().describe('Workflow only: set true only when the answer must be reflected in current-phase work before completion. Set false for informational or acknowledgement questions that must not create a completion blocker. Omit outside workflows.'),
+  blockingReason: z.string().min(1).optional().describe('Workflow-only context for a necessary blocking question: explain why the request, workspace, logs, and current artifacts cannot resolve this fact without the user. Omit outside workflows that require this context.'),
+  answerImpact: z.string().min(1).optional().describe('Workflow-only context for a necessary blocking question: state the specific implementation, investigation, or acceptance decision that the answer will change. Omit outside workflows that require this context.'),
   choices: z.array(questionOptionSchema()).min(2).max(4).optional().describe('Canonical choices for this question. Choices represent only user answers; never include workflow actions, route commands, or phase targets.'),
   options: z.array(questionOptionSchema()).min(2).max(4).optional().describe('Legacy alias for choices. New workflow questions should use choices.'),
   multiSelect: z.boolean().default(false).describe('Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive.')

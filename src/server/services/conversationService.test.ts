@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { getBrowserResearchExecutablePathFromRuntimeDir } from '../../tools/BrowserResearchTool/runtime.js'
 import {
   ConversationService,
   removeSessionRuntimePromptFile,
@@ -17,8 +18,22 @@ type CliArgBuilder = {
       disallowedTools?: string[]
       expertSystemPrompt?: string
       appendSystemPromptFile?: string
+      expertRuntimeActive?: boolean
     },
   ): string[]
+}
+
+type ChildEnvBuilder = {
+  buildChildEnv(
+    workDir: string,
+    sdkUrl?: string,
+    options?: {
+      expertSystemPrompt?: string
+      expertSessionId?: string
+      appendSystemPromptFile?: string
+      expertRuntimeActive?: boolean
+    },
+  ): Promise<Record<string, string>>
 }
 
 describe('ConversationService expert tool policy', () => {
@@ -46,6 +61,99 @@ describe('ConversationService expert tool policy', () => {
     expect(args[args.indexOf('--append-system-prompt-file') + 1]).toBe(promptFile)
     expect(args).not.toContain('--append-system-prompt')
     expect(args).not.toContain(expertSystemPrompt)
+  })
+
+  test('keeps the visual-QA renderer environment when an Expert prompt is moved to a hidden file', async () => {
+    const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-jiangxia-browser-runtime-'))
+    const chromiumDir = path.join(runtimeDir, 'chromium_headless_shell-test', 'chrome-headless-shell-win64')
+    const executable = path.join(chromiumDir, process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell')
+    const configDir = path.join(runtimeDir, 'empty-config')
+    const previousRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+
+    try {
+      await fs.mkdir(chromiumDir, { recursive: true })
+      await fs.mkdir(configDir, { recursive: true })
+      await fs.writeFile(executable, '')
+      process.env.CLAUDE_CONFIG_DIR = configDir
+      process.env.CLAUDE_BROWSER_RUNTIME_DIR = runtimeDir
+
+      const service = new ConversationService() as unknown as ChildEnvBuilder
+      const childEnv = await service.buildChildEnv(process.cwd(), 'ws://127.0.0.1:57420/sdk/test', {
+        // This is the launchOptions shape after startSession moved the full
+        // prompt to appendSystemPromptFile. The marker must retain the Expert
+        // classification for local visual QA.
+        appendSystemPromptFile: path.join(runtimeDir, 'expert-runtime.md'),
+        expertRuntimeActive: true,
+      })
+
+      const expectedExecutable = getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir)
+      expect(expectedExecutable).toBe(executable)
+      expect(childEnv.CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE).toBe(expectedExecutable)
+    } finally {
+      if (previousRuntimeDir === undefined) delete process.env.CLAUDE_BROWSER_RUNTIME_DIR
+      else process.env.CLAUDE_BROWSER_RUNTIME_DIR = previousRuntimeDir
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      await fs.rm(runtimeDir, { recursive: true, force: true })
+    }
+  })
+  test('pins Desktop-managed providers to the local proxy instead of stale alternate cloud routing', async () => {
+    const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-jiangxia-provider-env-'))
+    const managedRouteKeys = [
+      'CLAUDE_CODE_USE_BEDROCK',
+      'CLAUDE_CODE_USE_VERTEX',
+      'CLAUDE_CODE_USE_FOUNDRY',
+      'CLAUDE_CODE_USE_AZURE_OPENAI',
+      'ANTHROPIC_FOUNDRY_RESOURCE',
+      'AZURE_OPENAI_BASE_URL',
+    ] as const
+    const previousEnv = new Map(managedRouteKeys.map((key) => [key, process.env[key]]))
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+
+    try {
+      process.env.CLAUDE_CONFIG_DIR = configDir
+      for (const key of managedRouteKeys) process.env[key] = 'stale-provider-routing'
+
+      const service = new ConversationService() as unknown as ChildEnvBuilder & {
+        providerService: { getProviderRuntimeEnv(providerId: string): Promise<Record<string, string>> }
+      }
+      service.providerService = {
+        async getProviderRuntimeEnv(providerId) {
+          expect(providerId).toBe('desktop-provider')
+          return {
+            ANTHROPIC_BASE_URL: 'http://127.0.0.1:45678/proxy/providers/desktop-provider',
+            ANTHROPIC_API_KEY: 'proxy-managed',
+            ANTHROPIC_MODEL: 'saved-model',
+          }
+        },
+      }
+
+      const childEnv = await service.buildChildEnv(process.cwd(), 'ws://127.0.0.1:45678/sdk/test', {
+        providerId: 'desktop-provider',
+        model: 'selected-model',
+      })
+
+      expect(childEnv.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:45678/proxy/providers/desktop-provider')
+      expect(childEnv.ANTHROPIC_API_KEY).toBe('proxy-managed')
+      expect(childEnv.ANTHROPIC_MODEL).toBe('selected-model')
+      expect(childEnv.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe('1')
+      expect(childEnv.CLAUDE_CODE_USE_BEDROCK).toBe('0')
+      expect(childEnv.CLAUDE_CODE_USE_VERTEX).toBe('0')
+      expect(childEnv.CLAUDE_CODE_USE_FOUNDRY).toBe('0')
+      expect(childEnv.CLAUDE_CODE_USE_AZURE_OPENAI).toBe('0')
+      expect(childEnv.ANTHROPIC_FOUNDRY_RESOURCE).toBeUndefined()
+      expect(childEnv.AZURE_OPENAI_BASE_URL).toBeUndefined()
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      for (const key of managedRouteKeys) {
+        const value = previousEnv.get(key)
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+      await fs.rm(configDir, { recursive: true, force: true })
+    }
   })
 
   test('writes and removes a session-scoped hidden runtime prompt file', async () => {

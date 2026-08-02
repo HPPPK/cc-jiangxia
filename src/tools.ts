@@ -5,6 +5,7 @@ import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { SubmitPhaseCompletionTool } from './tools/SubmitPhaseCompletionTool/SubmitPhaseCompletionTool.js'
 import { RequestWorkflowRouteTool } from './tools/RequestWorkflowRouteTool/RequestWorkflowRouteTool.js'
 import { WorkflowTemplateAuthoringTool } from './tools/WorkflowTemplateAuthoringTool/WorkflowTemplateAuthoringTool.js'
+import { ExpertPackAuthoringTool } from './tools/ExpertPackAuthoringTool/ExpertPackAuthoringTool.js'
 import { getJiangxiaEnvValue } from './utils/appIdentity.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
@@ -223,6 +224,7 @@ export function getAllBaseTools(): Tools {
     AskUserQuestionTool,
     SkillTool,
     WorkflowTemplateAuthoringTool,
+    ExpertPackAuthoringTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),

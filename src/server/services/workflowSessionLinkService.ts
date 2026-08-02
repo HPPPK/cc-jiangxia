@@ -256,6 +256,8 @@ function generateLocalSummaryCarryover(
     summaryInstructions?: string
     maxCharacters: number
     unavailableReason?: string
+    title?: string
+    provenanceNote?: string
   },
 ): { content: string; sourceMessageIds: string[] } {
   const visible = messages
@@ -271,8 +273,8 @@ function generateLocalSummaryCarryover(
     .filter((item): item is { id: string; text: string } => !!item)
 
   const header = [
-    'Local workflow context summary',
-    'Provider-backed summarization was unavailable, so this carryover was generated locally from visible source messages.',
+    options.title ?? 'Local workflow context summary',
+    options.provenanceNote ?? 'Provider-backed summarization was unavailable, so this carryover was generated locally from visible source messages.',
     options.unavailableReason ? `Unavailable reason: ${truncateForCarryover(options.unavailableReason, 600)}` : '',
     options.summaryInstructions?.trim()
       ? `User summary instructions: ${truncateForCarryover(options.summaryInstructions, 800)}`
@@ -301,6 +303,18 @@ function generateLocalSummaryCarryover(
     content: `${header}\n${selected.map((item) => `- ${item.text}`).join('\n')}`,
     sourceMessageIds: selected.map((item) => item.id),
   }
+}
+
+function generateInheritedWorkflowCarryover(
+  messages: MessageEntry[],
+  maxCharacters: number,
+): { content: string; sourceMessageIds: string[] } {
+  return generateLocalSummaryCarryover(messages, {
+    maxCharacters,
+    title: 'Inherited workflow context anchor',
+    provenanceNote: 'The Workflow will resume the original session. This bounded anchor preserves recent visible user requests, decisions, constraints, materials, and unresolved items for the active phase; it supplements rather than replaces the resumed transcript.',
+    summaryInstructions: 'Preserve the latest user request, accepted decisions, constraints, source materials, workspace or project target, and unresolved items. Treat this as a workflow handoff, not a new request.',
+  })
 }
 
 function toSummaryMessages(messages: MessageEntry[]): WorkflowSummaryCarryoverOptions['messages'] {
@@ -437,17 +451,26 @@ export class WorkflowSessionLinkService {
         workflowTemplate,
         request.workflow,
       )
+      // The CLI resumes this same session, so do not duplicate the full transcript
+      // into the system prompt. Persist a bounded, explicit handoff anchor instead;
+      // it makes the inherited user request and decisions visible to Stage 1 even when
+      // the phase instructions focus on workflow artifacts.
+      const carryover = generateInheritedWorkflowCarryover(
+        source.messages,
+        this.summaryFallbackMaxCharacters,
+      )
       const createdAt = new Date().toISOString()
       const link = {
         sourceSessionId,
         targetSessionId: sourceSessionId,
         sourceMessageCount: source.messageCount,
         contextStrategy: request.contextStrategy,
+        ...(carryover.content ? { summaryArtifactId: CARRYOVER_ARTIFACT_ID } : {}),
         ...(hasSelectedExpertMaterials(request) ? { expertMaterialArtifactId: 'expert-materials' } : {}),
         createdAt,
         ...(request.clientRequestId ? { clientRequestId: request.clientRequestId } : {}),
       } satisfies LinkedWorkflowSessionCreateResult['link']
-      await this.persistLinkState(sourceSessionId, link, { content: '', sourceMessageIds: [] }, createdAt)
+      await this.persistLinkState(sourceSessionId, link, carryover, createdAt)
       const updatedState = await this.stateService.readState(sourceSessionId)
       return {
         sessionId: sourceSessionId,

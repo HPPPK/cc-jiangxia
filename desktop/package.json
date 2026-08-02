@@ -13,7 +13,8 @@
     "tauri": "tauri",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "dev:desktop": "tauri dev --no-watch"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",

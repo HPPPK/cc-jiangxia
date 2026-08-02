@@ -53,9 +53,21 @@ describe('built-in agents', () => {
 test('includes the read-only Expert evidence research role', () => {
   const agent = getBuiltInAgents().find((candidate) => candidate.agentType === 'expert-evidence-researcher')
   expect(agent?.tools).toEqual(['BrowserResearch', 'Read'])
+  const prompt = agent?.getSystemPrompt() ?? ''
+  expect(prompt).toContain('must make at least one real BrowserResearch call')
+  expect(prompt).toContain('search_engine: google')
+  expect(prompt).toContain('search_engine: baidu')
+  expect(prompt).toContain('search_engine: 360')
+  expect(prompt).toContain('Do not hand-build search-engine URLs')
+  expect(prompt).toContain('official evidence missing')
+  expect(prompt).toContain('open at least one specific candidate page')
 })
 
 test('includes the independent Expert evidence review role', () => {
   const agent = getBuiltInAgents().find((candidate) => candidate.agentType === 'expert-evidence-reviewer')
   expect(agent?.tools).toEqual(['BrowserResearch', 'Read'])
+  const prompt = agent?.getSystemPrompt() ?? ''
+  expect(prompt).toContain('N keyword snapshots')
+  expect(prompt).toContain('direct-competitor price gap')
+  expect(prompt).toContain('actual [engine=...]')
 })

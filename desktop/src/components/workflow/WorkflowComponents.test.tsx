@@ -2861,7 +2861,7 @@ describe('WorkflowTransitionControls', () => {
       />,
     )
 
-    const continueButton = screen.getByRole('button', { name: /Continue with this result/i })
+    const continueButton = screen.getByRole('button', { name: /Go to next stage/i })
     fireEvent.click(continueButton)
     fireEvent.click(continueButton)
 
@@ -2871,7 +2871,7 @@ describe('WorkflowTransitionControls', () => {
     }))
     expect(screen.getByText('正在提交阶段操作，请稍候…')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /I want to adjust it/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /Pause workflow/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Pause workflow/i })).not.toBeInTheDocument()
   })
 
   it('unlocks controls and shows the transition error after the parent clears a failed action', () => {
@@ -2893,8 +2893,8 @@ describe('WorkflowTransitionControls', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /Continue with this result/i }))
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /Go to next stage/i }))
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeDisabled()
 
     rerender(
       <WorkflowTransitionControls
@@ -2909,7 +2909,7 @@ describe('WorkflowTransitionControls', () => {
     )
 
     expect(screen.getByRole('status')).toHaveTextContent('工作流状态已更新，请根据最新状态重新选择操作。')
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeEnabled()
   })
 
   it('keeps stale confirmation actions disabled while the latest workflow state is syncing', () => {
@@ -2935,9 +2935,9 @@ describe('WorkflowTransitionControls', () => {
     )
 
     expect(screen.getByRole('status')).toHaveTextContent('工作流状态已更新，正在同步最新阶段信息。')
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /I want to adjust it/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /Pause workflow/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Pause workflow/i })).not.toBeInTheDocument()
   })
 
   it('does not show a timeout error after workflow state advances to a new confirmation', () => {
@@ -3002,7 +3002,7 @@ describe('WorkflowTransitionControls', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeDisabled()
 
     rerender(
       <WorkflowTransitionControls
@@ -3026,7 +3026,7 @@ describe('WorkflowTransitionControls', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeEnabled()
     expect(screen.queryByText(/正在提交阶段操作/)).not.toBeInTheDocument()
   })
   it('does not indefinitely lock a confirmation card with an unversioned pending transition', () => {
@@ -3051,7 +3051,7 @@ describe('WorkflowTransitionControls', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeEnabled()
     expect(screen.queryByText(/正在提交阶段操作/)).not.toBeInTheDocument()
   })
 
@@ -3083,11 +3083,10 @@ describe('WorkflowTransitionControls', () => {
     expect(screen.queryByRole('button', { name: /View this phase report/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /complete phase/i })).not.toBeInTheDocument()
 
-    const continueButton = screen.getByRole('button', { name: /Continue with this result/i })
+    const continueButton = screen.getByRole('button', { name: /Go to next stage/i })
     const adjustButton = screen.getByRole('button', { name: /I want to adjust it/i })
-    const pauseButton = screen.getByRole('button', { name: /Pause workflow/i })
     expect(continueButton.className).toBe(adjustButton.className)
-    expect(continueButton.className).toBe(pauseButton.className)
+    expect(screen.queryByRole('button', { name: /Pause workflow/i })).not.toBeInTheDocument()
 
     fireEvent.click(continueButton)
 
@@ -3131,12 +3130,12 @@ describe('WorkflowTransitionControls', () => {
     expect(screen.getByText(/^当前阶段：第 1 步：需求范围$/)).toBeInTheDocument()
     expect(screen.getByText('关键结果：当前阶段已完成，正在等待你的确认。')).toBeInTheDocument()
     expect(screen.queryByText('下一步：第 2 步：技术计划')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /继续使用这个结果（推荐）/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^进入下一阶段$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /我要调整当前结果/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /暂停工作流/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /暂停工作流/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /查看本阶段报告/ })).not.toBeInTheDocument()
     expect(screen.queryByText(/Confirm this step/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Continue with this result/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Go to next stage/)).not.toBeInTheDocument()
   })
 
   it('localizes blocked workflow retry card in Chinese locale', () => {
@@ -3163,6 +3162,7 @@ describe('WorkflowTransitionControls', () => {
     expect(screen.getByText('这个阶段需要处理')).toBeInTheDocument()
     expect(screen.getByText('测试命令失败')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /重试当前阶段/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /暂停工作流/ })).not.toBeInTheDocument()
     expect(screen.getByText('修复当前问题后重试，不进入下一阶段。')).toBeInTheDocument()
     expect(screen.queryByText(/This step needs attention/)).not.toBeInTheDocument()
   })
@@ -3193,7 +3193,7 @@ describe('WorkflowTransitionControls', () => {
       name: /use only handoff materials for next phase/i,
     })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Continue with this result/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Go to next stage/i }))
     expect(onConfirm).toHaveBeenLastCalledWith({
       phaseId: 'specify',
       action: 'confirm',
@@ -3248,9 +3248,9 @@ describe('WorkflowTransitionControls', () => {
 
     expect(screen.getByText(/Confirm this step/)).toBeInTheDocument()
     expect(screen.queryByText(/authority/i)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Continue with this result/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Go to next stage/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /I want to adjust it/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Pause workflow/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Pause workflow/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /complete phase/i })).not.toBeInTheDocument()
   })
 
@@ -3467,5 +3467,6 @@ describe('WorkflowTransitionControls Chinese route cards', () => {
 
     expect(screen.getByText('当前阶段结果已准备好，请确认是否进入下一阶段。')).toBeInTheDocument()
     expect(screen.getAllByText(/返回 Stage 4：分批实现与审查/).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /返回指定阶段/ })).toBeInTheDocument()
   })
 })

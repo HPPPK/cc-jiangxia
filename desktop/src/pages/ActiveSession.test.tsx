@@ -1479,7 +1479,7 @@ describe('ActiveSession task polling', () => {
     expect(panel).not.toHaveTextContent(/claude-sonnet-4/i)
     expect(panel).not.toHaveTextContent(/requested phase model is unavailable/i)
     expect(panel).not.toHaveTextContent(/stale-local-state/i)
-    expect(screen.getByRole('button', { name: /继续使用这个结果/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^进入下一阶段$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /我要调整当前结果/ })).toBeInTheDocument()
 
   })
@@ -1859,7 +1859,7 @@ describe('ActiveSession task polling', () => {
 
     render(<ActiveSession />)
 
-    fireEvent.click(screen.getByRole('button', { name: /继续使用这个结果/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^进入下一阶段$/ }))
 
     await waitFor(() => {
       expect(sendWorkflowTransition).toHaveBeenCalledWith(sessionId, expect.objectContaining({
@@ -1946,9 +1946,8 @@ describe('ActiveSession task polling', () => {
     try {
       render(<ActiveSession />)
 
-      fireEvent.click(screen.getByRole('button', { name: /继续使用这个结果/ }))
+      fireEvent.click(screen.getByRole('button', { name: /^进入下一阶段$/ }))
       fireEvent.click(screen.getByRole('button', { name: /我要调整当前结果/ }))
-      fireEvent.click(screen.getByRole('button', { name: /暂停工作流/ }))
 
       await waitFor(() => {
         expect(sendWorkflowTransition).toHaveBeenCalledTimes(1)
@@ -2029,7 +2028,7 @@ describe('ActiveSession task polling', () => {
 
     render(<ActiveSession />)
 
-    expect(screen.queryByRole('button', { name: /继续使用这个结果/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^进入下一阶段$/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: /complete discussion phase/i })).not.toBeInTheDocument()
     expect(sendWorkflowTransition).not.toHaveBeenCalled()
     expect(apiMocks.transitionWorkflow).not.toHaveBeenCalled()
@@ -2128,7 +2127,7 @@ describe('ActiveSession task polling', () => {
       const confirmationCard = screen.getByTestId('workflow-phase-confirmation-card')
       expect(confirmationCard).toHaveTextContent(blockedReason)
       expect(confirmationCard).not.toHaveTextContent(evidencePattern)
-      expect(screen.queryByRole('button', { name: /继续使用这个结果/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^进入下一阶段$/ })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /我要调整当前结果/ })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /完成当前阶段/ })).not.toBeInTheDocument()
 
@@ -2212,7 +2211,7 @@ describe('ActiveSession task polling', () => {
     const panel = screen.getByTestId('workflow-status-panel')
     expect(panel).toHaveTextContent(/\u5f00\u53d1\u6d41\u7a0b/)
     expect(panel).not.toHaveTextContent(/old blocked recovery reason/i)
-    expect(screen.getByRole('button', { name: /继续使用这个结果/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^进入下一阶段$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /我要调整当前结果/ })).toBeInTheDocument()
   })
 

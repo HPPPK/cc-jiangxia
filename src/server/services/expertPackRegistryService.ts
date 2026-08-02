@@ -1,7 +1,7 @@
 ﻿import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { getAppStoragePath } from '../../utils/appIdentity.js'
 import { ZipPackAdapter, assertSafeZipPath, type ZipPackArchive } from './zipPackAdapter.js'
 import { deriveExpertTemplateFillSchema } from '../../utils/expertTemplateFill.js'
@@ -54,6 +54,17 @@ export type ExpertIntakeState = {
 
 export type ExpertOutputMode = 'template-fill'
 
+/**
+ * Optional, package-declared runtime boundary. Omitted means legacy Expert
+ * behavior is preserved. Strict visual workflow is opt-in for the selected ZIP
+ * only; it never changes another Expert's tool policy.
+ */
+export type ExpertRuntimePolicy = {
+  mode: 'strict-visual-workflow'
+  allowedToolNames: string[]
+  requiredSkillIds: string[]
+}
+
 export type ExpertRuntimeBinding = {
   schemaVersion: 1
   active: true
@@ -72,6 +83,7 @@ export type ExpertRuntimeBinding = {
   hostTools: ExpertHostTool[]
   tools: ExpertToolManifest[]
   permissions: ExpertPermission[]
+  runtimePolicy?: ExpertRuntimePolicy
   outputProtocol?: { path: string; content: string }
   outputMode?: ExpertOutputMode
   outputTemplate?: { path: string; content: string }
@@ -154,6 +166,7 @@ export type ExpertPackManifest = {
   requiredHostTools?: ExpertHostTool[]
   permissions?: ExpertPermission[]
   compatibility?: Record<string, unknown>
+  runtimePolicy?: ExpertRuntimePolicy
   portability?: { selfContained: boolean; notes?: string }
 }
 
@@ -179,6 +192,7 @@ export type ExpertDefinition = {
   skillIds: string[]
   hostTools: NonNullable<ExpertPackManifest['hostTools']>
   permissions: NonNullable<ExpertPackManifest['permissions']>
+  runtimePolicy?: ExpertRuntimePolicy
   tools: ExpertToolManifest[]
   intakeFlow?: ExpertIntakeFlow
   portable: boolean
@@ -220,6 +234,11 @@ export type ExpertPackExportResult = {
   dataBase64: string
 }
 
+export type ExpertPackSkillUpdate = {
+  id: string
+  files: Record<string, string>
+}
+
 export type ExpertPackUpdateInput = {
   name?: string
   version?: string
@@ -229,6 +248,7 @@ export type ExpertPackUpdateInput = {
   hostTools?: ExpertHostTool[]
   permissions?: ExpertPermission[]
   compatibility?: Record<string, unknown>
+  runtimePolicy?: ExpertRuntimePolicy | null
   portability?: { selfContained: boolean; notes?: string }
   expert?: {
     id: string
@@ -242,6 +262,11 @@ export type ExpertPackUpdateInput = {
     outputProtocolContent?: string
   }
   tools?: ExpertToolManifest[]
+  /**
+   * Self-contained Skill content to add or replace while updating this Expert ZIP.
+   * Every entry must include a non-empty SKILL.md file.
+   */
+  skills?: ExpertPackSkillUpdate[]
   removeToolIds?: string[]
   toolArchivesBase64?: string[]
   /** @deprecated Kept for one migration cycle for callers using the old array shape. */
@@ -302,6 +327,38 @@ function skillEntryPath(skillId: string): string {
 
 function missingSkillFileError(entryPath: string): ExpertPackValidationError {
   return new ExpertPackValidationError(`专家包不完整，缺少 Skill 文件：${entryPath}。请重新导入完整专家 ZIP。`)
+}
+
+function normalizeSkillUpdates(value: unknown): ExpertPackSkillUpdate[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('skills must be an array of { id, files } entries.')
+
+  const seenIds = new Set<string>()
+  return value.map((raw, index) => {
+    const label = `skills[${index}]`
+    if (!isRecord(raw)) throw new Error(`${label} must use { id, files }.`)
+    if (!isNonEmptyString(raw.id)) {
+      if ('name' in raw || 'systemPromptContent' in raw) {
+        throw new Error(`${label} must use { id, files }; the legacy { name, systemPromptContent } shape is not supported.`)
+      }
+      throw new Error(`${label}.id is required.`)
+    }
+    const id = raw.id.trim()
+    if (id.includes('/') || id.includes('\\') || id.includes('..')) throw new Error(`Skill ID is unsafe: ${id}`)
+    if (seenIds.has(id)) throw new Error(`Duplicate Skill update id: ${id}`)
+    seenIds.add(id)
+
+    if (!isRecord(raw.files)) throw new Error(`${label}.files must be an object of relative file paths to text content.`)
+    const files: Record<string, string> = {}
+    for (const [relativePath, content] of Object.entries(raw.files)) {
+      if (relativePath.startsWith('skills/')) throw new Error(`${label}.files paths must be relative to skills/${id}/: ${relativePath}`)
+      assertSafeZipPath(relativePath)
+      if (typeof content !== 'string') throw new Error(`${label}.files[${relativePath}] must be text.`)
+      files[relativePath] = content
+    }
+    if (!isNonEmptyString(files['SKILL.md'])) throw new Error(`${label}.files.SKILL.md must be non-empty.`)
+    return { id, files }
+  })
 }
 
 export function resetExpertPackRegistryForTests(): void {
@@ -409,8 +466,15 @@ export class ExpertPackRegistryService {
     return zip.readText(entryPath)
   }
 
-  async previewExpertPackZip(zipData: Uint8Array): Promise<ExpertPackImportPreview> {
+  async previewExpertPackZip(
+    zipData: Uint8Array,
+    options: { detectConflicts?: boolean } = {},
+  ): Promise<ExpertPackImportPreview> {
     const result = await this.readPack(zipData, { storage: { kind: 'zip', path: '' }, importedAt: new Date().toISOString() })
+    // The ordinary import-preview route keeps duplicate detection. Authoring
+    // validation is intentionally structural-only so its read-only tool call
+    // never boots the registry and seeds bundled Expert ZIPs.
+    if (options.detectConflicts === false) return result
     const incomingExpertIds = new Set(result.pack.experts.map((expert) => expert.id))
     const existing = (await this.listPacks()).find((pack) => (
       pack.packId === result.pack.packId || pack.experts.some((expert) => incomingExpertIds.has(expert.id))
@@ -474,6 +538,10 @@ export class ExpertPackRegistryService {
     if (input.hostTools !== undefined) manifest.hostTools = normalizeHostTools(input.hostTools)
     if (input.permissions !== undefined) manifest.permissions = normalizePermissions(input.permissions)
     if (input.compatibility !== undefined) manifest.compatibility = input.compatibility
+    if (input.runtimePolicy !== undefined) {
+      if (input.runtimePolicy === null) delete manifest.runtimePolicy
+      else manifest.runtimePolicy = normalizeRuntimePolicy(input.runtimePolicy)
+    }
     if (input.catalog !== undefined) manifest.catalog = normalizeCatalogMetadata(input.catalog)
     if (input.portability !== undefined) manifest.portability = {
       selfContained: input.portability.selfContained !== false,
@@ -513,6 +581,17 @@ export class ExpertPackRegistryService {
       }
       entries[entrypoint] = JSON.stringify(raw, null, 2) + '\n'
     }
+
+    const skillIds = new Set(manifest.entrypoints.skills)
+    for (const skill of normalizeSkillUpdates(input.skills)) {
+      skillIds.add(skill.id)
+      for (const [relativePath, content] of Object.entries(skill.files)) {
+        const entryPath = `skills/${skill.id}/${relativePath}`
+        assertSafeZipPath(entryPath)
+        entries[entryPath] = content
+      }
+    }
+    manifest.entrypoints.skills = [...skillIds]
 
     const toolPaths = new Set(manifest.entrypoints.tools)
     for (const tool of input.tools ?? []) {
@@ -555,10 +634,15 @@ export class ExpertPackRegistryService {
     manifest.entrypoints.tools = [...toolPaths]
     entries['manifest.json'] = JSON.stringify(manifest, null, 2) + '\n'
 
-    await this.writeStoredPack(packId, await adapter.write(entries))
-    const updated = (await this.listPacks()).find((pack) => pack.packId === packId)
-    if (!updated) throw new Error(`Updated expert package could not be reloaded: ${packId}`)
-    return updated
+    // Validate the complete candidate ZIP before touching the installed copy.
+    // A rejected patch must leave the existing user ZIP and registry cache intact.
+    const candidateData = await adapter.write(entries)
+    const candidate = await this.readPack(candidateData, {
+      storage: { kind: 'zip', path: `${safeFileSegment(packId)}.zip`, source: 'stored' },
+      importedAt: new Date().toISOString(),
+    })
+    await this.writeStoredPack(packId, candidateData)
+    return clone(candidate.pack)
   }
 
   async copyExpertPack(packId: string): Promise<ExpertPackImportPreview> {
@@ -602,8 +686,18 @@ export class ExpertPackRegistryService {
   }
 
   private async writeStoredPack(packId: string, data: Uint8Array): Promise<void> {
-    await fs.mkdir(getExpertPackStorageDir(), { recursive: true })
-    await fs.writeFile(path.join(getExpertPackStorageDir(), `${safeFileSegment(packId)}.zip`), Buffer.from(data))
+    const storageDir = getExpertPackStorageDir()
+    const filename = `${safeFileSegment(packId)}.zip`
+    const zipPath = path.join(storageDir, filename)
+    const temporaryPath = path.join(storageDir, `.${filename}.${randomUUID()}.tmp`)
+    await fs.mkdir(storageDir, { recursive: true })
+    try {
+      await fs.writeFile(temporaryPath, Buffer.from(data))
+      // rename replaces the target as one filesystem operation on the same volume.
+      await fs.rename(temporaryPath, zipPath)
+    } finally {
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    }
     await this.unmarkManagedBundledExpertPack(packId)
     this.invalidateCache()
   }
@@ -842,6 +936,7 @@ function normalizeManifest(raw: unknown): ExpertPackManifest {
   }
   const hostTools = normalizeHostTools(raw.hostTools)
   const requiredHostTools = normalizeHostTools(raw.requiredHostTools)
+  const runtimePolicy = normalizeRuntimePolicy(raw.runtimePolicy)
   const allHostToolIds = new Set(hostTools.map((tool) => tool.id))
   return {
     packId: raw.packId,
@@ -856,10 +951,22 @@ function normalizeManifest(raw: unknown): ExpertPackManifest {
     requiredHostTools,
     permissions: normalizePermissions(raw.permissions),
     compatibility: isRecord(raw.compatibility) ? raw.compatibility : {},
+    ...(runtimePolicy ? { runtimePolicy } : {}),
     catalog: normalizeCatalogMetadata(raw.catalog),
     portability: isRecord(raw.portability)
       ? { selfContained: raw.portability.selfContained !== false, ...(isNonEmptyString(raw.portability.notes) ? { notes: raw.portability.notes } : {}) }
       : { selfContained: true },
+  }
+}
+
+function normalizeRuntimePolicy(value: unknown): ExpertRuntimePolicy | undefined {
+  if (!isRecord(value) || value.mode !== 'strict-visual-workflow') return undefined
+  const allowedToolNames = normalizeStringArray(value.allowedToolNames)
+  const requiredSkillIds = normalizeStringArray(value.requiredSkillIds)
+  return {
+    mode: 'strict-visual-workflow',
+    allowedToolNames: [...new Set(allowedToolNames)],
+    requiredSkillIds: [...new Set(requiredSkillIds)],
   }
 }
 
@@ -1001,6 +1108,7 @@ function normalizeExpert(raw: unknown, manifest: ExpertPackManifest, entrypoint:
     skillIds,
     hostTools: manifest.hostTools ?? [],
     permissions: manifest.permissions ?? [],
+    ...(manifest.runtimePolicy ? { runtimePolicy: manifest.runtimePolicy } : {}),
     tools,
     intakeFlow,
     portable: manifest.portability?.selfContained !== false,

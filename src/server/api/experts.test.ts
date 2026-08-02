@@ -1,5 +1,5 @@
 ﻿import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { handleExpertsApi } from './experts.js'
@@ -39,6 +39,7 @@ async function setup() {
   tempRoots.push(root)
   process.env.CLAUDE_CONFIG_DIR = root
   resetExpertPackRegistryForTests()
+  return root
 }
 
 describe('experts API', () => {
@@ -79,6 +80,41 @@ describe('experts API', () => {
     const deleted = await handleExpertsApi(new Request('http://localhost/api/experts/packs/api-pack', { method: 'DELETE' }), new URL('http://localhost'), ['api', 'experts', 'packs', 'api-pack'])
     expect(deleted.status).toBe(204)
   })
+  it('authors a standalone Expert ZIP without creating Workflow ZIP storage', async () => {
+    const root = await setup()
+    const response = await handleExpertsApi(
+      new Request('http://localhost/api/experts/packs/authoring', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: 'create',
+          pack: {
+            packId: 'api-authored-expert',
+            name: 'API Authored Expert',
+            version: '1.0.0',
+            description: 'Created through the separate Expert authoring endpoint.',
+            expert: {
+              id: 'api-authored-expert',
+              name: 'API Authored Expert',
+              systemPromptContent: 'You are an API-authored Expert.',
+            },
+          },
+        }),
+      }),
+      new URL('http://localhost'),
+      ['api', 'experts', 'packs', 'authoring'],
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      operation: 'create',
+      status: 'succeeded',
+      persisted: true,
+      affectedPack: { packId: 'api-authored-expert' },
+    })
+    await expect(stat(path.join(root, 'cc-jiangxia', 'experts', 'packs', 'api-authored-expert.zip'))).resolves.toBeDefined()
+    await expect(stat(path.join(root, 'cc-jiangxia', 'workflows', 'packs'))).rejects.toThrow()
+  })
+
   it('returns a clear error when an imported ZIP declares a missing Skill file', async () => {
     await setup()
     const incomplete = entries()

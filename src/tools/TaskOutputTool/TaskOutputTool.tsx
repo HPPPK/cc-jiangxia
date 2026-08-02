@@ -47,6 +47,11 @@ type TaskOutput = {
   // For agents
   prompt?: string;
   result?: string;
+  // Present only when this agent result was created by a runtime that records
+  // exact tool_use counts. Keeping it optional preserves old persisted tasks.
+  toolAudit?: {
+    browserResearch: number;
+  };
 };
 type TaskOutputToolOutput = {
   retrieval_status: 'success' | 'timeout' | 'not_ready';
@@ -101,7 +106,14 @@ async function getTaskOutputData(task: TaskState): Promise<TaskOutput> {
       prompt: agentTask.prompt,
       result: cleanResult || output,
       output: cleanResult || output,
-      error: agentTask.error
+      error: agentTask.error,
+      ...(agentTask.result?.browserResearchToolUseCount === undefined
+        ? {}
+        : {
+            toolAudit: {
+              browserResearch: agentTask.result.browserResearchToolUseCount,
+            },
+          }),
     };
   }
   if (task.type === 'remote_agent') {
@@ -295,6 +307,9 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
           content
         } = formatTaskOutput(data.task.output, data.task.task_id);
         parts.push(`<output>\n${content.trimEnd()}\n</output>`);
+      }
+      if (data.task.toolAudit) {
+        parts.push(`<tool-audit>\nBrowserResearch: ${data.task.toolAudit.browserResearch}\n</tool-audit>`);
       }
       if (data.task.error) {
         parts.push(`<error>${data.task.error}</error>`);

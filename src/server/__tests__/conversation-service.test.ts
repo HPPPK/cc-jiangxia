@@ -24,6 +24,7 @@ describe('ConversationService', () => {
   let originalZdotdir: string | undefined
   let originalDisableTerminalShellEnv: string | undefined
   let originalWorkflowSessionId: string | undefined
+  let originalAutoMemoryPathOverride: string | undefined
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-jiangxia-conversation-service-'))
@@ -42,6 +43,7 @@ describe('ConversationService', () => {
     originalZdotdir = process.env.ZDOTDIR
     originalDisableTerminalShellEnv = process.env.CC_JIANGXIA_DISABLE_TERMINAL_SHELL_ENV
     originalWorkflowSessionId = process.env.CC_JIANGXIA_WORKFLOW_SESSION_ID
+    originalAutoMemoryPathOverride = process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
 
     process.env.CLAUDE_CONFIG_DIR = tmpDir
     process.env.ANTHROPIC_API_KEY = 'stale-parent-api-key'
@@ -55,6 +57,7 @@ describe('ConversationService', () => {
     delete process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
     delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
     process.env.CC_JIANGXIA_WORKFLOW_SESSION_ID = 'stale-parent-workflow-session'
+    process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = 'C:\\stale-parent-memory\\'
     process.env.CC_JIANGXIA_DISABLE_TERMINAL_SHELL_ENV = '1'
     resetTerminalShellEnvironmentCacheForTests()
   })
@@ -104,6 +107,9 @@ describe('ConversationService', () => {
 
     if (originalWorkflowSessionId === undefined) delete process.env.CC_JIANGXIA_WORKFLOW_SESSION_ID
     else process.env.CC_JIANGXIA_WORKFLOW_SESSION_ID = originalWorkflowSessionId
+
+    if (originalAutoMemoryPathOverride === undefined) delete process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    else process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = originalAutoMemoryPathOverride
 
     resetTerminalShellEnvironmentCacheForTests()
     await fs.rm(tmpDir, { recursive: true, force: true })
@@ -607,7 +613,9 @@ describe('ConversationService', () => {
 
     expect(sdkEnv.CC_JIANGXIA_WORKFLOW_SESSION_ID).toBe('workflow-session')
     expect(sdkEnv.CC_JIANGXIA_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
+    expect(sdkEnv.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE).toBeUndefined()
     expect(dialogueEnv.CC_JIANGXIA_WORKFLOW_SESSION_ID).toBeUndefined()
+    expect(dialogueEnv.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE).toBeTruthy()
   })
 
   test('buildChildEnv gives template-fill Expert sessions this app bundled CLI instead of PATH claude', async () => {

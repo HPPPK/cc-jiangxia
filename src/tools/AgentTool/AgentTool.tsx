@@ -45,7 +45,7 @@ import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
-import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
+import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, formatBrowserResearchAudit, getLastToolUseName, requiresBrowserResearchAudit, runAsyncAgentLifecycle } from './agentToolUtils.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
@@ -1488,12 +1488,15 @@ The agent is now running and will receive instructions via mailbox.`
         type: 'text' as const,
         text: '(Subagent completed but returned no output.)'
       }];
-      // One-shot built-ins (Explore, Plan) are never continued via SendMessage
-      // 鈥?the agentId hint and <usage> block are dead weight (~135 chars 脳
-      // 34M Explore runs/week 鈮?1-2 Gtok/week). Telemetry doesn't parse this
-      // block (it uses logEvent in finalizeAgentTool), so dropping is safe.
-      // agentType is optional for resume compat 鈥?missing means show trailer.
-      if (data.agentType && ONE_SHOT_BUILTIN_AGENT_TYPES.has(data.agentType) && !worktreeInfoText) {
+      // Expert evidence agents need their transcript-derived BrowserResearch audit even if
+      // they later become one-shot agents. The audit is evidence provenance, not optional
+      // conversational metadata.
+      const browserResearchAudit = requiresBrowserResearchAudit(data.agentType)
+        ? formatBrowserResearchAudit(data.browserResearchAudit)
+        : undefined;
+      // One-shot built-ins (Explore, Plan) are never continued via SendMessage. Keep that
+      // optimization for normal agents, but never hide the evidence audit from a parent.
+      if (data.agentType && ONE_SHOT_BUILTIN_AGENT_TYPES.has(data.agentType) && !worktreeInfoText && !browserResearchAudit) {
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
@@ -1508,7 +1511,10 @@ The agent is now running and will receive instructions via mailbox.`
           text: `agentId: ${data.agentId} (use SendMessage with to: '${data.agentId}' to continue this agent)${worktreeInfoText}
 <usage>total_tokens: ${data.totalTokens}
 tool_uses: ${data.totalToolUseCount}
-duration_ms: ${data.totalDurationMs}</usage>`
+duration_ms: ${data.totalDurationMs}</usage>
+<tool-audit>
+BrowserResearch: ${data.browserResearchToolUseCount ?? 0}
+</tool-audit>${browserResearchAudit ? `\n${browserResearchAudit}` : ''}`
         }]
       };
     }

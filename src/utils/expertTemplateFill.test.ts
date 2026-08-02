@@ -46,6 +46,18 @@ describe('expert template fill', () => {
     expect(content).not.toContain('SLOT:')
   })
 
+  test('does not duplicate a title suffix already supplied by the report field', () => {
+    const titledTemplate = '<html data-template-id="title-v1"><body><h1>{{REPORT_TITLE}} · 商业化调研报告</h1></body></html>'
+    const { content } = renderExpertTemplateFill(titledTemplate, {
+      format: EXPERT_TEMPLATE_FILL_FORMAT,
+      templateId: 'title-v1',
+      fields: { REPORT_TITLE: 'Mac Markdown 阅读器 · 商业化调研报告' },
+    })
+
+    expect(content).toContain('<h1>Mac Markdown 阅读器 · 商业化调研报告</h1>')
+    expect(content).not.toContain('商业化调研报告 · 商业化调研报告')
+  })
+
   test('rejects missing fields, invalid table widths and non-http source URLs', () => {
     expect(() => renderExpertTemplateFill(template, {
       format: EXPERT_TEMPLATE_FILL_FORMAT,

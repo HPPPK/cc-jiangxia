@@ -37,6 +37,7 @@ import {
   getWorkflowPhaseDisallowedTools,
   getWorkflowPromptToolGuidance,
   getWorkflowScopedToolNames,
+  getWorkflowQuestionCardContractViolation,
   hasWorkflowArtifactWriteCapability,
   isWorkflowArtifactWritePath,
 } from '../services/workflowToolPolicy.js'
@@ -510,7 +511,22 @@ async function handleUserMessage(
 
   // Clear any stale stop flag from a previous turn
   sessionStopRequested.delete(sessionId)
+  const streamState = getStreamState(sessionId)
+  resetStrictVisualQaEvidence(streamState)
+  streamState.strictVisualIntroductionTurn = false
   clearPrewarmState(sessionId)
+  const strictVisualRuntimeActive = await isStrictVisualRuntimeActive(sessionId)
+  if (strictVisualRuntimeActive && userRequestsStrictVisualPublicResearch(message.content)) {
+    // The user has already chosen a public reference site or explicitly
+    // authorized web research. Do not let a text-only model turn pretend that
+    // this visual-research decision never happened.
+    streamState.strictVisualReferenceResearchRequired = true
+    streamState.strictVisualLockedReferenceUrls = strictVisualPublicReferenceUrls(message.content)
+  }
+  if (strictVisualRuntimeActive && userRequestsStrictVisualFinalDelivery(message.content, message.attachments)) {
+    // A rendered artifact cannot complete through a prose-only final claim.
+    streamState.strictVisualFinalReviewRequired = true
+  }
 
   const desktopSlashCommand = getDesktopSlashCommand(message.content)
   if (desktopSlashCommand?.commandName === 'clear' && desktopSlashCommand.args.trim()) {
@@ -558,6 +574,11 @@ async function handleUserMessage(
     }
     triggerTitleGeneration(ws, sessionId)
   }
+
+  // Only the automatic first-turn "what can this Expert do?" request is a
+  // welcome response. A later capability question remains an ordinary turn.
+  streamState.strictVisualIntroductionTurn = titleState.userMessageCount === 1
+    && isStrictVisualIntroductionRequest(message.content)
 
   // 启动 CLI 子进程（如果还没有）
   try {
@@ -1125,13 +1146,42 @@ async function appendWorkflowStateMetadata(
 async function recordWorkflowAskUserQuestion(
   sessionId: string,
   request: Extract<ServerMessage, { type: 'permission_request' }>,
-): Promise<Extract<ServerMessage, { type: 'permission_request' }>> {
+): Promise<Extract<ServerMessage, { type: 'permission_request' }> | null> {
   if (request.toolName !== 'AskUserQuestion') return request
-  const questions = askUserQuestionPrompts(request.input)
-  if (!questions.length) return request
 
   const stateRead = await workflowSessionStateService.readState(sessionId)
   if (!stateRead.exists || !stateRead.state || !isWorkflowSessionState(stateRead.state)) return request
+
+  // The persisted workflow state is authoritative here. The CLI-side app state
+  // can be stale across launch/resume, so reject invalid cards before the
+  // desktop receives a selectable permission request.
+  const contractViolation = getWorkflowQuestionCardContractViolation(
+    request.toolName,
+    request.input,
+    stateRead.state,
+  )
+  if (contractViolation) {
+    const delivered = conversationService.respondToPermission(
+      sessionId,
+      request.requestId,
+      false,
+      undefined,
+      undefined,
+      contractViolation,
+    )
+    broadcastServerMessageToSession(sessionId, {
+      type: 'error',
+      code: 'WORKFLOW_QUESTION_CONTRACT_VIOLATION',
+      message: delivered
+        ? contractViolation
+        : contractViolation + ' The CLI session is not running, so the card was not delivered.',
+    })
+    return null
+  }
+
+  const questions = askUserQuestionPrompts(request.input)
+  if (!questions.length) return request
+
   const now = new Date().toISOString()
   const candidate = recordAskUserQuestionIssue(stateRead.state, {
     requestId: request.requestId,
@@ -2004,6 +2054,39 @@ type SessionStreamState = {
   pendingLocalCommand?: { name: string; args: string }
   usedAskUserQuestion: boolean
   assistantText: string
+  strictVisualIntroductionTurn: boolean
+  wroteStrictVisualHtml: boolean
+  strictVisualHtmlWriteCount: number
+  completedStrictVisualQa: boolean
+  strictVisualRendererSuccessCount: number
+  visualQaRendererToolUseIds: Set<string>
+  strictVisualPngReadToolUseIds: Set<string>
+  strictVisualLastImageReviewHtmlWriteCount: number | null
+  /** True when the latest complete HTML write uses an unverifiable lifestyle price comparison. */
+  strictVisualUnsupportedPriceAnalogyDetected: boolean
+  /** True when a plan badge/ribbon is absolutely positioned and can overlap tier copy. */
+  strictVisualUnsafeAbsolutePlanBadgeDetected: boolean
+  /** True when CSS injects user-facing words into a semantic control via ::before/::after. */
+  strictVisualGeneratedSemanticPseudoTextDetected: boolean
+  /** True when an unverifiable QR/barcode-like pattern pretends to be a payment affordance. */
+  strictVisualMisleadingPaymentCodeDetected: boolean
+  /** True when process caveats are written into the customer-facing prototype UI. */
+  strictVisualProcessDisclaimerDetected: boolean
+  /** True when this user turn is asking the strict Expert to produce a rendered design artifact. */
+  strictVisualFinalReviewRequired: boolean
+  strictVisualReferenceResearchRequired: boolean
+  /** A user-supplied pair of public URLs is a closed reference scope for this turn. */
+  strictVisualLockedReferenceUrls: string[]
+  strictVisualLockedReferenceAttemptUrls: Set<string>
+  strictVisualReferenceSourceLockViolation: boolean
+  strictVisualInspirationQuestionToolUseIds: Set<string>
+  strictVisualReferenceResearchToolUseIds: Set<string>
+  strictVisualReferenceScreenshotPathsByToolUseId: Map<string, string>
+  strictVisualReferenceReadPathsByToolUseId: Map<string, string>
+  strictVisualReferenceScreenshotReadPaths: Set<string>
+  strictVisualReferenceResearchRecoveryAttempts: number
+  strictVisualRenderRecoveryAttempts: number
+  strictVisualReviewRecoveryAttempts: number
   structuredInteractionRecoveryAttempts: number
   workflowProtocolToolRegistryError?: 'submit_phase_completion' | 'request_workflow_route'
   workflowProtocolBindingRecoveryAttempts: number
@@ -2032,6 +2115,32 @@ function getStreamState(sessionId: string): SessionStreamState {
       pendingLocalCommand: undefined,
       usedAskUserQuestion: false,
       assistantText: '',
+      strictVisualIntroductionTurn: false,
+      wroteStrictVisualHtml: false,
+      strictVisualHtmlWriteCount: 0,
+      completedStrictVisualQa: false,
+      strictVisualRendererSuccessCount: 0,
+      visualQaRendererToolUseIds: new Set(),
+      strictVisualPngReadToolUseIds: new Set(),
+      strictVisualLastImageReviewHtmlWriteCount: null,
+      strictVisualUnsupportedPriceAnalogyDetected: false,
+      strictVisualUnsafeAbsolutePlanBadgeDetected: false,
+      strictVisualGeneratedSemanticPseudoTextDetected: false,
+      strictVisualMisleadingPaymentCodeDetected: false,
+      strictVisualProcessDisclaimerDetected: false,
+      strictVisualFinalReviewRequired: false,
+      strictVisualReferenceResearchRequired: false,
+      strictVisualLockedReferenceUrls: [],
+      strictVisualLockedReferenceAttemptUrls: new Set(),
+      strictVisualReferenceSourceLockViolation: false,
+      strictVisualInspirationQuestionToolUseIds: new Set(),
+      strictVisualReferenceResearchToolUseIds: new Set(),
+      strictVisualReferenceScreenshotPathsByToolUseId: new Map(),
+      strictVisualReferenceReadPathsByToolUseId: new Map(),
+      strictVisualReferenceScreenshotReadPaths: new Set(),
+      strictVisualReferenceResearchRecoveryAttempts: 0,
+      strictVisualRenderRecoveryAttempts: 0,
+      strictVisualReviewRecoveryAttempts: 0,
       structuredInteractionRecoveryAttempts: 0,
       workflowProtocolToolRegistryError: undefined,
       workflowProtocolBindingRecoveryAttempts: 0,
@@ -2159,6 +2268,16 @@ function extractAssistantText(cliMsg: any): string {
 type WorkflowInteractionTurn = {
   assistantText: string
   usedAskUserQuestion: boolean
+  strictVisualIntroductionTurn: boolean
+  wroteStrictVisualHtml: boolean
+  completedStrictVisualQa: boolean
+  completedStrictVisualReview: boolean
+  visualReviewFailureReasons: string[]
+  strictVisualReferenceResearchRequired: boolean
+  completedStrictVisualReferenceResearch: boolean
+  referenceResearchRecoveryAttempts: number
+  renderQaRecoveryAttempts: number
+  visualReviewRecoveryAttempts: number
   recoveryAttempts: number
 }
 
@@ -2168,8 +2287,9 @@ type WorkflowTerminalRecovery = {
 }
 
 type StrictVisualTerminalRecovery = {
-  kind: 'ask-user-question' | 'design-direction'
+  kind: 'ask-user-question' | 'design-direction' | 'visual-reference-research' | 'render-qa' | 'visual-review'
   expertId: string
+  visualReviewFailureReasons?: string[]
 }
 
 function beginStreamedAssistantTurn(streamState: SessionStreamState): void {
@@ -2183,9 +2303,351 @@ function recordAssistantText(streamState: SessionStreamState, text: unknown): vo
   streamState.assistantText += text
 }
 
-function recordAssistantToolUse(streamState: SessionStreamState, toolName: unknown): void {
+function bashCommandWritesHtml(inputText: string): boolean {
+  // A strict visual revision may be made through Bash (for example, Python or
+  // PowerShell) rather than the dedicated Write/Edit tools. Count only clear
+  // HTML-writing operations; rendering, reading, and shell inspection alone
+  // must never satisfy the revision requirement.
+  if (!/\.html?(?:["'\s)|;]|$)/i.test(inputText)) return false
+
+  return /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|Set-Content|Add-Content|WriteAllText|WriteAllBytes|Out-File|write_text|write_bytes)\b/i.test(inputText)
+    || /\bopen\s*\([^)]*,\s*["'][^"']*[wax][^"']*["'][^)]*\)\s*\.\s*write\s*\(/i.test(inputText)
+    || /(?:^|[;&|])[^\r\n;&|]*(?:>>|>)\s*(?:["'][^"']*\.html?["']|[^\s;&|]*\.html?)(?:\s|$)/i.test(inputText)
+    || /\bsed\b[^\r\n]*\s-i\S*[^\r\n]*\.html?/i.test(inputText)
+    || /\bperl\b[^\r\n]*-pi\S*[^\r\n]*\.html?/i.test(inputText)
+}
+
+function normalizedStrictVisualPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').toLowerCase()
+}
+
+function inputRequestsStrictVisualInspirationSources(inputText: string): boolean {
+  return /(?:"|')id(?:"|')\s*:\s*(?:"|')inspiration_sources(?:"|')/.test(inputText)
+    || /\binspiration_sources\b/.test(inputText)
+}
+
+function browserResearchRequestsScreenshot(inputText: string): boolean {
+  return /(?:"|')includeScreenshot(?:"|')\s*:\s*true/i.test(inputText)
+    || /(?:"|')include_screenshot(?:"|')\s*:\s*true/i.test(inputText)
+}
+
+function normalizeStrictVisualImagePath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase()
+}
+
+/**
+ * BrowserResearch screenshots are often too large for the model image reader.
+ * A same-directory PNG derived from the returned name (for example
+ * reference-scaled.png) is safe evidence for that source; arbitrary PNGs are not.
+ */
+function readTargetsStrictVisualReferenceScreenshot(inputText: string, screenshotPath: string): boolean {
+  const input = normalizeStrictVisualImagePath(inputText)
+  const source = normalizeStrictVisualImagePath(screenshotPath)
+  if (input.includes(source)) return true
+
+  const extensionIndex = source.lastIndexOf('.png')
+  if (extensionIndex <= 0 || !source.endsWith('.png')) return false
+  const prefix = source.slice(0, extensionIndex) + '-'
+  const derivedStart = input.indexOf(prefix)
+  if (derivedStart < 0) return false
+  const derivedSuffix = input.slice(derivedStart + prefix.length).match(/^[^\\"'\s]+\.(?:png|jpe?g)(?:[\\"'\s]|$)/i)
+  return derivedSuffix !== null
+}
+
+export function containsStrictVisualUnsafeAbsolutePlanBadge(inputText: string): boolean {
+  const normalized = inputText.toLowerCase()
+  const hasAbsolutePosition = /position\s*:\s*absolute/.test(normalized)
+  if (!hasAbsolutePosition) return false
+  // Limit the pairing window so unrelated absolute-positioned dialogs do not
+  // trip the purchase-card rule. Promotion labels repeatedly caused 390px
+  // title/price collisions in generated transaction windows.
+  const planBadge = /(?:plan|tier|price|member|membership|套餐|会员)[-_ ]?(?:badge|ribbon|tag|flag|label)|(?:badge|ribbon|tag|flag|label)[-_ ]?(?:plan|tier|price|member|membership|套餐|会员)/
+  const badgeMention = /(?:badge|ribbon|tag|flag|label|角标|飘带|推荐标|促销标|赠品标)/
+  return (planBadge.test(normalized) && /(?:plan|tier|price|member|membership|套餐|会员|badge|ribbon|tag|flag|label)[\s\S]{0,260}position\s*:\s*absolute|position\s*:\s*absolute[\s\S]{0,260}(?:plan|tier|price|member|membership|套餐|会员|badge|ribbon|tag|flag|label)/.test(normalized))
+    || (badgeMention.test(normalized) && /(?:badge|ribbon|tag|flag|label|角标|飘带|推荐标|促销标|赠品标)[\s\S]{0,180}position\s*:\s*absolute|position\s*:\s*absolute[\s\S]{0,180}(?:badge|ribbon|tag|flag|label|角标|飘带|推荐标|促销标|赠品标)/.test(normalized))
+}
+
+export function containsStrictVisualGeneratedSemanticPseudoText(inputText: string): boolean {
+  // Write inputs are often JSON-stringified, so normalize escaped quotes before
+  // looking for CSS pseudo-elements that inject visible words into controls.
+  const normalized = inputText.replace(/\\"/g, '"').replace(/\\'/g, "'")
+  const cssRule = /([^{}]{0,220}(?::?(?:before|after))[^{}]*)\{([^{}]{0,800})\}/gi
+  for (const match of normalized.matchAll(cssRule)) {
+    const selector = match[1] ?? ''
+    const declarations = match[2] ?? ''
+    if (!/(?:tab|nav|switch|plan|tier|member|membership|price|pay|button|cta|login|account)/i.test(selector)) continue
+    const contentMatch = /content\s*:\s*["\']([^"\']+)["\']/i.exec(declarations)
+    if (!contentMatch) continue
+    // Decorative punctuation and empty content are fine. A word or CJK label
+    // must be real DOM text so source-fidelity review can see and compare it.
+    if (/[A-Za-z0-9\u4e00-\u9fff]{2,}/.test(contentMatch[1] ?? '')) return true
+  }
+  return false
+}
+export function containsStrictVisualMisleadingPaymentCode(inputText: string): boolean {
+  const normalized = inputText.replace(/\\"/g, '"').replace(/\\'/g, "'").toLowerCase()
+  // A CSS texture can be decorative elsewhere, but a dense black/white stripe
+  // or grid inside a QR/payment/code selector looks like a real scannable
+  // payment artefact while being unusable. Require an honest CTA instead.
+  const paymentSelector = /(?:qr(?:-|_)?code|qrcode|barcode|payment(?:-|_)?code|payment-qr|二维码|扫码)[^{}]{0,260}\{[^{}]{0,900}\}/gi
+  for (const match of normalized.matchAll(paymentSelector)) {
+    const css = match[0] ?? ''
+    if (/(?:repeating-linear-gradient|linear-gradient\([^)]*(?:#000|#111|black|rgb\(0))/i.test(css)) return true
+  }
+  return false
+}
+
+export function containsStrictVisualProcessDisclaimer(inputText: string): boolean {
+  const normalized = inputText.replace(/\s+/g, '')
+  return /(?:这是(?:交互|视觉|原型).{0,12}(?:假设|演示)|(?:仅为|只是).{0,12}(?:原型|演示)|not(?:a|an)?(?:completed|validated|production)|prototype(?:only|disclaimer))/i.test(normalized)
+}
+
+function containsStrictVisualUnsupportedPriceAnalogy(inputText: string): boolean {
+  const text = inputText.toLowerCase()
+  const hasPrice = /(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元)/.test(text)
+  const hasComparison = /(?:≈|约等于|相当于|只相当于|不到|一份|一杯|一顿|一次)/.test(text)
+  const hasNamedLifestyleReference = /(咖啡|奶茶|电影票|午餐|早餐|自助餐|水煮鱼|炸鸡|打车|出租车|一顿饭|一份(?:饭|餐)|一杯)/.test(text)
+  const hasFoodOrRideUnit = /[一二三四五六七八九十0-9]+\s*(?:份|次|杯|顿)[^<\n]{0,12}(?:鸡|鱼|餐|饭|咖啡|奶茶|电影|车)/.test(text)
+  return hasPrice && hasComparison && (hasNamedLifestyleReference || hasFoodOrRideUnit)
+}
+
+function localScreenshotPathsFromBrowserResearchResult(content: unknown): string[] {
+  const text = textFromToolResultContent(content)
+  const matches = [...text.matchAll(/Local screenshot path:\s*([^\r\n]+)/gi)]
+  return [...new Set(matches
+    .map((match) => match[1]?.trim())
+    .filter((screenshotPath): screenshotPath is string => Boolean(screenshotPath))
+    .map(normalizedStrictVisualPath))]
+}
+
+function normalizeStrictVisualPublicUrl(value: string): string | null {
+  try {
+    const url = new URL(value.trim())
+    if (!/^https?:$/i.test(url.protocol)) return null
+    url.hash = ''
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+/** Extracts only concrete user-supplied public URLs; order is preserved and duplicates removed. */
+export function strictVisualPublicReferenceUrls(content: string): string[] {
+  const urls: string[] = []
+  for (const match of content.matchAll(/\bhttps?:\/\/[^\s<>"'）)】，,。、]+/gi)) {
+    const normalized = normalizeStrictVisualPublicUrl(match[0] ?? '')
+    if (normalized && !urls.includes(normalized)) urls.push(normalized)
+  }
+  return urls
+}
+
+function browserResearchTargetUrl(input: unknown, inputText: string): string | null {
+  const direct = input && typeof input === 'object' && typeof (input as { url?: unknown }).url === 'string'
+    ? (input as { url: string }).url
+    : null
+  if (direct) return normalizeStrictVisualPublicUrl(direct)
+  try {
+    const parsed = JSON.parse(inputText) as { url?: unknown }
+    return typeof parsed.url === 'string' ? normalizeStrictVisualPublicUrl(parsed.url) : null
+  } catch {
+    return null
+  }
+}
+
+export function userRequestsStrictVisualPublicResearch(content: string): boolean {
+  const normalized = content.trim()
+  if (!normalized) return false
+
+  // A pasted public URL is an unambiguous instruction to inspect that site.
+  if (strictVisualPublicReferenceUrls(normalized).length > 0) return true
+
+  return /(?:灵感(?:参考)?(?:网站|网页)|参考(?:网站|网页)|网站(?:研究|参考|借鉴)|网页(?:研究|参考|借鉴)|公开网站|外部参考|网络研究|website\s*(?:reference|research|inspiration)|(?:research|browse|study)\s*(?:websites?|sites?|references?)|visual\s*references?)/i.test(normalized)
+}
+
+export function userRequestsStrictVisualFinalDelivery(
+  content: string,
+  attachments?: Array<{ mimeType?: string; path?: string; name?: string }>,
+): boolean {
+  const normalized = content.trim()
+  const requestsProduction = /(?:重构|改版|设计|制作|生成|交付|原型|实现|redesign|create|build|deliver|prototype)/i.test(normalized)
+  const requestsArtifact = /(?:html|png|原型|视觉稿|渲染|截图|prototype|mockup|render)/i.test(normalized)
+  const hasVisualAttachment = (attachments ?? []).some((attachment) => /image|png|jpe?g|webp/i.test(`${attachment.mimeType ?? ''} ${attachment.path ?? ''} ${attachment.name ?? ''}`))
+  return requestsProduction && (requestsArtifact || hasVisualAttachment)
+}
+
+async function isStrictVisualRuntimeActive(sessionId: string): Promise<boolean> {
+  const transcriptExpert = (await sessionService.getSession(sessionId).catch(() => null))?.expert
+  const expert = hasActiveExpertRuntime(transcriptExpert)
+    ? transcriptExpert
+    : await expertRuntimeSessionStore.get(sessionId)
+  return hasActiveExpertRuntime(expert) && expert.runtimeBinding.runtimePolicy?.mode === 'strict-visual-workflow'
+}
+function selectedStrictVisualPublicResearch(content: unknown): boolean | null {
+  const text = textFromToolResultContent(content)
+  if (!/User has answered your questions:/i.test(text) || !/\binspiration_sources\b/i.test(text)) return null
+  const normalized = text.toLowerCase()
+  if (/(?:不使用|不研究|无需外部|无需参考|no external|without external|do not research|none)/i.test(normalized)) return false
+  if (/(?:内置|builtin|扩展|extend|允许.*(?:研究|网页)|public.*research|research.*public)/i.test(normalized)) return true
+  return null
+}
+
+function recordAssistantToolUse(
+  streamState: SessionStreamState,
+  toolName: unknown,
+  input?: unknown,
+  toolUseId?: unknown,
+): void {
   if (toolName === 'AskUserQuestion') streamState.usedAskUserQuestion = true
   if (WORKFLOW_PROTOCOL_TOOL_NAMES.has(toolName as WorkflowProtocolToolName)) streamState.workflowProtocolInputValidationError = undefined
+
+  let inputText = ''
+  try {
+    inputText = typeof input === 'string' ? input : JSON.stringify(input ?? '')
+  } catch {
+    return
+  }
+  if (toolName === 'AskUserQuestion' && typeof toolUseId === 'string' && inputRequestsStrictVisualInspirationSources(inputText)) {
+    streamState.strictVisualInspirationQuestionToolUseIds.add(toolUseId)
+  }
+  if (toolName === 'BrowserResearch') {
+    // Any BrowserResearch use in this strict UIUX workflow is a claimed public
+    // visual reference attempt. It must therefore finish as screenshot-backed
+    // visual research rather than a text-only detour, including user-supplied
+    // reference URLs that bypass the built-in choice card.
+    streamState.strictVisualReferenceResearchRequired = true
+    const referenceTargetUrl = browserResearchTargetUrl(input, inputText)
+    // content_block_start can arrive before the SDK has streamed the complete
+    // BrowserResearch input. Do not turn that partial/empty JSON into a false
+    // “third-site” violation; evaluate only a complete URL or search request.
+    const hasCompleteReferenceTarget = referenceTargetUrl !== null
+      || /(?:"|')search_query(?:"|')\s*:/i.test(inputText)
+    if (streamState.strictVisualLockedReferenceUrls.length >= 2 && hasCompleteReferenceTarget) {
+      if (!referenceTargetUrl || !streamState.strictVisualLockedReferenceUrls.includes(referenceTargetUrl)) {
+        // The tool has already been requested by the model, so this is a
+        // completion gate rather than an optimistic claim of prevention. It
+        // ensures off-list research cannot become accepted visual evidence.
+        streamState.strictVisualReferenceSourceLockViolation = true
+      } else {
+        streamState.strictVisualLockedReferenceAttemptUrls.add(referenceTargetUrl)
+      }
+    }
+    if (typeof toolUseId === 'string' && browserResearchRequestsScreenshot(inputText)) {
+      streamState.strictVisualReferenceResearchToolUseIds.add(toolUseId)
+    }
+  }
+  if (toolName === 'Read' && typeof toolUseId === 'string') {
+    for (const screenshotPath of streamState.strictVisualReferenceScreenshotPathsByToolUseId.values()) {
+      if (readTargetsStrictVisualReferenceScreenshot(inputText, screenshotPath)) {
+        // Preserve the original BrowserResearch screenshot as provenance even if
+        // the model reads its safe resized derivative.
+        streamState.strictVisualReferenceReadPathsByToolUseId.set(toolUseId, screenshotPath)
+        break
+      }
+    }
+  }
+  const writesHtml = (['Write', 'Edit', 'MultiEdit'].includes(toolName as string)
+    && /\.html?(?:["'\s]|$)/i.test(inputText))
+    || (toolName === 'Bash' && bashCommandWritesHtml(inputText))
+  if (writesHtml) {
+    streamState.wroteStrictVisualHtml = true
+    streamState.strictVisualHtmlWriteCount += 1
+    const hasUnsupportedPriceAnalogy = containsStrictVisualUnsupportedPriceAnalogy(inputText)
+    const hasUnsafeAbsolutePlanBadge = containsStrictVisualUnsafeAbsolutePlanBadge(inputText)
+    const hasGeneratedSemanticPseudoText = containsStrictVisualGeneratedSemanticPseudoText(inputText)
+    const hasMisleadingPaymentCode = containsStrictVisualMisleadingPaymentCode(inputText)
+    const hasProcessDisclaimer = containsStrictVisualProcessDisclaimer(inputText)
+    // Only an explicit Write can establish the contents of a complete clean
+    // replacement. A partial edit or shell command must not erase a violation.
+    if (hasUnsupportedPriceAnalogy || hasUnsafeAbsolutePlanBadge || hasGeneratedSemanticPseudoText || hasMisleadingPaymentCode || hasProcessDisclaimer || toolName === 'Write') {
+      streamState.strictVisualUnsupportedPriceAnalogyDetected = hasUnsupportedPriceAnalogy
+      streamState.strictVisualUnsafeAbsolutePlanBadgeDetected = hasUnsafeAbsolutePlanBadge
+      streamState.strictVisualGeneratedSemanticPseudoTextDetected = hasGeneratedSemanticPseudoText
+      streamState.strictVisualMisleadingPaymentCodeDetected = hasMisleadingPaymentCode
+      streamState.strictVisualProcessDisclaimerDetected = hasProcessDisclaimer
+    }
+  }
+  if (toolName === 'Read' && typeof toolUseId === 'string' && /\.png(?:["'\s]|$)/i.test(inputText)) {
+    streamState.strictVisualPngReadToolUseIds.add(toolUseId)
+  }
+  if (
+    toolName === 'Bash'
+    && typeof toolUseId === 'string'
+    && /(VISUAL_QA_BROWSER_EXECUTABLE|playwright|chrome-headless-shell|headless_shell)/i.test(inputText)
+    && /\.png/i.test(inputText)
+  ) {
+    streamState.visualQaRendererToolUseIds.add(toolUseId)
+  }
+}
+
+function toolResultContainsImage(content: unknown): boolean {
+  if (Array.isArray(content)) return content.some((block) => toolResultContainsImage(block))
+  if (!content || typeof content !== 'object') return false
+  const block = content as { type?: unknown; source?: unknown; content?: unknown }
+  if (block.type === 'image' && block.source) return true
+  return toolResultContainsImage(block.content)
+}
+
+function recordStrictVisualQaToolResult(
+  streamState: SessionStreamState,
+  toolResult: { tool_use_id?: unknown; is_error?: unknown; content?: unknown },
+): void {
+  if (typeof toolResult.tool_use_id !== 'string' || toolResult.is_error) return
+
+  if (streamState.strictVisualInspirationQuestionToolUseIds.has(toolResult.tool_use_id)) {
+    const requiresResearch = selectedStrictVisualPublicResearch(toolResult.content)
+    if (requiresResearch !== null) streamState.strictVisualReferenceResearchRequired = requiresResearch
+  }
+  if (streamState.strictVisualReferenceResearchToolUseIds.has(toolResult.tool_use_id)) {
+    for (const screenshotPath of localScreenshotPathsFromBrowserResearchResult(toolResult.content)) {
+      streamState.strictVisualReferenceScreenshotPathsByToolUseId.set(toolResult.tool_use_id, screenshotPath)
+    }
+  }
+  const referenceReadPath = streamState.strictVisualReferenceReadPathsByToolUseId.get(toolResult.tool_use_id)
+  if (referenceReadPath && toolResultContainsImage(toolResult.content)) {
+    streamState.strictVisualReferenceScreenshotReadPaths.add(referenceReadPath)
+  }
+
+  if (streamState.visualQaRendererToolUseIds.has(toolResult.tool_use_id)) {
+    streamState.completedStrictVisualQa = true
+    streamState.strictVisualRendererSuccessCount += 1
+  }
+  if (
+    streamState.strictVisualPngReadToolUseIds.has(toolResult.tool_use_id)
+    && toolResultContainsImage(toolResult.content)
+  ) {
+    // The tool returned a real image payload to the model. Record which HTML
+    // revision was visible so a final response cannot skip critique, revision,
+    // rerendering, and a second image review.
+    streamState.strictVisualLastImageReviewHtmlWriteCount = streamState.strictVisualHtmlWriteCount
+  }
+}
+
+function resetStrictVisualQaEvidence(streamState: SessionStreamState): void {
+  streamState.wroteStrictVisualHtml = false
+  streamState.strictVisualHtmlWriteCount = 0
+  streamState.completedStrictVisualQa = false
+  streamState.strictVisualRendererSuccessCount = 0
+  streamState.visualQaRendererToolUseIds.clear()
+  streamState.strictVisualPngReadToolUseIds.clear()
+  streamState.strictVisualLastImageReviewHtmlWriteCount = null
+  streamState.strictVisualUnsupportedPriceAnalogyDetected = false
+  streamState.strictVisualUnsafeAbsolutePlanBadgeDetected = false
+  streamState.strictVisualGeneratedSemanticPseudoTextDetected = false
+  streamState.strictVisualMisleadingPaymentCodeDetected = false
+  streamState.strictVisualProcessDisclaimerDetected = false
+  streamState.strictVisualFinalReviewRequired = false
+  streamState.strictVisualReferenceResearchRequired = false
+  streamState.strictVisualLockedReferenceUrls = []
+  streamState.strictVisualLockedReferenceAttemptUrls.clear()
+  streamState.strictVisualReferenceSourceLockViolation = false
+  streamState.strictVisualInspirationQuestionToolUseIds.clear()
+  streamState.strictVisualReferenceResearchToolUseIds.clear()
+  streamState.strictVisualReferenceScreenshotPathsByToolUseId.clear()
+  streamState.strictVisualReferenceReadPathsByToolUseId.clear()
+  streamState.strictVisualReferenceScreenshotReadPaths.clear()
+  streamState.strictVisualReferenceResearchRecoveryAttempts = 0
+  streamState.strictVisualRenderRecoveryAttempts = 0
+  streamState.strictVisualReviewRecoveryAttempts = 0
 }
 
 const WORKFLOW_PROTOCOL_TOOL_NAMES = new Set([
@@ -2238,9 +2700,39 @@ function recordWorkflowProtocolToolRegistryErrorFromMessage(
 
 function workflowInteractionTurnForResult(sessionId: string): WorkflowInteractionTurn {
   const streamState = getStreamState(sessionId)
+  const visualReviewFailureReasons = [
+    streamState.strictVisualRendererSuccessCount < 2 ? 'two successful local renderer runs were not recorded' : null,
+    streamState.strictVisualHtmlWriteCount < 2 ? 'a complete HTML revision was not recorded after visual review' : null,
+    streamState.strictVisualLastImageReviewHtmlWriteCount !== streamState.strictVisualHtmlWriteCount ? 'the latest HTML revision was not read back as a rendered PNG image' : null,
+    streamState.strictVisualUnsupportedPriceAnalogyDetected ? 'unsupported lifestyle price analogy remains in the latest complete HTML write' : null,
+    streamState.strictVisualUnsafeAbsolutePlanBadgeDetected ? 'an absolute-positioned plan badge can overlap a tier label or price' : null,
+    streamState.strictVisualGeneratedSemanticPseudoTextDetected ? 'CSS pseudo-elements inject semantic user-facing text' : null,
+    streamState.strictVisualMisleadingPaymentCodeDetected ? 'a fake QR/barcode-like payment pattern remains in the latest complete HTML write' : null,
+    streamState.strictVisualProcessDisclaimerDetected ? 'a prototype/process disclaimer remains in the customer-facing HTML' : null,
+    hasStrictVisualReviewReceipt(streamState.assistantText) ? null : 'the final visual-review receipt is incomplete',
+  ].filter((reason): reason is string => Boolean(reason))
   return {
     assistantText: streamState.assistantText.trim(),
     usedAskUserQuestion: streamState.usedAskUserQuestion,
+    strictVisualIntroductionTurn: streamState.strictVisualIntroductionTurn,
+    strictVisualFinalReviewRequired: streamState.strictVisualFinalReviewRequired,
+    wroteStrictVisualHtml: streamState.wroteStrictVisualHtml,
+    completedStrictVisualQa: streamState.completedStrictVisualQa,
+    completedStrictVisualReview: visualReviewFailureReasons.length === 0,
+    visualReviewFailureReasons,
+    strictVisualReferenceResearchRequired: streamState.strictVisualReferenceResearchRequired,
+    // Tool facts, not a prose receipt, establish whether visual research occurred.
+    // A user-locked pair cannot be silently replaced: if one locked public
+    // page is inaccessible, one successful locked screenshot plus the source
+    // image is the honest fallback; an off-list query never satisfies it.
+    completedStrictVisualReferenceResearch: streamState.strictVisualLockedReferenceUrls.length >= 2
+      ? streamState.strictVisualLockedReferenceUrls.every((url) => streamState.strictVisualLockedReferenceAttemptUrls.has(url))
+        && streamState.strictVisualReferenceScreenshotReadPaths.size >= 1
+        && !streamState.strictVisualReferenceSourceLockViolation
+      : streamState.strictVisualReferenceScreenshotReadPaths.size >= 2,
+    referenceResearchRecoveryAttempts: streamState.strictVisualReferenceResearchRecoveryAttempts,
+    renderQaRecoveryAttempts: streamState.strictVisualRenderRecoveryAttempts,
+    visualReviewRecoveryAttempts: streamState.strictVisualReviewRecoveryAttempts,
     recoveryAttempts: streamState.structuredInteractionRecoveryAttempts,
   }
 }
@@ -2254,7 +2746,9 @@ function finishWorkflowInteractionTurn(
   const streamState = getStreamState(sessionId)
   streamState.usedAskUserQuestion = false
   streamState.assistantText = ''
+  streamState.strictVisualIntroductionTurn = false
   streamState.workflowProtocolToolRegistryError = undefined
+  resetStrictVisualQaEvidence(streamState)
   if (resetRecoveryAttempts) streamState.structuredInteractionRecoveryAttempts = 0
   if (resetBindingRecoveryAttempts) streamState.workflowProtocolBindingRecoveryAttempts = 0
   if (resetInputValidationRecoveryAttempts) {
@@ -2271,17 +2765,33 @@ function assistantTextRequestsUserDecision(text: string): boolean {
   return hasQuestionSignal && hasDecisionLanguage
 }
 
-function assistantTextRequestsStrictVisualBoundedDecision(text: string): boolean {
+function isStrictVisualIntroductionRequest(text: string): boolean {
+  const normalized = text.trim()
+  if (!normalized || normalized.length > 240) return false
+
+  const identifiesThisExpert = /(?:ui\s*\/?\s*ux|\u8bbe\u8ba1\u7cfb\u7edf\u4e13\u5bb6|\u4e13\u5bb6)/i.test(normalized)
+  const asksCapabilities = /(?:\u4ecb\u7ecd(?:\u4e00\u4e0b)?|\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u53ef\u4ee5\u505a\u4ec0\u4e48|\u4f60(?:\u80fd|\u53ef\u4ee5).{0,12}\u5e2e\u6211\u505a\u4ec0\u4e48|\u6709\u54ea\u4e9b\u80fd\u529b)/i.test(normalized)
+  const englishCapabilityIntro = /(?:introduce (?:yourself|.*(?:ui\s*\/?\s*ux|design system expert))|what can you (?:do|help (?:me )?with)|how can you help me)/i.test(normalized)
+
+  return (identifiesThisExpert && asksCapabilities) || englishCapabilityIntro
+}
+
+export function assistantTextRequestsStrictVisualBoundedDecision(text: string): boolean {
   const normalized = text.trim()
   if (!normalized) return false
 
   // A strict visual Expert may still ask for an uploaded screenshot, a pasted
   // URL, or free-form design context in prose. Only intercept decisions that
   // can truthfully become an AskUserQuestion card with bounded choices.
-  return /(?:还是|是否|需不需要|要不要|请(?:你)?(?:选择|确认)|选(?:择)?\s*(?:[A-D]|方案|方向|其一)|二选一|would you like|do you want|should i|which (?:option|one)|please (?:choose|confirm))/i.test(normalized)
-}
+  //
+  // Narrative wording such as "I will confirm whether external references are
+  // needed" is not a present-tense user choice. It must not trigger recovery.
+  const explicitBoundedInstruction = /(?:请(?:你)?(?:选择|确认|选)(?:\s*(?:[A-D]|方案|方向|其一))?|请选择|请确认|二选一|(?:^|[。；;：:\n])\s*选择\s*(?:[A-D]|方案|方向|其一))/i.test(normalized)
+  const questionDecision = /[?？]/.test(normalized)
+    && /(?:还是|是否|需不需要|要不要|would you like|do you want|should i|which (?:option|one)|please (?:choose|confirm))/i.test(normalized)
 
-function assistantTextPresentsMultipleDesignDirections(text: string): boolean {
+  return explicitBoundedInstruction || questionDecision
+}function assistantTextPresentsMultipleDesignDirections(text: string): boolean {
   const normalized = text.trim()
   if (!normalized) return false
 
@@ -2311,6 +2821,22 @@ async function strictVisualTerminalRecoveryForResult(
     return null
   }
 
+  if (turn.strictVisualReferenceResearchRequired && !turn.completedStrictVisualReferenceResearch) {
+    return { kind: 'visual-reference-research', expertId: expert.expertId }
+  }
+  if (turn.wroteStrictVisualHtml && !turn.completedStrictVisualQa) {
+    return { kind: 'render-qa', expertId: expert.expertId }
+  }
+  const finalDeliveryClaimed = /(?:已完成|已交付|完成视觉稿|完成设计|final(?:ized)?|delivered?|completed)/i.test(turn.assistantText)
+  if (
+    (turn.wroteStrictVisualHtml || (turn.strictVisualFinalReviewRequired && finalDeliveryClaimed))
+    && !turn.completedStrictVisualReview
+  ) {
+    return { kind: 'visual-review', expertId: expert.expertId, visualReviewFailureReasons: turn.visualReviewFailureReasons }
+  }
+  // The desktop's first welcome request is not a design decision. Let it end
+  // naturally and wait for the user's next free-form request.
+  if (turn.strictVisualIntroductionTurn) return null
   if (assistantTextPresentsMultipleDesignDirections(turn.assistantText)) {
     return { kind: 'design-direction', expertId: expert.expertId }
   }
@@ -2320,9 +2846,69 @@ async function strictVisualTerminalRecoveryForResult(
   return null
 }
 
+export function hasStrictVisualReviewReceipt(text: string): boolean {
+  const normalized = text.toLowerCase()
+  return [
+    'taste-redesign',
+    'impeccable-visual-refinement',
+    'ui-craft-critique',
+    'ui-craft-finalize',
+    'source-fidelity-final-pass',
+  ].every((skill) => normalized.includes(skill))
+    // A Skill name alone is not a critique. The strict receipt must prove the
+    // model chose a source-specific visual register and removed a concrete
+    // generic treatment after seeing the rendered image.
+    && /(?:visual-register|visual register|视觉基调|视觉人格)/i.test(text)
+    && /(?:removed|remove:|删除|移除|剔除)/i.test(text)
+    && /(?:collision|overlap|重叠|遮挡|裁切|cropping)/i.test(text)
+    && /(?:source-fidelity|source fidelity|源图保真|事实核对|duplicate scan|重复文本)/i.test(text)
+    && /(1440|desktop|桌面)/i.test(text)
+    && /(1024|tablet|平板)/i.test(text)
+    && /(390|mobile|手机|移动)/i.test(text)
+}
+
 function buildStrictVisualTerminalRecoveryInstruction(
   recovery: StrictVisualTerminalRecovery,
 ): string {
+  if (recovery.kind === 'visual-reference-research') {
+    return [
+      '<strict-visual-reference-research-recovery>',
+      'The user selected public visual-reference research, but this strict UIUX turn has not produced two distinct web screenshots that were actually read as images.',
+      'Before any design direction, HTML, or final delivery, lock exactly two concrete public URLs: one structure reference for the current page type and one visual-language reference for the desired density, hierarchy, or material.',
+      'For each URL call BrowserResearch with includeScreenshot: true. From each successful result, immediately Read the returned Local screenshot path. If the PNG is too large for Read, use Bash once to create a safe -scaled.png or -review.jpg derivative in that same screenshot directory, then Read it; do not move it into the session workDir. Browser text, candidate URLs, summaries, access failures, or screenshots that were not Read do not count as visual research.',
+      'If the user explicitly supplied a closed pair of concrete URLs or said not to use a third site, that pair is the complete research scope: if either site is blocked or times out, record it as unavailable, do not WebSearch or substitute another URL, and continue only from the supplied screenshot plus the successful locked evidence. Never claim that an unavailable URL was visually read. If the user did not lock a closed pair, record a blocked site and replace it with a different concrete public URL; do not retry the same normalized URL.',
+      'After both PNGs are read, write <visual-reference-receipt> with both URLs, visible observations, original application, and one thing not copied from each. Apply package-local visual-reference-lock; do not write HTML or end early.',
+      'This is a server-enforced strict visual workflow for Expert ' + recovery.expertId + '.',
+      '</strict-visual-reference-research-recovery>',
+    ].join('\n')
+  }
+
+  if (recovery.kind === 'visual-review') {
+    return [
+      '<strict-visual-review-recovery>',
+      'The PNG renderer succeeded, but this strict UIUX delivery has not completed an evidence-backed visual critique and finalization cycle.',
+      'Server-detected unfinished evidence: ' + (recovery.visualReviewFailureReasons?.join('; ') || 'unknown strict visual completion failure') + '.',
+      'At least one Read result in this conversation returned an actual image payload. Treat it as visual input: do not claim that rendered screenshots cannot be read, and do not ask the user to upload the screenshots you already received.',
+      'Immediately apply the package-local taste-redesign, impeccable-visual-refinement, ui-craft-critique, and source-fidelity-final-pass methods to the rendered desktop, tablet, and mobile screenshots. Identify concrete screenshot-specific problems, then revise the existing HTML (do not merely describe changes). Run a source-to-final semantic diff: visible tabs, plan count/order/names/prices, payment relationship, and benefit labels must match the source fact ledger exactly; remove accidental repeated words such as “企业 企业”, invented labels, and any text injected through CSS ::before/::after. Keep all user-facing semantic labels as real DOM text, not CSS content. Remove every unsupported lifestyle price analogy such as coffee, meals, cinema tickets, ride-hailing, self-service meals, or dishes. Keep only direct prices, formula-based per-day prices, and source-supported benefits; do not invent user segments, trials, guarantees, or promotions. Never draw a fake QR code, barcode, checkerboard, or black-white stripe pattern as a payment affordance: if a real payment QR is unavailable, use an honest login/payment CTA and a plainly non-code container. Do not place prototype/process disclaimers such as “this is a visual assumption” in the customer-facing page; report those limits only in the final receipt. A plan promotion/recommendation badge may not use position:absolute in the final HTML, because it can cover a tier label or price at 390px; place it in normal flow or remove it. If this recovery follows unsupported copy, unsafe plan badges, or generated semantic pseudo text, use Write to replace the complete HTML source with a clean version: do not rely on Bash or partial Edit to silently remove it.',
+      'After revision, call Bash again to render all three viewports with $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE, then Read at least one newly rendered PNG image. Apply ui-craft-finalize only after that second image review.',
+      'Before ending, include a concise <visual-review-receipt> that names taste-redesign, impeccable-visual-refinement, ui-craft-critique, ui-craft-finalize, and source-fidelity-final-pass; includes visual-register, removed, collision/cropping evidence, and source-fidelity / duplicate-scan evidence; and contains one concrete observation for each of 1440 desktop, 1024 tablet, and 390 mobile. Do not use AskUserQuestion or end early.',
+      'This is a server-enforced strict visual workflow for Expert ' + recovery.expertId + '.',
+      '</strict-visual-review-recovery>',
+    ].join('\n')
+  }
+
+  if (recovery.kind === 'render-qa') {
+    return [
+      '<strict-visual-render-qa-recovery>',
+      'An intermediate HTML artifact was written, but this turn did not run a detected local visual-QA renderer command.',
+      'Immediately call Bash to render that existing HTML into PNG screenshots at 1440x1000, 1024x900, and 390x844.',
+      'Use the installed browser executable from $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE. Do not use BrowserResearch, do not write another HTML file, do not ask the user for a path, and do not end this turn.',
+      'The Bash command must create PNG files in the active session workDir. After the command succeeds, inspect the screenshots before claiming delivery.',
+      'This is a server-enforced strict visual workflow for Expert ' + recovery.expertId + '.',
+      '</strict-visual-render-qa-recovery>',
+    ].join('\n')
+  }
+
   const requirement = recovery.kind === 'design-direction'
     ? [
         'You just presented multiple design directions without the mandatory selection card.',
@@ -2346,11 +2932,31 @@ function buildStrictVisualTerminalRecoveryInstruction(
 
 function sendStrictVisualTerminalProtocolError(
   sessionId: string,
-  code: 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED' | 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE',
+  code:
+    | 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED'
+    | 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE'
+    | 'STRICT_VISUAL_REFERENCE_RESEARCH_REQUIRED'
+    | 'STRICT_VISUAL_REFERENCE_RESEARCH_RECOVERY_UNAVAILABLE'
+    | 'STRICT_VISUAL_RENDER_QA_REQUIRED'
+    | 'STRICT_VISUAL_RENDER_QA_RECOVERY_UNAVAILABLE'
+    | 'STRICT_VISUAL_REVIEW_REQUIRED'
+    | 'STRICT_VISUAL_REVIEW_RECOVERY_UNAVAILABLE',
 ): void {
   const message = code === 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED'
     ? 'The strict UIUX Expert ended a choice turn without AskUserQuestion twice. No production action was started; retry the choice step.'
-    : 'The strict UIUX Expert could not deliver its required AskUserQuestion recovery turn. No production action was started; retry the choice step.'
+    : code === 'STRICT_VISUAL_REFERENCE_RESEARCH_REQUIRED'
+      ? 'The strict UIUX Expert was asked to use public visual references but did not read two successful website screenshots. No visual delivery was accepted.'
+      : code === 'STRICT_VISUAL_REFERENCE_RESEARCH_RECOVERY_UNAVAILABLE'
+        ? 'The strict UIUX Expert could not deliver its required website visual-reference recovery turn. No visual delivery was accepted.'
+        : code === 'STRICT_VISUAL_RENDER_QA_REQUIRED'
+      ? 'The strict UIUX Expert wrote HTML but did not complete a successful Playwright/Chromium PNG render twice. No visual delivery was accepted.'
+      : code === 'STRICT_VISUAL_RENDER_QA_RECOVERY_UNAVAILABLE'
+        ? 'The strict UIUX Expert could not deliver its required local visual-QA recovery turn. No visual delivery was accepted.'
+        : code === 'STRICT_VISUAL_REVIEW_REQUIRED'
+          ? 'The strict UIUX Expert rendered PNGs but skipped the required image-based critique, revision, rerender, and finalization cycle. No visual delivery was accepted.'
+          : code === 'STRICT_VISUAL_REVIEW_RECOVERY_UNAVAILABLE'
+            ? 'The strict UIUX Expert could not run its required image-review recovery turn. No visual delivery was accepted.'
+            : 'The strict UIUX Expert could not deliver its required AskUserQuestion recovery turn. No production action was started; retry the choice step.'
   sendToSession(sessionId, {
     type: 'error',
     code,
@@ -2538,6 +3144,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
             if (block.type === 'tool_use' && streamState.pendingToolBlocks.has(block.id)) {
               const pending = streamState.pendingToolBlocks.get(block.id)!
               streamState.pendingToolBlocks.delete(block.id)
+              recordAssistantToolUse(streamState, pending.toolName || block.name, block.input, block.id)
               rememberToolParentUseId(streamState, block.id, pending.parentToolUseId)
               messages.push({
                 type: 'tool_use_complete',
@@ -2556,7 +3163,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
               messages.push({ type: 'content_start', blockType: 'text' })
               messages.push({ type: 'content_delta', text: block.text })
             } else if (block.type === 'tool_use') {
-              recordAssistantToolUse(streamState, block.name)
+              recordAssistantToolUse(streamState, block.name, block.input, block.id)
               const parentToolUseId = cliParentToolUseId(cliMsg)
               rememberToolParentUseId(streamState, block.id, parentToolUseId)
               messages.push({
@@ -2609,6 +3216,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         for (const block of cliMsg.message.content) {
           if (block.type === 'tool_result') {
             recordWorkflowProtocolToolRegistryError(streamState, block)
+            recordStrictVisualQaToolResult(streamState, block)
             const rememberedParentToolUseId = consumeToolParentUseId(streamState, block.tool_use_id)
             const parentToolUseId =
               cliParentToolUseId(cliMsg) ?? rememberedParentToolUseId
@@ -2644,7 +3252,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
           const index = event.index ?? 0
 
           if (contentBlock.type === 'tool_use') {
-            recordAssistantToolUse(streamState, contentBlock.name)
+            recordAssistantToolUse(streamState, contentBlock.name, contentBlock.input, contentBlock.id)
             const parentToolUseId = cliParentToolUseId(cliMsg)
             streamState.activeBlockTypes.set(index, 'tool_use')
             // Track tool info so content_block_stop can emit complete data
@@ -2708,6 +3316,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
               try { parsedInput = JSON.parse(toolBlock.inputJson) } catch {}
 
               if (parsedInput !== null) {
+                recordAssistantToolUse(streamState, toolBlock.toolName, parsedInput, toolBlock.toolUseId)
                 rememberToolParentUseId(streamState, toolBlock.toolUseId, parentToolUseId)
                 return [{
                   type: 'tool_use_complete',
@@ -3269,7 +3878,7 @@ function broadcastCliMessagesToSession(sessionId: string, cliMsg: any): void {
     if (message.type === 'permission_request' && message.toolName === 'AskUserQuestion') {
       void enqueueWorkflowSessionTransition(sessionId, async () => {
         const boundRequest = await recordWorkflowAskUserQuestion(sessionId, message)
-        broadcastServerMessageToSession(sessionId, boundRequest)
+        if (boundRequest) broadcastServerMessageToSession(sessionId, boundRequest)
       }).catch((error) => {
         console.warn(`[WS] Failed to persist AskUserQuestion state for ${sessionId}:`, error)
         sendToSession(sessionId, {
@@ -3557,26 +4166,62 @@ async function finalizeClientResult(sessionId: string, cliMsg: any): Promise<voi
     : null
 
   if (strictVisualRecovery) {
-    if (turn.recoveryAttempts >= 1) {
-      sendStrictVisualTerminalProtocolError(sessionId, 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED')
+    const strictVisualRecoveryAttempts = strictVisualRecovery.kind === 'visual-reference-research'
+      ? turn.referenceResearchRecoveryAttempts
+      : strictVisualRecovery.kind === 'render-qa'
+        ? turn.renderQaRecoveryAttempts
+        : strictVisualRecovery.kind === 'visual-review'
+          ? turn.visualReviewRecoveryAttempts
+          : turn.recoveryAttempts
+    const requiredErrorCode = strictVisualRecovery.kind === 'visual-reference-research'
+      ? 'STRICT_VISUAL_REFERENCE_RESEARCH_REQUIRED'
+      : strictVisualRecovery.kind === 'render-qa'
+        ? 'STRICT_VISUAL_RENDER_QA_REQUIRED'
+        : strictVisualRecovery.kind === 'visual-review'
+          ? 'STRICT_VISUAL_REVIEW_REQUIRED'
+          : 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED'
+    const unavailableErrorCode = strictVisualRecovery.kind === 'visual-reference-research'
+      ? 'STRICT_VISUAL_REFERENCE_RESEARCH_RECOVERY_UNAVAILABLE'
+      : strictVisualRecovery.kind === 'render-qa'
+        ? 'STRICT_VISUAL_RENDER_QA_RECOVERY_UNAVAILABLE'
+        : strictVisualRecovery.kind === 'visual-review'
+          ? 'STRICT_VISUAL_REVIEW_RECOVERY_UNAVAILABLE'
+          : 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE'
+
+    if (strictVisualRecoveryAttempts >= 1) {
+      sendStrictVisualTerminalProtocolError(sessionId, requiredErrorCode)
       finishWorkflowInteractionTurn(sessionId)
       return
     }
 
     if (!conversationService.hasSession(sessionId)) {
-      sendStrictVisualTerminalProtocolError(sessionId, 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE')
+      sendStrictVisualTerminalProtocolError(sessionId, unavailableErrorCode)
       finishWorkflowInteractionTurn(sessionId)
       return
     }
 
     const streamState = getStreamState(sessionId)
-    streamState.structuredInteractionRecoveryAttempts += 1
+    if (strictVisualRecovery.kind === 'visual-reference-research') {
+      streamState.strictVisualReferenceResearchRecoveryAttempts += 1
+    } else if (strictVisualRecovery.kind === 'render-qa') {
+      streamState.strictVisualRenderRecoveryAttempts += 1
+    } else if (strictVisualRecovery.kind === 'visual-review') {
+      streamState.strictVisualReviewRecoveryAttempts += 1
+    } else {
+      streamState.structuredInteractionRecoveryAttempts += 1
+    }
     sendToSession(sessionId, {
       type: 'status',
       state: 'thinking',
-      verb: strictVisualRecovery.kind === 'design-direction'
-        ? 'Generating required design-direction choices'
-        : 'Generating required choices',
+      verb: strictVisualRecovery.kind === 'visual-reference-research'
+        ? 'Reading locked visual reference websites'
+        : strictVisualRecovery.kind === 'render-qa'
+          ? 'Running required local visual QA'
+          : strictVisualRecovery.kind === 'visual-review'
+            ? 'Critiquing and finalizing rendered UI'
+            : strictVisualRecovery.kind === 'design-direction'
+            ? 'Generating required design-direction choices'
+            : 'Generating required choices',
     })
     const sent = conversationService.sendMessage(
       sessionId,
@@ -3584,7 +4229,7 @@ async function finalizeClientResult(sessionId: string, cliMsg: any): Promise<voi
     )
     if (sent) return
 
-    sendStrictVisualTerminalProtocolError(sessionId, 'STRICT_VISUAL_ASK_USER_QUESTION_RECOVERY_UNAVAILABLE')
+    sendStrictVisualTerminalProtocolError(sessionId, unavailableErrorCode)
     finishWorkflowInteractionTurn(sessionId)
     return
   }
@@ -3789,7 +4434,8 @@ async function getRuntimeSettingsWithWorkflowPolicy(
   const expertSystemPrompt = workflowIsActive
     ? null
     : buildExpertRuntimeTurnInstruction(expert, { modelId: settings.model })
-  const expertSessionId = !workflowIsActive && hasActiveExpertRuntime(expert) && expert.runtimeBinding.outputMode === 'template-fill'
+  const expertSessionId = !workflowIsActive && hasActiveExpertRuntime(expert) &&
+    expert.runtimeBinding.outputMode === 'template-fill'
     ? sessionId
     : undefined
   const disallowedTools = [...new Set([
@@ -3820,6 +4466,8 @@ function buildWorkflowRuntimeBindingInstruction(
 ): string | null {
   if (!state || getWorkflowScopedToolNames(state).length === 0 || !state.activePhaseId) return null
 
+  const startupPrompt = typeof state.startupPrompt === 'string' ? state.startupPrompt.trim() : ''
+
   return [
     '<desktop-workflow-runtime-binding>',
     `This CLI process is authoritatively bound to Desktop workflow session ${sessionId} and active phase ${state.activePhaseId}.`,
@@ -3828,6 +4476,14 @@ function buildWorkflowRuntimeBindingInstruction(
     'Use the actual current tool result as the only source of truth. When this phase is ready, call submit_phase_completion with status, handoff, rationale, and evidence; do not replace it with prose or continue into a later phase.',
     'Use request_workflow_route only for a true non-linear route, rework, jump_to_phase, pause/resume, or finish. Never call it merely to enter the immediate linear next phase already represented by the pending completion; after a Stage 4 repair, a confirmed normal completion enters Stage 5 automatically.',
     'Obey the current phase tool policy even if an older transcript turn used a now-forbidden tool.',
+    ...(startupPrompt
+      ? [
+          '<desktop-workflow-startup-context>',
+          'Use this persisted workflow handoff before relying on workflow artifacts. The current user request and resumed conversation take precedence over stale or conflicting .workflow notes.',
+          startupPrompt,
+          '</desktop-workflow-startup-context>',
+        ]
+      : []),
     '</desktop-workflow-runtime-binding>',
   ].join('\n')
 }

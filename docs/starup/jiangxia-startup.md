@@ -39,14 +39,21 @@ cd adapters && bun install && cd ..
 
 ## Desktop Development
 
-Build the desktop frontend before launching Tauri on a fresh checkout:
+Build the desktop frontend and Sidecar before launching Tauri on a fresh checkout:
 
 ```bash
-cd desktop && bun run build && cd ..
-cd desktop && bun run tauri dev
+cd desktop && bun run build && bun run build:sidecars
+cd desktop && bun run dev:desktop
 ```
 
-The Tauri dev command starts the desktop window and its local services. If you
+`dev:desktop` runs Tauri with its native file watcher disabled. This is the
+stable Windows default because the managed Node, Chromium, Git, Skill, and Pack
+resources under `src-tauri/binaries` are large and can otherwise trigger repeated
+native restarts after a Sidecar rebuild. Frontend Vite refresh remains available;
+after changing Rust or Sidecar resources, rebuild and restart `dev:desktop`
+explicitly.
+
+The desktop command starts the desktop window and its local services. If you
 only need the frontend web UI, use:
 
 ```bash
@@ -132,6 +139,6 @@ rustup update
 | `SERVER_PORT=3456 bun run src/server/index.ts` | Run local API/WebSocket server |
 | `cd desktop && bun run dev` | Run Vite frontend |
 | `cd desktop && bun run build` | Type-check and build desktop frontend |
-| `cd desktop && bun run tauri dev` | Run Tauri desktop app |
+| `cd desktop && bun run dev:desktop` | Run the stable Tauri desktop app (no native file watcher) |
 | `cd desktop && bun run test` | Run desktop tests |
 | `cd desktop && bun run lint` | Run desktop TypeScript check |

@@ -191,7 +191,10 @@ function activePhaseDefinition(
 }
 
 const SKILLS_DEVELOPMENT_TEMPLATE_ID = 'skills-development'
-const SKILLS_DEVELOPMENT_SCOPE_PLAN_PHASE_ID = 'scope-plan'
+const WORKFLOWS_ALLOWING_FOLLOW_UP_QUESTIONS_BEFORE_EVIDENCE = new Set([
+  'feature-extension-workflow-v8',
+  'debug-repair-workflow-v8',
+])
 
 type SkillsDevelopmentScopePlanQuestionPolicy = {
   exactQuestionCount: number
@@ -202,13 +205,17 @@ type SkillsDevelopmentScopePlanQuestionPolicy = {
   disallowComputerUse: boolean
 }
 
+type NecessaryWorkflowQuestionPolicy = {
+  requireNecessaryQuestion: true
+  requireAnswerProcessingBeforeNextQuestion: boolean
+}
+
 function workflowTemplateId(state: WorkflowSessionState): string | null {
   return state.templateIdentity?.id ?? state.templateSnapshot?.id ?? state.template?.id ?? null
 }
 
-function isSkillsDevelopmentScopePlan(state: WorkflowSessionState): boolean {
-  return state.activePhaseId === SKILLS_DEVELOPMENT_SCOPE_PLAN_PHASE_ID
-    && workflowTemplateId(state) === SKILLS_DEVELOPMENT_TEMPLATE_ID
+function isSkillsDevelopmentWorkflow(state: WorkflowSessionState): boolean {
+  return workflowTemplateId(state) === SKILLS_DEVELOPMENT_TEMPLATE_ID
 }
 
 function positiveInteger(value: unknown): number | null {
@@ -218,7 +225,7 @@ function positiveInteger(value: unknown): number | null {
 function getSkillsDevelopmentScopePlanQuestionPolicy(
   state: WorkflowSessionState | null | undefined,
 ): SkillsDevelopmentScopePlanQuestionPolicy | null {
-  if (!isActiveWorkflowState(state) || !isSkillsDevelopmentScopePlan(state)) return null
+  if (!isActiveWorkflowState(state) || !isSkillsDevelopmentWorkflow(state)) return null
 
   const policy = activePhaseDefinition(state)?.runtimeContract?.questionPolicy
   if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return null
@@ -252,6 +259,82 @@ function getSkillsDevelopmentScopePlanQuestionPolicy(
   }
 }
 
+function getNecessaryWorkflowQuestionPolicy(
+  state: WorkflowSessionState | null | undefined,
+): NecessaryWorkflowQuestionPolicy | null {
+  if (!isActiveWorkflowState(state)) return null
+
+  const policy = activePhaseDefinition(state)?.runtimeContract?.questionPolicy
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return null
+
+  if (policy.requireNecessaryQuestion !== true) return null
+
+  return {
+    requireNecessaryQuestion: true,
+    // Existing sessions retain their template snapshot. Keep Feature/Debug
+    // sessions created from older packs from reviving the retired per-question
+    // hard stop after the application is updated.
+    requireAnswerProcessingBeforeNextQuestion: policy.requireAnswerProcessingBeforeNextQuestion === true
+      && !WORKFLOWS_ALLOWING_FOLLOW_UP_QUESTIONS_BEFORE_EVIDENCE.has(workflowTemplateId(state) ?? ''),
+  }
+}
+
+function hasAnsweredQuestionPendingProcessing(state: WorkflowSessionState): boolean {
+  const phaseId = state.activePhaseId
+  if (!phaseId) return false
+
+  return state.runtimeContract?.phaseStates[phaseId]?.issues.some((issue) => (
+    issue.source === 'ask-user-question'
+    && issue.status === 'answered-pending-processing'
+  )) ?? false
+}
+
+function getNecessaryWorkflowQuestionViolation(
+  input: unknown,
+  state: WorkflowSessionState,
+  policy: NecessaryWorkflowQuestionPolicy,
+): string | null {
+  const phaseLabel = state.activePhaseId ?? 'active phase'
+  const contractLabel = workflowTemplateId(state) + '/' + phaseLabel
+  const questions = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as Record<string, unknown>).questions
+    : undefined
+
+  if (!Array.isArray(questions) || questions.length !== 1) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel
+      + ' allows exactly one necessary blocking question per AskUserQuestion call. Reissue one question only.'
+  }
+
+  const question = questions[0]
+  if (!question || typeof question !== 'object' || Array.isArray(question)) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel
+      + ' requires one structured necessary blocking question.'
+  }
+
+  const context = question as Record<string, unknown>
+  if (context.blocksCompletion !== true) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel
+      + ' only allows a necessary blocking question. Set blocksCompletion to true or continue with a conservative default.'
+  }
+
+  if (typeof context.blockingReason !== 'string' || !context.blockingReason.trim()) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel
+      + ' requires a non-empty blockingReason explaining why the request, workspace, logs, and artifacts cannot answer this question.'
+  }
+
+  if (typeof context.answerImpact !== 'string' || !context.answerImpact.trim()) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel
+      + ' requires a non-empty answerImpact explaining the concrete implementation, investigation, or acceptance decision the answer will change.'
+  }
+
+  if (policy.requireAnswerProcessingBeforeNextQuestion && hasAnsweredQuestionPendingProcessing(state)) {
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel
+      + ' already has an answered question pending processing. Apply the user answer to current-phase work and update current-phase evidence before asking another question.'
+  }
+
+  return null
+}
+
 export function getWorkflowQuestionCardContractViolation(
   toolName: string,
   input: unknown,
@@ -260,25 +343,32 @@ export function getWorkflowQuestionCardContractViolation(
   if (toolName !== 'AskUserQuestion') return null
 
   const policy = getSkillsDevelopmentScopePlanQuestionPolicy(state)
-  if (!policy) return null
+  if (!policy) {
+    const necessaryQuestionPolicy = getNecessaryWorkflowQuestionPolicy(state)
+    return necessaryQuestionPolicy
+      ? getNecessaryWorkflowQuestionViolation(input, state, necessaryQuestionPolicy)
+      : null
+  }
+  const phaseLabel = state?.activePhaseId ?? 'active phase'
+  const contractLabel = SKILLS_DEVELOPMENT_TEMPLATE_ID + '/' + phaseLabel
 
   const questions = input && typeof input === 'object' && !Array.isArray(input)
     ? (input as Record<string, unknown>).questions
     : undefined
   if (!Array.isArray(questions) || questions.length !== policy.exactQuestionCount) {
-    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: skills-development/scope-plan requires exactly '
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel + ' requires exactly '
       + policy.exactQuestionCount + ' decision question per AskUserQuestion call. Reissue one question only.'
   }
 
   const question = questions[0]
   if (!question || typeof question !== 'object' || Array.isArray(question)) {
-    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: skills-development/scope-plan requires one structured decision question.'
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel + ' requires one structured decision question.'
   }
 
   const choices = (question as Record<string, unknown>).choices
     ?? (question as Record<string, unknown>).options
   if (!Array.isArray(choices) || choices.length < policy.minChoices || choices.length > policy.maxChoices) {
-    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: skills-development/scope-plan decision cards require exactly '
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel + ' decision cards require exactly '
       + policy.minChoices + '–' + policy.maxChoices + ' choices. Reissue the same decision with '
       + policy.minChoices + ' or ' + policy.maxChoices + ' choices.'
   }
@@ -288,7 +378,7 @@ export function getWorkflowQuestionCardContractViolation(
     ? (firstChoice as Record<string, unknown>).label
     : undefined
   if (typeof firstLabel !== 'string' || !firstLabel.includes(policy.firstChoiceLabelIncludes)) {
-    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: the first choice label must include "'
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel + ' first choice label must include "'
       + policy.firstChoiceLabelIncludes + '". Reissue the question with the recommended choice first.'
   }
 
@@ -298,7 +388,7 @@ export function getWorkflowQuestionCardContractViolation(
     return typeof description !== 'string' || !description.trim()
   })
   if (missingDescription) {
-    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: every choice needs a non-empty user-facing description. Reissue the question with descriptions for all choices.'
+    return 'WORKFLOW_QUESTION_CONTRACT_VIOLATION: ' + contractLabel + ' decision cards require that every choice needs a non-empty user-facing description. Reissue the question with descriptions for all choices.'
   }
 
   return null

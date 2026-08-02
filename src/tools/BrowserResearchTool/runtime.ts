@@ -2,6 +2,8 @@
 import { cp, mkdir } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { join } from 'node:path'
+
+const BROWSER_RESEARCH_PLAYWRIGHT_RUNNER_FILE = 'browser-research-playwright-runner.cjs'
 import { getAppStoragePath } from '../../utils/appIdentity.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 
@@ -33,12 +35,29 @@ export async function seedBundledBrowserResearchRuntime(
   bundledRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR,
 ): Promise<boolean> {
   const runtimeDir = getBrowserResearchRuntimeDir(configDir)
-  if (getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir)) return false
-  if (!bundledRuntimeDir || !getBrowserResearchExecutablePathFromRuntimeDir(bundledRuntimeDir)) return false
+  const localExecutable = getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir)
+  const localRunnerPath = join(runtimeDir, BROWSER_RESEARCH_PLAYWRIGHT_RUNNER_FILE)
+  if (localExecutable && existsSync(localRunnerPath)) return false
+
+  const bundledExecutable = bundledRuntimeDir
+    ? getBrowserResearchExecutablePathFromRuntimeDir(bundledRuntimeDir)
+    : null
+  const bundledRunnerPath = bundledRuntimeDir
+    ? join(bundledRuntimeDir, BROWSER_RESEARCH_PLAYWRIGHT_RUNNER_FILE)
+    : null
+  if (!bundledRuntimeDir || !bundledExecutable || !bundledRunnerPath || !existsSync(bundledRunnerPath)) return false
 
   await mkdir(runtimeDir, { recursive: true })
-  await cp(bundledRuntimeDir, runtimeDir, { recursive: true, force: true })
+  if (localExecutable) {
+    // Preserve an already-downloaded local Chromium while backfilling a
+    // runner introduced by a newer desktop sidecar build.
+    await cp(bundledRunnerPath, localRunnerPath, { force: true })
+  } else {
+    await cp(bundledRuntimeDir, runtimeDir, { recursive: true, force: true })
+  }
+
   return getBrowserResearchExecutablePathFromRuntimeDir(runtimeDir) !== null
+    && existsSync(localRunnerPath)
 }
 
 function isPrivateIpv4(hostname: string): boolean {
@@ -102,12 +121,19 @@ export function isBrowserResearchRuntimeInstalled(configDir = getClaudeConfigHom
   return getBrowserResearchExecutablePath(configDir) !== null
 }
 
+export function resolveBrowserResearchExecutablePath(
+  configDir = getClaudeConfigHomeDir(),
+  bundledRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR,
+): string | null {
+  return getBrowserResearchExecutablePath(configDir)
+    ?? (bundledRuntimeDir ? getBrowserResearchExecutablePathFromRuntimeDir(bundledRuntimeDir) : null)
+}
+
 export function isBrowserResearchRuntimeAvailable(
   configDir = getClaudeConfigHomeDir(),
   bundledRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR,
 ): boolean {
-  return getBrowserResearchExecutablePath(configDir) !== null
-    || Boolean(bundledRuntimeDir && getBrowserResearchExecutablePathFromRuntimeDir(bundledRuntimeDir))
+  return resolveBrowserResearchExecutablePath(configDir, bundledRuntimeDir) !== null
 }
 
 export function summarizeBrowserResearchText(text: string, maxChars = 24_000): { text: string; truncated: boolean } {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { agentBrowserCommand, desktopViteCommand, resolveDesktopSmokeRuntimeSelection } from './execute'
+import { agentBrowserCommand, desktopViteCommand, resolveDesktopSmokeRuntimeSelection, verifyDesktopSmokeChangedFiles } from './execute'
 
 describe('desktop smoke runtime selection', () => {
   test('lets current-runtime use the desktop default active provider', () => {
@@ -28,6 +28,18 @@ describe('desktop smoke runtime selection', () => {
       providerId: 'provider-a',
       modelId: 'model-a',
     })
+  })
+})
+
+describe('desktop smoke changed-file verification', () => {
+  test('normalizes Windows path separators before applying the allowed-change contract', () => {
+    expect(() => verifyDesktopSmokeChangedFiles(['src\\greeting.ts'])).not.toThrow()
+  })
+
+  test('rejects files outside the greeting fixture contract', () => {
+    expect(() => verifyDesktopSmokeChangedFiles(['src/greeting.ts', 'package.json'])).toThrow(
+      'desktop smoke changed unexpected files: package.json',
+    )
   })
 })
 

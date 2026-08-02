@@ -3,6 +3,7 @@ import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, Ci
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionTurnCheckpoint } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
+import { useSessionStore } from '../../stores/sessionStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { useTeamStore } from '../../stores/teamStore'
@@ -19,8 +20,10 @@ import { PermissionDialog } from './PermissionDialog'
 import { AskUserQuestion } from './AskUserQuestion'
 import { StreamingIndicator } from './StreamingIndicator'
 import { InlineTaskSummary } from './InlineTaskSummary'
-import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
+import { CurrentTurnChangeCard, relativizeWorkspacePath } from './CurrentTurnChangeCard'
+import { ModeChangeSummaryCard } from './ModeChangeSummaryCard'
 import type { AgentTaskNotification, UIMessage } from '../../types/chat'
+import type { SessionListItem } from '../../types/session'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
 
@@ -53,6 +56,15 @@ type TurnChangeCardModel = {
   checkpoint: SessionTurnCheckpoint
   workDir: string | null
   isLatest: boolean
+}
+
+export type TurnChangeDisplayMode = 'per-turn' | 'deferred' | 'final-summary'
+
+export type ModeChangeSummary = {
+  files: string[]
+  insertions: number
+  deletions: number
+  turnCount: number
 }
 
 type ChatMessageRole = 'user' | 'assistant'
@@ -408,7 +420,108 @@ function appendChildToolCall(
   }
 }
 
+const WORKFLOW_QUESTION_CONTRACT_VIOLATION = 'WORKFLOW_QUESTION_CONTRACT_VIOLATION'
+const ANSWERED_QUESTION_RESULT_PREFIX = 'User has answered your questions:'
+
+function toolResultContentToText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+
+  return content
+    .map((block) => {
+      if (typeof block === 'string') return block
+      if (!block || typeof block !== 'object') return ''
+      const textBlock = block as { type?: unknown; text?: unknown }
+      return textBlock.type === 'text' && typeof textBlock.text === 'string'
+        ? textBlock.text
+        : ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function isWorkflowQuestionContractFailure(result: ToolResult | undefined): boolean {
+  return Boolean(
+    result?.isError
+      && toolResultContentToText(result.content).includes(WORKFLOW_QUESTION_CONTRACT_VIOLATION),
+  )
+}
+
+function isAnsweredAskUserQuestion(result: ToolResult | undefined): boolean {
+  return Boolean(
+    result
+      && !result.isError
+      && toolResultContentToText(result.content).includes(ANSWERED_QUESTION_RESULT_PREFIX),
+  )
+}
+
+/**
+ * A workflow can reject an invalid AskUserQuestion card and then retry with a
+ * valid card in the same user turn. Keep the transcript intact, but hide the
+ * superseded failed card and its internal contract error once the retry has
+ * actually received a user answer.
+ */
+export function filterRecoveredWorkflowQuestionContractFailures(messages: UIMessage[]): UIMessage[] {
+  const toolResultsById = new Map<string, ToolResult>()
+  const askUserQuestionIndexesById = new Map<string, number>()
+
+  messages.forEach((message, index) => {
+    if (message.type === 'tool_result') {
+      toolResultsById.set(message.toolUseId, message)
+    }
+    if (message.type === 'tool_use' && message.toolName === 'AskUserQuestion') {
+      askUserQuestionIndexesById.set(message.toolUseId, index)
+    }
+  })
+
+  const recoveredRanges: Array<{ start: number; end: number; toolUseId: string }> = []
+
+  for (const [toolUseId, start] of askUserQuestionIndexesById) {
+    if (!isWorkflowQuestionContractFailure(toolResultsById.get(toolUseId))) continue
+
+    for (let index = start + 1; index < messages.length; index += 1) {
+      const message = messages[index]!
+      if (message.type === 'user_text') break
+      if (message.type !== 'tool_result') continue
+
+      const retriedQuestionIndex = askUserQuestionIndexesById.get(message.toolUseId)
+      if (retriedQuestionIndex === undefined || retriedQuestionIndex <= start) continue
+      if (isAnsweredAskUserQuestion(message)) {
+        recoveredRanges.push({ start, end: index, toolUseId })
+        break
+      }
+    }
+  }
+
+  if (recoveredRanges.length === 0) return messages
+
+  return messages.filter((message, index) => {
+    for (const recovered of recoveredRanges) {
+      if (message.type === 'tool_use' && message.toolUseId === recovered.toolUseId) {
+        return false
+      }
+      if (
+        message.type === 'tool_result'
+        && message.toolUseId === recovered.toolUseId
+        && isWorkflowQuestionContractFailure(message)
+      ) {
+        return false
+      }
+      if (
+        message.type === 'error'
+        && message.code === WORKFLOW_QUESTION_CONTRACT_VIOLATION
+        && index >= recovered.start
+        && index <= recovered.end
+      ) {
+        return false
+      }
+    }
+    return true
+  })
+}
+
 export function buildRenderModel(messages: UIMessage[]): RenderModel {
+  const visibleMessages = filterRecoveredWorkflowQuestionContractFailures(messages)
   const items: RenderItem[] = []
   const toolResultMap = new Map<string, ToolResult>()
   const childToolCallsByParent = new Map<string, ToolCall[]>()
@@ -435,7 +548,7 @@ export function buildRenderModel(messages: UIMessage[]): RenderModel {
     pendingToolCalls.push(toolCall)
   }
 
-  for (const msg of messages) {
+  for (const msg of visibleMessages) {
     if (msg.type === 'tool_use') {
       toolUseIds.add(msg.toolUseId)
     }
@@ -444,7 +557,7 @@ export function buildRenderModel(messages: UIMessage[]): RenderModel {
     }
   }
 
-  for (const msg of messages) {
+  for (const msg of visibleMessages) {
     if (msg.type === 'assistant_text' && !msg.content.trim()) {
       continue
     }
@@ -530,6 +643,49 @@ export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget
 export function getLatestCompletedTurnTarget(messages: UIMessage[]): RewindTurnTarget | null {
   const completedTurns = getCompletedTurnTargets(messages)
   return completedTurns.length > 0 ? completedTurns[completedTurns.length - 1] ?? null : null
+}
+
+export function getTurnChangeDisplayMode(
+  session: Pick<SessionListItem, 'workflow' | 'expert'> | undefined,
+): TurnChangeDisplayMode {
+  if (session?.workflow) {
+    return ['completed', 'failed', 'cancelled'].includes(session.workflow.status)
+      ? 'final-summary'
+      : 'deferred'
+  }
+
+  if (session?.expert) {
+    return ['completed', 'exited', 'failed'].includes(session.expert.status)
+      ? 'final-summary'
+      : 'deferred'
+  }
+
+  return 'per-turn'
+}
+
+export function buildModeChangeSummary(cards: TurnChangeCardModel[]): ModeChangeSummary | null {
+  if (cards.length === 0) return null
+
+  const files = new Map<string, string>()
+  let insertions = 0
+  let deletions = 0
+
+  for (const card of cards) {
+    insertions += card.checkpoint.code.insertions
+    deletions += card.checkpoint.code.deletions
+    for (const filePath of card.checkpoint.code.filesChanged) {
+      if (!files.has(filePath)) {
+        files.set(filePath, relativizeWorkspacePath(filePath, card.workDir))
+      }
+    }
+  }
+
+  return {
+    files: [...files.values()],
+    insertions,
+    deletions,
+    turnCount: cards.length,
+  }
 }
 
 export function buildTurnCardInsertionMap(
@@ -751,6 +907,10 @@ export function MessageList({ sessionId, compact = false, workflowTransitionCard
   const sessionState = useChatStore((s) =>
     resolvedSessionId ? s.sessions[resolvedSessionId] : undefined,
   )
+  const sessionSummary = useSessionStore((s) =>
+    resolvedSessionId ? s.sessions.find((session) => session.id === resolvedSessionId) : undefined,
+  )
+  const turnChangeDisplayMode = getTurnChangeDisplayMode(sessionSummary)
   const stopGeneration = useChatStore((s) => s.stopGeneration)
   const reloadHistory = useChatStore((s) => s.reloadHistory)
   const queueComposerPrefill = useChatStore((s) => s.queueComposerPrefill)
@@ -922,8 +1082,16 @@ export function MessageList({ sessionId, compact = false, workflowTransitionCard
       ? completedTurnTargets[completedTurnTargets.length - 1]?.messageId ?? null
       : null
   const turnCardsByRenderIndex = useMemo(
-    () => buildTurnCardInsertionMap(renderItems, turnChangeCards),
-    [renderItems, turnChangeCards],
+    () => turnChangeDisplayMode === 'per-turn'
+      ? buildTurnCardInsertionMap(renderItems, turnChangeCards)
+      : new Map<number, TurnChangeCardModel[]>(),
+    [renderItems, turnChangeCards, turnChangeDisplayMode],
+  )
+  const modeChangeSummary = useMemo(
+    () => turnChangeDisplayMode === 'final-summary'
+      ? buildModeChangeSummary(turnChangeCards)
+      : null,
+    [turnChangeCards, turnChangeDisplayMode],
   )
   const confirmTurnCard = useMemo(
     () => turnChangeCards.find((card) => card.target.messageId === turnUndoConfirmTargetId) ?? null,
@@ -931,7 +1099,12 @@ export function MessageList({ sessionId, compact = false, workflowTransitionCard
   )
 
   useEffect(() => {
-    if (!resolvedSessionId || completedTurnTargets.length === 0 || isMemberSession) {
+    if (
+      !resolvedSessionId ||
+      completedTurnTargets.length === 0 ||
+      isMemberSession ||
+      turnChangeDisplayMode === 'deferred'
+    ) {
       setTurnChangeCards([])
       setTurnChangeLoadError(null)
       setIsLoadingTurnChangeCards(false)
@@ -992,7 +1165,14 @@ export function MessageList({ sessionId, compact = false, workflowTransitionCard
     return () => {
       cancelled = true
     }
-  }, [chatState, completedTurnTargets, isMemberSession, latestCompletedTurnId, resolvedSessionId])
+  }, [
+    chatState,
+    completedTurnTargets,
+    isMemberSession,
+    latestCompletedTurnId,
+    resolvedSessionId,
+    turnChangeDisplayMode,
+  ])
 
   const handleUndoCurrentTurn = useCallback(async () => {
     if (!resolvedSessionId || !confirmTurnCard || rewindingTurnId) return
@@ -1136,6 +1316,10 @@ export function MessageList({ sessionId, compact = false, workflowTransitionCard
             <div className="mt-2" data-testid="workflow-transition-chat-card">
               {workflowTransitionCard}
             </div>
+          ) : null}
+
+          {modeChangeSummary ? (
+            <ModeChangeSummaryCard summary={modeChangeSummary} />
           ) : null}
 
           {!isLoadingTurnChangeCards && turnChangeCards.length === 0 && turnChangeLoadError && (

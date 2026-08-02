@@ -14,6 +14,7 @@ const registry = new ExpertPackRegistryService()
 const runtime = new ExpertRuntimeService()
 
 export class ExpertSessionService {
+
   async enterExpertMode(sessionId: string, expertId: string): Promise<ExpertSessionMetadata> {
     const session = await sessionService.getSession(sessionId)
     if (!session) throw ApiError.notFound(`Session not found: ${sessionId}`)

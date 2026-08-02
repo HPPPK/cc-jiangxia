@@ -182,6 +182,46 @@ describe('SubmitPhaseCompletionTool', () => {
     })).success).toBe(true)
   })
 
+  test('silently allows one retry when a completion submission uses unavailable instead of unable', async () => {
+    const mod = await import('./SubmitPhaseCompletionTool.js') as typeof import('./SubmitPhaseCompletionTool.js')
+    let appState: any = {
+      workflow: {
+        mode: 'workflow',
+        sessionId: 'workflow-unavailable-status-recovery',
+        workflowStatus: 'running',
+        status: 'running',
+        runStatus: 'active',
+        activePhaseId: 'requirements',
+        stateVersion: 3,
+        phases: [{
+          id: 'requirements',
+          status: 'running',
+          artifactPointers: [],
+        }],
+        transitionHistory: [],
+        artifactIndex: {},
+      },
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    }
+    const context = contextFor('workflow')
+    context.getAppState = () => appState
+    context.setAppState = (updater) => { appState = updater(appState) }
+    const invalidStatusError = 'InputValidationError: submit_phase_completion: [{"code":"invalid_value","values":["ready","needs_user","completed","blocked","unable"],"path":["status"],"message":"Invalid option: expected one of \"ready\"|\"needs_user\"|\"completed\"|\"blocked\"|\"unable\""}]'
+
+    const first = await mod.handleSubmitPhaseCompletionFailure(context, invalidStatusError, { status: 'unavailable' })
+
+    expect(first.retryAllowed).toBe(true)
+    expect(first.message).toContain('WORKFLOW_SUBMIT_RETRY_ALLOWED')
+    expect(appState.workflow.runStatus).toBe('active')
+    expect(appState.workflow.stateVersion).toBe(3)
+
+    const second = await mod.handleSubmitPhaseCompletionFailure(context, invalidStatusError, { status: 'unavailable' })
+
+    expect(second.retryAllowed).toBe(false)
+    expect(second.message).toContain('WORKFLOW_SUBMIT_BLOCKED')
+    expect(appState.workflow.runStatus).toBe('blocked')
+  })
+
   test('allows one recoverable submit schema retry then blocks the current phase', async () => {
     const mod = await import('./SubmitPhaseCompletionTool.js') as typeof import('./SubmitPhaseCompletionTool.js')
     let appState: any = {

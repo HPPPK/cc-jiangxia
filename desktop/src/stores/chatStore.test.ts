@@ -1800,7 +1800,7 @@ Phase instructions: collect inputs
     expect(setTasksFromTodosMock).toHaveBeenCalledWith(todos, TEST_SESSION_ID)
   })
 
-  it('replays the final runtime selection before prewarming after server connection', () => {
+  it('applies a saved runtime selection without prewarming after server connection', () => {
     let reportServerMessage: ((message: any) => void) | undefined
     onMessageMock.mockImplementation((_sessionId, handler) => {
       reportServerMessage = handler
@@ -1816,20 +1816,16 @@ Phase instructions: collect inputs
 
     reportServerMessage?.({ type: 'connected' })
 
-    expect(sendMock.mock.calls.slice(0, 2)).toEqual([
-      [
-        TEST_SESSION_ID,
-        {
-          type: 'set_runtime_config',
-          providerId: 'provider-1',
-          modelId: 'kimi-k2.6',
-        },
-      ],
-      [TEST_SESSION_ID, { type: 'prewarm_session' }],
-    ])
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'set_runtime_config',
+      providerId: 'provider-1',
+      modelId: 'kimi-k2.6',
+    })
+    expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, { type: 'prewarm_session' })
   })
 
-  it('uses the most recent runtime selection when the server connection becomes ready', () => {
+  it('uses the most recent runtime selection without prewarming when the server connection becomes ready', () => {
     let reportServerMessage: ((message: any) => void) | undefined
     onMessageMock.mockImplementation((_sessionId, handler) => {
       reportServerMessage = handler
@@ -1843,10 +1839,13 @@ Phase instructions: collect inputs
     })
     reportServerMessage?.({ type: 'connected' })
 
-    expect(sendMock.mock.calls.slice(0, 2)).toEqual([
-      [TEST_SESSION_ID, { type: 'set_runtime_config', providerId: 'provider-latest', modelId: 'deepseek-v4-pro' }],
-      [TEST_SESSION_ID, { type: 'prewarm_session' }],
-    ])
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'set_runtime_config',
+      providerId: 'provider-latest',
+      modelId: 'deepseek-v4-pro',
+    })
+    expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, { type: 'prewarm_session' })
   })
 
   it('prewarms regular desktop sessions only after server connection', () => {
@@ -1945,12 +1944,18 @@ Phase instructions: collect inputs
   })
 
   it('clears a replayed saved runtime selection when reconnect startup fails', () => {
+    let reportServerMessage: ((message: any) => void) | undefined
+    onMessageMock.mockImplementation((_sessionId, handler) => {
+      reportServerMessage = handler
+      return () => {}
+    })
     useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, {
       providerId: 'provider-b',
       modelId: 'bad-model',
     })
 
     useChatStore.getState().connectToSession(TEST_SESSION_ID)
+    reportServerMessage?.({ type: 'connected' })
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
       type: 'error',
       code: 'CLI_RESTART_FAILED',

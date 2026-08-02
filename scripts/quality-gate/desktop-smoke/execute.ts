@@ -248,16 +248,21 @@ async function waitForVerifiedProject(
   throw new Error(`Timed out waiting for desktop project verification: ${lastVerificationError}`)
 }
 
-async function verifyProject(originalDir: string, projectDir: string, artifactDir: string) {
-  await writeDiffPatch(originalDir, projectDir, join(artifactDir, 'diff.patch'))
-  const changed = changedFiles(originalDir, projectDir)
-  const unexpected = changed.filter((file) => file !== 'src/greeting.ts')
+export function verifyDesktopSmokeChangedFiles(changed: string[]) {
+  const normalized = changed.map((file) => file.replaceAll('\\', '/'))
+  const unexpected = normalized.filter((file) => file !== 'src/greeting.ts')
   if (unexpected.length > 0) {
     throw new Error(`desktop smoke changed unexpected files: ${unexpected.join(', ')}`)
   }
-  if (!changed.includes('src/greeting.ts')) {
+  if (!normalized.includes('src/greeting.ts')) {
     throw new Error('desktop smoke did not change src/greeting.ts')
   }
+}
+
+async function verifyProject(originalDir: string, projectDir: string, artifactDir: string) {
+  await writeDiffPatch(originalDir, projectDir, join(artifactDir, 'diff.patch'))
+  const changed = changedFiles(originalDir, projectDir)
+  verifyDesktopSmokeChangedFiles(changed)
 
   const implementation = readFileSync(join(projectDir, 'src/greeting.ts'), 'utf8')
   if (!implementation.includes('from desktop smoke!')) {

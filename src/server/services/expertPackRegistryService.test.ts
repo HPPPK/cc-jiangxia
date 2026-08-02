@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { ExpertPackRegistryService, getExpertPackStorageDir, resetExpertPackRegistryForTests } from './expertPackRegistryService.js'
@@ -188,6 +188,11 @@ describe('ExpertPackRegistryService', () => {
       description: 'Updated package description',
       minHostVersion: '1.2.3',
       hostTools: [{ id: 'Read', name: 'Read', purpose: 'Read workspace files.' }],
+      runtimePolicy: {
+        mode: 'strict-visual-workflow',
+        allowedToolNames: ['AskUserQuestion', 'Read', 'Bash'],
+        requiredSkillIds: ['screenshot-ui-redesign', 'playwright-visual-qc'],
+      },
       permissions: [{ id: 'read-workspace', description: 'Read workspace files.' }],
       portability: { selfContained: true, notes: 'Portable expert.' },
       expert: {
@@ -218,7 +223,17 @@ describe('ExpertPackRegistryService', () => {
     }))
     expect(updated.manifest.minHostVersion).toBe('1.2.3')
     expect(updated.manifest.hostTools?.[0]?.id).toBe('Read')
+    expect(updated.manifest.runtimePolicy).toEqual({
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion', 'Read', 'Bash'],
+      requiredSkillIds: ['screenshot-ui-redesign', 'playwright-visual-qc'],
+    })
     expect(updated.experts[0]).toEqual(expect.objectContaining({
+      runtimePolicy: {
+        mode: 'strict-visual-workflow',
+        allowedToolNames: ['AskUserQuestion', 'Read', 'Bash'],
+        requiredSkillIds: ['screenshot-ui-redesign', 'playwright-visual-qc'],
+      },
       name: 'Updated expert',
       description: 'Updated expert description',
       statusLabel: 'Ready for review',
@@ -231,6 +246,74 @@ describe('ExpertPackRegistryService', () => {
     expect(await zip.readText('experts/custom/prompts/system.md')).toBe('# Updated prompt')
     expect(await zip.readText('experts/custom/forms/intake.json')).toContain('welcome')
     expect(await zip.readText('experts/custom-expert/output-protocol.json')).toBe('{"status":"ok"}')
+  })
+
+  it('adds self-contained Skill files during an Expert ZIP update and reloads the saved ZIP', async () => {
+    const service = await makeService()
+    await service.importExpertPackZip(await adapter.write(validPackEntries()))
+
+    const updated = await service.updateExpertPack('custom-expert-pack', {
+      expert: { id: 'custom-expert', skillIds: ['custom-guide', 'project-analysis'] },
+      skills: [{
+        id: 'project-analysis',
+        files: {
+          'SKILL.md': '# Project analysis\n\nExplain a selected project in plain language.\n',
+          'references/checklist.md': '- Identify the application entrypoint.\n',
+        },
+      }],
+    })
+
+    expect(updated.manifest.entrypoints.skills).toEqual(['custom-guide', 'project-analysis'])
+    expect(updated.experts[0]).toEqual(expect.objectContaining({
+      skillIds: ['custom-guide', 'project-analysis'],
+      skillContents: expect.objectContaining({ 'project-analysis': expect.stringContaining('Explain a selected project') }),
+    }))
+
+    const exported = await service.exportExpertPackZip('custom-expert-pack')
+    const zip = await adapter.read(Buffer.from(exported.dataBase64, 'base64'))
+    expect(await zip.readText('skills/project-analysis/SKILL.md')).toContain('Explain a selected project')
+    expect(await zip.readText('skills/project-analysis/references/checklist.md')).toContain('Identify the application entrypoint')
+
+    resetExpertPackRegistryForTests()
+    const reloaded = await new ExpertPackRegistryService().getExpert('custom-expert')
+    expect(reloaded).toEqual(expect.objectContaining({
+      skillIds: ['custom-guide', 'project-analysis'],
+      skillContents: expect.objectContaining({ 'project-analysis': expect.stringContaining('Explain a selected project') }),
+    }))
+  })
+
+  it('validates a Skill update before replacing the stored Expert ZIP', async () => {
+    const service = await makeService()
+    await service.importExpertPackZip(await adapter.write(validPackEntries()))
+    const zipPath = path.join(getExpertPackStorageDir(), 'custom-expert-pack.zip')
+    const before = await readFile(zipPath)
+
+    await expect(service.updateExpertPack('custom-expert-pack', {
+      expert: { id: 'custom-expert', skillIds: ['custom-guide', 'missing-skill'] },
+    })).rejects.toThrow('专家包 Skill 声明不一致：专家引用了未在 manifest 中声明的 Skill：missing-skill')
+
+    expect(await readFile(zipPath)).toEqual(before)
+    resetExpertPackRegistryForTests()
+    expect((await new ExpertPackRegistryService().listPacks()).find((pack) => pack.packId === 'custom-expert-pack'))
+      .toEqual(expect.objectContaining({ packId: 'custom-expert-pack' }))
+  })
+
+  it('rejects the obsolete Skill patch shape before changing the stored Expert ZIP', async () => {
+    const service = await makeService()
+    await service.importExpertPackZip(await adapter.write(validPackEntries()))
+    const zipPath = path.join(getExpertPackStorageDir(), 'custom-expert-pack.zip')
+    const before = await readFile(zipPath)
+
+    await expect(service.updateExpertPack('custom-expert-pack', {
+      expert: { id: 'custom-expert', skillIds: ['custom-guide', 'brainstorming'] },
+      skills: [{ name: 'brainstorming', systemPromptContent: '# Brainstorming' }],
+    } as never)).rejects.toThrow('skills[0] must use { id, files }; the legacy { name, systemPromptContent } shape is not supported.')
+
+    expect(await readFile(zipPath)).toEqual(before)
+    resetExpertPackRegistryForTests()
+    expect(await new ExpertPackRegistryService().getExpert('custom-expert')).toEqual(expect.objectContaining({
+      skillIds: ['custom-guide'],
+    }))
   })
 
   it('rejects a ZIP that contains more than one expert definition', async () => {

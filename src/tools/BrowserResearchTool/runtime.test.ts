@@ -46,24 +46,47 @@ describe('BrowserResearch runtime guardrails', () => {
     expect(isBrowserResearchRuntimeAvailable(configDir, bundledRuntimeDir)).toBe(true)
   })
 
-  test('seeds the bundled managed Chromium runtime for a clean user and preserves an existing local runtime', async () => {
+  test('seeds the bundled managed Chromium runtime and runner for a clean user, then preserves an existing local runtime', async () => {
     const configDir = await mkdtemp('browser-research-runtime-config-')
     const bundledRuntimeDir = await mkdtemp('browser-research-runtime-bundled-')
     const bundledExecutable = join(bundledRuntimeDir, 'chromium_headless_shell-1', 'chrome-win', 'headless_shell.exe')
+    const bundledRunner = join(bundledRuntimeDir, 'browser-research-playwright-runner.cjs')
     await mkdir(join(bundledRuntimeDir, 'chromium_headless_shell-1', 'chrome-win'), { recursive: true })
     await writeFile(bundledExecutable, 'bundled runtime')
+    await writeFile(bundledRunner, 'bundled runner')
 
     expect(await seedBundledBrowserResearchRuntime(configDir, bundledRuntimeDir)).toBe(true)
     const localExecutable = join(getBrowserResearchRuntimeDir(configDir), 'chromium_headless_shell-1', 'chrome-win', 'headless_shell.exe')
+    const localRunner = join(getBrowserResearchRuntimeDir(configDir), 'browser-research-playwright-runner.cjs')
     expect(isBrowserResearchRuntimeInstalled(configDir)).toBe(true)
     expect(await readFile(localExecutable, 'utf8')).toBe('bundled runtime')
+    expect(await readFile(localRunner, 'utf8')).toBe('bundled runner')
 
     await writeFile(localExecutable, 'user managed runtime')
+    await writeFile(localRunner, 'user managed runner')
     await writeFile(bundledExecutable, 'new bundled runtime')
+    await writeFile(bundledRunner, 'new bundled runner')
     expect(await seedBundledBrowserResearchRuntime(configDir, bundledRuntimeDir)).toBe(false)
     expect(await readFile(localExecutable, 'utf8')).toBe('user managed runtime')
+    expect(await readFile(localRunner, 'utf8')).toBe('user managed runner')
   })
 
+  test('backfills a new Node runner without replacing an existing local Chromium runtime', async () => {
+    const configDir = await mkdtemp('browser-research-runtime-local-chromium-')
+    const bundledRuntimeDir = await mkdtemp('browser-research-runtime-bundled-runner-')
+    const bundledExecutable = join(bundledRuntimeDir, 'chromium_headless_shell-1', 'chrome-win', 'headless_shell.exe')
+    const localExecutable = join(getBrowserResearchRuntimeDir(configDir), 'chromium_headless_shell-1', 'chrome-win', 'headless_shell.exe')
+    const localRunner = join(getBrowserResearchRuntimeDir(configDir), 'browser-research-playwright-runner.cjs')
+    await mkdir(join(bundledRuntimeDir, 'chromium_headless_shell-1', 'chrome-win'), { recursive: true })
+    await mkdir(join(getBrowserResearchRuntimeDir(configDir), 'chromium_headless_shell-1', 'chrome-win'), { recursive: true })
+    await writeFile(bundledExecutable, 'new bundled runtime')
+    await writeFile(join(bundledRuntimeDir, 'browser-research-playwright-runner.cjs'), 'new bundled runner')
+    await writeFile(localExecutable, 'user managed runtime')
+
+    expect(await seedBundledBrowserResearchRuntime(configDir, bundledRuntimeDir)).toBe(true)
+    expect(await readFile(localExecutable, 'utf8')).toBe('user managed runtime')
+    expect(await readFile(localRunner, 'utf8')).toBe('new bundled runner')
+  })
   test('bounds rendered text without losing its truncation signal', () => {
     expect(summarizeBrowserResearchText(' short ')).toEqual({ text: 'short', truncated: false })
     const result = summarizeBrowserResearchText('x'.repeat(100), 40)

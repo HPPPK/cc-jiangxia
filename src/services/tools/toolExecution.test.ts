@@ -8,6 +8,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { FileEditTool } from '../../tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from '../../tools/FileWriteTool/FileWriteTool.js'
+import { AskUserQuestionTool } from '../../tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { SubmitPhaseCompletionTool } from '../../tools/SubmitPhaseCompletionTool/SubmitPhaseCompletionTool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 import { createAssistantMessage } from '../../utils/messages.js'
@@ -96,6 +97,72 @@ describe('runToolUse file edit recovery', () => {
     }
   }, 20_000)
 
+  test('returns a retryable contract error instead of sending an invalid scope-plan question card', async () => {
+    const context = createContext()
+    context.options.tools = [AskUserQuestionTool]
+    context.getAppState = () => ({
+      toolPermissionContext: { ...getEmptyToolPermissionContext(), mode: 'acceptEdits' },
+      workflow: {
+        mode: 'workflow',
+        activePhaseId: 'scope-plan',
+        workflowStatus: 'running',
+        status: 'running',
+        templateIdentity: { id: 'skills-development', source: 'user', version: '13' },
+        templateSnapshot: {
+          schemaVersion: 1,
+          id: 'skills-development',
+          source: 'user',
+          version: '13',
+          displayName: 'Skills development',
+          description: 'Question contract test',
+          phases: [{
+            id: 'scope-plan',
+            label: 'Scope plan',
+            instructions: 'Ask structured decision cards.',
+            requestedModel: null,
+            skillDeclarations: [],
+            requiredArtifacts: [],
+            completionCriteria: [],
+            transitionAuthority: 'user-confirmation',
+            runtimeContract: {
+              questionPolicy: {
+                exactQuestionCount: 1,
+                minChoices: 2,
+                maxChoices: 3,
+                firstChoiceLabelIncludes: '(Recommended)',
+                requireChoiceDescriptions: true,
+                disallowComputerUse: true,
+              },
+            },
+          }],
+        },
+      },
+      tasks: {},
+      effortValue: undefined,
+      sessionHooks: new Map(),
+    }) as ReturnType<ToolUseContext['getAppState']>
+
+    const messages = await runSingleToolUse({
+      type: 'tool_use',
+      id: 'toolu_invalid_scope_plan_question',
+      name: AskUserQuestionTool.name,
+      input: {
+        questions: [{
+          prompt: 'Which scope should we choose?',
+          choices: [
+            { label: 'Focused MVP', description: 'Deliver the smallest validated user path first.' },
+            { label: 'Broader MVP', description: 'Include a secondary flow.' },
+            { label: 'Everything now', description: 'Include all requests.' },
+            { label: 'Custom', description: 'Define a separate scope.' },
+          ],
+        }],
+      },
+    } as ToolUseBlock, context)
+
+    expect(JSON.stringify(messages)).toContain('WORKFLOW_QUESTION_CONTRACT_VIOLATION')
+    expect(JSON.stringify(messages)).toContain('decision cards require exactly 2–3 choices')
+  })
+
   test('returns a structured workflow violation instead of executing a write tool before implementation', async () => {
     const filePath = path.join(tmpDir, 'workflow-denied.txt')
     const context = createContext()
@@ -139,6 +206,50 @@ describe('runToolUse file edit recovery', () => {
 
     expect(await fs.stat(filePath).catch(() => null)).toBeNull()
     expect(JSON.stringify(messages)).toContain('WORKFLOW_TOOL_FORBIDDEN')
+  })
+
+  test('allows one silent correction retry for the rejected unavailable completion status', async () => {
+    let appState: any = {
+      workflow: {
+        mode: 'workflow',
+        sessionId: 'workflow-unavailable-status-recovery',
+        workflowStatus: 'running',
+        status: 'running',
+        runStatus: 'active',
+        activePhaseId: 'requirements',
+        stateVersion: 3,
+        phases: [{ id: 'requirements', status: 'running', artifactPointers: [] }],
+        transitionHistory: [],
+        artifactIndex: {},
+      },
+      toolPermissionContext: { ...getEmptyToolPermissionContext(), mode: 'acceptEdits' },
+      tasks: {},
+      effortValue: undefined,
+      sessionHooks: new Map(),
+    }
+    const context = createContext()
+    context.options.tools = [FileReadTool, FileWriteTool, FileEditTool, SubmitPhaseCompletionTool]
+    context.getAppState = () => appState
+    context.setAppState = (updater) => { appState = updater(appState) }
+
+    const messages = await runSingleToolUse({
+      type: 'tool_use',
+      id: 'toolu_submit_unavailable',
+      name: 'submit_phase_completion',
+      input: {
+        phaseId: 'requirements',
+        stateVersion: 3,
+        status: 'unavailable',
+        handoff: { summary: 'The phase is ready.' },
+        rationale: 'The phase is ready for review.',
+        evidence: [],
+      },
+    } as ToolUseBlock, context)
+
+    expect(JSON.stringify(messages)).toContain('WORKFLOW_SUBMIT_RETRY_ALLOWED')
+    expect(JSON.stringify(messages)).toContain('Use the allowed completion status unable, not unavailable')
+    expect(JSON.stringify(messages)).not.toContain('WORKFLOW_SUBMIT_BLOCKED')
+    expect(appState.workflow.runStatus).toBe('active')
   })
 
   test('returns one retryable submit schema error then blocks the phase on the second failure', async () => {

@@ -143,20 +143,13 @@ export function WorkflowTransitionControls({
         {transitionNotice ? (
           <p role="status" className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">{transitionNotice}</p>
         ) : null}
-        <div className="mt-3 grid gap-2 md:grid-cols-2">
+        <div className="mt-3">
           <OptionButton
             icon="refresh"
             title={t('workflows.transition.retryTitle')}
             description={t('workflows.transition.retryDescription')}
             disabled={transitionPending}
             onClick={() => submitTransition(onRetry, 'retry')}
-          />
-          <OptionButton
-            icon="pause_circle"
-            title={t('workflows.transition.pauseTitle')}
-            description={t('workflows.transition.pauseDescription')}
-            disabled={transitionPending}
-            onClick={() => submitTransition(onRetry, 'pause')}
           />
         </div>
       </section>
@@ -191,17 +184,11 @@ export function WorkflowTransitionControls({
         </ul>
       </div>
 
-      <div className="mt-3 grid gap-2 md:grid-cols-3">
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
         <OptionButton
           icon="thumb_up"
-          title={t('workflows.transition.continueTitle')}
-          description={
-            routeTarget
-              ? isJumpRoute
-                ? t('workflows.transition.moveToRouteTarget', { step: routeTarget })
-                : t('workflows.transition.moveToNext', { step: routeTarget })
-              : ''
-          }
+          title={t(isJumpRoute ? 'workflows.transition.returnTitle' : 'workflows.transition.continueTitle')}
+          description={routeTarget ?? ''}
           disabled={transitionPending}
           onClick={() => submitTransition(onConfirm, 'confirm')}
         />
@@ -211,13 +198,6 @@ export function WorkflowTransitionControls({
           description={t('workflows.transition.adjustDescription')}
           disabled={transitionPending}
           onClick={() => submitTransition(onReject, 'reject')}
-        />
-        <OptionButton
-          icon="pause_circle"
-          title={t('workflows.transition.pauseTitle')}
-          description={t('workflows.transition.pauseDescription')}
-          disabled={transitionPending}
-          onClick={() => submitTransition(onRetry, 'pause')}
         />
       </div>
     </section>

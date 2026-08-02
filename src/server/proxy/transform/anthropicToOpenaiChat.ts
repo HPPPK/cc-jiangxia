@@ -132,6 +132,25 @@ function convertMessage(
   }
 }
 
+function toolResultText(content: string | AnthropicContentBlock[]) {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block): block is Extract<AnthropicContentBlock, { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+}
+
+function toolResultImages(content: string | AnthropicContentBlock[]): OpenAIChatContentPart[] {
+  if (!Array.isArray(content)) return []
+  return content
+    .filter((block): block is Extract<AnthropicContentBlock, { type: 'image' }> => block.type === 'image')
+    .map((block) => ({
+      type: 'image_url' as const,
+      image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` },
+    }))
+}
+
 function convertUserMessage(
   blocks: AnthropicContentBlock[],
   output: OpenAIChatMessage[],
@@ -156,17 +175,21 @@ function convertUserMessage(
         contentParts.push({ type: 'image_url', image_url: { url } })
       }
     } else if (block.type === 'tool_result') {
-      // tool_result → separate tool message
-      const resultContent = typeof block.content === 'string'
-        ? block.content
-        : Array.isArray(block.content)
-          ? block.content.filter((b): b is Extract<AnthropicContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.text).join('\n')
-          : ''
+      // OpenAI Chat tool messages are text-only in the compatibility contract.
+      // Preserve the required tool-call pairing, then send tool-returned images
+      // as the immediate follow-up user message for vision-capable endpoints.
+      const resultContent = toolResultText(block.content)
       output.push({
         role: 'tool',
         tool_call_id: block.tool_use_id,
         content: resultContent,
       })
+      const images = toolResultImages(block.content)
+      if (images.length > 0 && imageContentMode === 'vision') {
+        output.push({ role: 'user', content: images })
+      } else if (images.length > 0 && imageContentMode === 'text_only' && !resultContent) {
+        output[output.length - 1]!.content = OMITTED_IMAGE_TEXT
+      }
     }
   }
 

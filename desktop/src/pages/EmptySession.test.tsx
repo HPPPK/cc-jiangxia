@@ -451,17 +451,12 @@ describe('EmptySession', () => {
       modelId: 'model-explicit',
     })
     expect(useSessionRuntimeStore.getState().selections['__draft__']).toBeUndefined()
-    expect(mocks.wsSend.mock.calls.slice(0, 2)).toEqual([
-      [
-        'draft-session',
-        {
-          type: 'set_runtime_config',
-          providerId: 'provider-explicit',
-          modelId: 'model-explicit',
-        },
-      ],
-      ['draft-session', { type: 'prewarm_session' }],
-    ])
+    expect(mocks.wsSend).toHaveBeenCalledWith('draft-session', {
+      type: 'user_message',
+      content: 'draft question',
+      attachments: [],
+    })
+    expect(mocks.wsSend).not.toHaveBeenCalledWith('draft-session', { type: 'prewarm_session' })
   })
 
   it('keeps normal dialogue as the default and creates without workflow options', async () => {

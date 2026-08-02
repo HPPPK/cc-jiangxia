@@ -32,6 +32,16 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(externalModules).not.toContain('dingtalk-stream')
   })
 
+  it('keeps Playwright out of the Bun sidecar and bundles optional BiDi handling in the Node runner', () => {
+    const source = readBuildScript()
+    const externalModules = extractExternalModules(source)
+
+    expect(externalModules).not.toContain('chromium-bidi')
+    expect(source).toContain('PLAYWRIGHT_NODE_RUNNER_EXTERNALS')
+    expect(source).toContain("'chromium-bidi/lib/cjs/bidiMapper/BidiMapper'")
+    expect(source).toContain("'chromium-bidi/lib/cjs/cdp/CdpConnection'")
+  })
+
   it('builds bundled Expert Pack ZIPs before copying pack resources', () => {
     const source = readBuildScript()
 
@@ -55,6 +65,15 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(source).toContain("path.join(binariesDir, 'browser-runtime', 'playwright')")
     expect(source).toContain('PLAYWRIGHT_BROWSERS_PATH')
     expect(source).toContain("'playwright', 'install', 'chromium-headless-shell'")
+  })
+
+  it('builds a Node-executed Playwright runner next to the managed Chromium runtime', () => {
+    const source = readBuildScript()
+
+    expect(source).toContain('buildBundledBrowserResearchRunner')
+    expect(source).toContain("browser-research-playwright-runner.cjs")
+    expect(source).toContain("browser-research-playwright-runner.ts")
+    expect(source).toContain('identifiers: false')
   })
 
   it('downloads a pinned Portable Git runtime into Windows release resources', () => {
@@ -84,6 +103,8 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(source).toContain("'node.exe'")
     expect(source).toContain("'npm.cmd'")
     expect(source).toContain("'npx.cmd'")
+    expect(source).toContain('if (hasManagedNodeRuntime(targetDir))')
+    expect(source).toContain('Reusing managed Node runtime')
     expect(source.indexOf('await buildBundledNodeRuntime()')).toBeLessThan(source.indexOf('await compileExecutable('))
   })
 

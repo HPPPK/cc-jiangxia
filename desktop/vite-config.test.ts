@@ -19,4 +19,18 @@ describe('desktop build compatibility', () => {
     expect(css).toContain('--color-text-secondary-a72')
     expect(css).toContain('--color-outline-a92')
   })
+  it('ignores transient Bun build artifacts that Windows locks during desktop startup', () => {
+    const config = readFileSync(join(desktopRoot, 'vite.config.ts'), 'utf8')
+
+    expect(config).toContain("ignored: ['**/src-tauri/**', '**/.*.bun-build']")
+  })
+
+  it('provides a no-watch desktop launch command for large managed runtime resources', () => {
+    const packageJson = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>
+    }
+
+    expect(packageJson.scripts?.['dev:desktop']).toBe('tauri dev --no-watch')
+  })
+
 })

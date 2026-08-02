@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MessageList, buildRenderModel, buildTurnCardInsertionMap } from './MessageList'
+import {
+  MessageList,
+  buildModeChangeSummary,
+  buildRenderModel,
+  buildTurnCardInsertionMap,
+  getTurnChangeDisplayMode,
+} from './MessageList'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
 import { sessionsApi } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
+import { useSessionStore } from '../../stores/sessionStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useTabStore } from '../../stores/tabStore'
@@ -126,6 +133,160 @@ describe('buildTurnCardInsertionMap', () => {
   })
 })
 
+describe('recovered workflow question contract failures', () => {
+  const contractCode = 'WORKFLOW_QUESTION_CONTRACT_VIOLATION'
+
+  function recoveredQuestionMessages(workflowId: string): UIMessage[] {
+    return [
+      {
+        id: 'failed-question',
+        type: 'tool_use',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'failed-question-tool',
+        input: { questions: [] },
+        timestamp: 1,
+      },
+      {
+        id: 'failed-question-result',
+        type: 'tool_result',
+        toolUseId: 'failed-question-tool',
+        content: `${contractCode}: ${workflowId} only allows a necessary blocking question`,
+        isError: true,
+        timestamp: 2,
+      },
+      {
+        id: 'contract-error',
+        type: 'error',
+        code: contractCode,
+        message: `${workflowId} only allows a necessary blocking question`,
+        timestamp: 3,
+      },
+      {
+        id: 'retried-question',
+        type: 'tool_use',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'retried-question-tool',
+        input: { questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] },
+        timestamp: 4,
+      },
+      {
+        id: 'retried-question-result',
+        type: 'tool_result',
+        toolUseId: 'retried-question-tool',
+        content: `User has answered your questions: "Continue?"="Yes". You can now continue with the user's answers in mind.`,
+        isError: false,
+        timestamp: 5,
+      },
+    ]
+  }
+
+  it.each([
+    'feature-extension-workflow-v8',
+    'debug-repair-workflow-v8',
+  ])('hides a recovered %s question contract failure without hiding the valid retry', (workflowId) => {
+    const model = buildRenderModel(recoveredQuestionMessages(workflowId))
+
+    expect(model.renderItems).toHaveLength(1)
+    expect(model.renderItems[0]).toMatchObject({
+      kind: 'message',
+      message: { id: 'retried-question', toolUseId: 'retried-question-tool' },
+    })
+    expect(model.toolResultMap.has('failed-question-tool')).toBe(false)
+    expect(model.toolResultMap.get('retried-question-tool')?.isError).toBe(false)
+  })
+
+  it('keeps an unrecovered workflow question contract failure visible', () => {
+    const model = buildRenderModel(recoveredQuestionMessages('feature-extension-workflow-v8').slice(0, 3))
+
+    expect(model.renderItems).toHaveLength(2)
+    expect(model.renderItems[0]).toMatchObject({
+      kind: 'message',
+      message: { id: 'failed-question', toolUseId: 'failed-question-tool' },
+    })
+    expect(model.renderItems[1]).toMatchObject({
+      kind: 'message',
+      message: { id: 'contract-error', code: contractCode },
+    })
+    expect(model.toolResultMap.get('failed-question-tool')?.isError).toBe(true)
+  })
+
+  it('keeps unrelated errors visible after a workflow question recovery', () => {
+    const messages = recoveredQuestionMessages('debug-repair-workflow-v8')
+    messages.splice(3, 0, {
+      id: 'unrelated-error',
+      type: 'error',
+      code: 'CLI_START_FAILED',
+      message: 'CLI failed for an unrelated reason',
+      timestamp: 3.5,
+    })
+
+    const model = buildRenderModel(messages)
+
+    expect(model.renderItems).toHaveLength(2)
+    expect(model.renderItems[0]).toMatchObject({
+      kind: 'message',
+      message: { id: 'unrelated-error', code: 'CLI_START_FAILED' },
+    })
+    expect(model.renderItems[1]).toMatchObject({
+      kind: 'message',
+      message: { id: 'retried-question', toolUseId: 'retried-question-tool' },
+    })
+  })
+})
+
+describe('mode-aware change card display', () => {
+  it('keeps ordinary sessions on per-turn cards and defers active workflow or expert sessions', () => {
+    expect(getTurnChangeDisplayMode(undefined)).toBe('per-turn')
+    expect(getTurnChangeDisplayMode({
+      workflow: { status: 'running' },
+    } as never)).toBe('deferred')
+    expect(getTurnChangeDisplayMode({
+      workflow: { status: 'pending-confirmation' },
+    } as never)).toBe('deferred')
+    expect(getTurnChangeDisplayMode({
+      expert: { status: 'collecting' },
+    } as never)).toBe('deferred')
+  })
+
+  it('shows one final summary only after workflow or expert reaches a terminal status', () => {
+    expect(getTurnChangeDisplayMode({
+      workflow: { status: 'completed' },
+    } as never)).toBe('final-summary')
+    expect(getTurnChangeDisplayMode({
+      workflow: { status: 'failed' },
+    } as never)).toBe('final-summary')
+    expect(getTurnChangeDisplayMode({
+      expert: { status: 'exited' },
+    } as never)).toBe('final-summary')
+
+    expect(buildModeChangeSummary([
+      {
+        target: { messageId: 'user-1', userMessageIndex: 0, content: 'one', expectedContent: 'one' },
+        checkpoint: {
+          target: { targetUserMessageId: 'user-1', userMessageIndex: 0, userMessageCount: 2 },
+          code: { available: true, filesChanged: ['src/shared.ts'], insertions: 2, deletions: 1 },
+        },
+        workDir: null,
+        isLatest: false,
+      },
+      {
+        target: { messageId: 'user-2', userMessageIndex: 1, content: 'two', expectedContent: 'two' },
+        checkpoint: {
+          target: { targetUserMessageId: 'user-2', userMessageIndex: 1, userMessageCount: 2 },
+          code: { available: true, filesChanged: ['src/shared.ts', 'src/final.ts'], insertions: 3, deletions: 0 },
+        },
+        workDir: null,
+        isLatest: true,
+      },
+    ] as never)).toEqual({
+      files: ['src/shared.ts', 'src/final.ts'],
+      insertions: 5,
+      deletions: 1,
+      turnCount: 2,
+    })
+  })
+})
+
 describe('MessageList nested tool calls', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -133,6 +294,7 @@ describe('MessageList nested tool calls', () => {
     useSettingsStore.setState({ locale: 'en' })
     useUIStore.setState({ pendingSettingsTab: null })
     useTabStore.setState({ activeTabId: ACTIVE_TAB, tabs: [{ sessionId: ACTIVE_TAB, title: 'Test', type: 'session' as const, status: 'idle' }] })
+    useSessionStore.setState({ sessions: [], activeSessionId: null })
     useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState() } })
     useWorkspaceChatContextStore.setState(useWorkspaceChatContextStore.getInitialState(), true)
     vi.spyOn(sessionsApi, 'getTurnCheckpoints').mockImplementation(
@@ -3103,6 +3265,79 @@ describe('MessageList nested tool calls', () => {
     expect(cards).toHaveLength(1)
     expect(screen.getByText('src/first.ts')).toBeTruthy()
     expect(screen.queryByText('src/second.ts')).toBeNull()
+  })
+
+  it('defers workflow change cards until the workflow finishes', async () => {
+    useSessionStore.setState({
+      sessions: [{
+        id: ACTIVE_TAB,
+        workflow: { status: 'running' },
+      } as never],
+    })
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            { id: 'user-1', type: 'user_text', content: '实现功能', timestamp: 1 },
+            { id: 'assistant-1', type: 'assistant_text', content: '第一步已完成', timestamp: 2 },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    await waitFor(() => {
+      expect(sessionsApi.getTurnCheckpoints).not.toHaveBeenCalled()
+    })
+    expect(screen.queryByLabelText('Turn changed files')).toBeNull()
+    expect(screen.queryByLabelText('Workflow or expert changes summary')).toBeNull()
+  })
+
+  it('renders one final workflow summary instead of per-turn undo cards', async () => {
+    vi.spyOn(sessionsApi, 'getTurnCheckpoints').mockResolvedValue({
+      checkpoints: [
+        {
+          target: { targetUserMessageId: 'user-1', userMessageIndex: 0, userMessageCount: 2 },
+          code: { available: true, filesChanged: ['src/shared.ts'], insertions: 2, deletions: 1 },
+        },
+        {
+          target: { targetUserMessageId: 'user-2', userMessageIndex: 1, userMessageCount: 2 },
+          code: { available: true, filesChanged: ['src/shared.ts', 'src/final.ts'], insertions: 3, deletions: 0 },
+        },
+      ],
+    })
+    useSessionStore.setState({
+      sessions: [{
+        id: ACTIVE_TAB,
+        workflow: { status: 'completed' },
+      } as never],
+    })
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            { id: 'user-1', type: 'user_text', content: '第一阶段', timestamp: 1 },
+            { id: 'assistant-1', type: 'assistant_text', content: '完成第一阶段', timestamp: 2 },
+            { id: 'user-2', type: 'user_text', content: '第二阶段', timestamp: 3 },
+            { id: 'assistant-2', type: 'assistant_text', content: '完成整个工作流', timestamp: 4 },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    const summary = await screen.findByLabelText('Workflow or expert changes summary')
+    expect(within(summary).getByText('2 files changed')).toBeTruthy()
+    expect(within(summary).getByText('Changes recorded across 2 completed turns')).toBeTruthy()
+    expect(within(summary).getByText('+5')).toBeTruthy()
+    expect(within(summary).getByText('-1')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Undo current turn changes' })).toBeNull()
+
+    fireEvent.click(within(summary).getByRole('button', { name: 'Show changed files (2)' }))
+    expect(within(summary).getByText('src/shared.ts')).toBeTruthy()
+    expect(within(summary).getByText('src/final.ts')).toBeTruthy()
   })
 
   it('shows raw startup details under translated CLI startup errors', () => {

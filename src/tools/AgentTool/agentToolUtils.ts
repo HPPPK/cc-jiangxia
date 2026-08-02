@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
+import { BROWSER_RESEARCH_SEARCH_ENGINES, type BrowserResearchSearchEngine } from '../BrowserResearchTool/searchEngines.js'
 import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import {
   ALL_AGENT_DISALLOWED_TOOLS,
@@ -224,6 +225,32 @@ export function resolveAgentTools(
   }
 }
 
+export const browserResearchAuditStatusSchema = z.enum([
+  'opened',
+  'access_limited',
+  'search_irrelevant',
+  'target_unavailable',
+  'failed',
+  'pending',
+])
+
+export const browserResearchAuditEntrySchema = z.object({
+  target: z.string(),
+  kind: z.enum(['url', 'search']),
+  searchEngine: z.enum(BROWSER_RESEARCH_SEARCH_ENGINES).optional(),
+  status: browserResearchAuditStatusSchema,
+  finalUrl: z.string().optional(),
+  detail: z.string().optional(),
+})
+
+export type BrowserResearchAuditStatus = z.infer<typeof browserResearchAuditStatusSchema>
+export type BrowserResearchAuditEntry = z.infer<typeof browserResearchAuditEntrySchema>
+
+const EXPERT_BROWSER_RESEARCH_AUDIT_AGENT_TYPES = new Set([
+  'expert-evidence-researcher',
+  'expert-evidence-reviewer',
+])
+
 export const agentToolResultSchema = lazySchema(() =>
   z.object({
     agentId: z.string(),
@@ -233,6 +260,10 @@ export const agentToolResultSchema = lazySchema(() =>
     agentType: z.string().optional(),
     content: z.array(z.object({ type: z.literal('text'), text: z.string() })),
     totalToolUseCount: z.number(),
+    // Optional for persisted Agent results created before tool-specific auditing.
+    browserResearchToolUseCount: z.number().optional(),
+    // Optional for persisted Agent results created before BrowserResearch target-level auditing.
+    browserResearchAudit: z.array(browserResearchAuditEntrySchema).optional(),
     totalDurationMs: z.number(),
     totalTokens: z.number(),
     usage: z.object({
@@ -271,6 +302,218 @@ export function countToolUses(messages: MessageType[]): number {
     }
   }
   return count
+}
+
+/** Counts real SDK tool_use blocks for one exact tool name; never infer usage from text or URLs. */
+export function countToolUsesByName(
+  messages: MessageType[],
+  toolName: string,
+): number {
+  let count = 0
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue
+    for (const block of message.message.content) {
+      if (block.type === 'tool_use' && block.name === toolName) {
+        count++
+      }
+    }
+  }
+  return count
+}
+
+
+function truncateBrowserResearchAuditDetail(value: string, maxLength = 280): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  return normalized.length <= maxLength
+    ? normalized
+    : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function browserResearchAuditTarget(input: unknown): {
+  target: string
+  kind: 'url' | 'search'
+} | undefined {
+  const record = asRecord(input)
+  if (!record) return undefined
+  if (typeof record.search_query === 'string' && record.search_query.trim()) {
+    return {
+      target: record.search_query.trim(),
+      kind: 'search',
+    }
+  }
+  if (typeof record.url === 'string' && record.url.trim()) {
+    return { target: record.url.trim(), kind: 'url' }
+  }
+  return undefined
+}
+
+type BrowserResearchLedgerAttempt = {
+  url?: string
+  outcome?: 'success' | 'failed'
+  failureKind?: string
+  searchEngine?: BrowserResearchSearchEngine
+  error?: string
+}
+
+type BrowserResearchLedger = {
+  url?: string
+  attempts?: BrowserResearchLedgerAttempt[]
+}
+
+function decodeBrowserResearchLedger(content: unknown): BrowserResearchLedger | undefined {
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map(block => {
+        const record = asRecord(block)
+        return typeof record?.text === 'string' ? record.text : ''
+      }).join('\n')
+      : ''
+  const match = text.match(/<browser-research-ledger\s+encoding=["']base64["']>([A-Za-z0-9+/=]+)<\/browser-research-ledger>/i)
+  if (!match?.[1]) return undefined
+  try {
+    const parsed = asRecord(JSON.parse(Buffer.from(match[1], 'base64').toString('utf8')))
+    if (!parsed) return undefined
+    const attempts = Array.isArray(parsed.attempts)
+      ? parsed.attempts.map(entry => {
+        const record = asRecord(entry)
+        return {
+          ...(typeof record?.url === 'string' ? { url: record.url } : {}),
+          ...(record?.outcome === 'success' || record?.outcome === 'failed'
+            ? { outcome: record.outcome }
+            : {}),
+          ...(typeof record?.failureKind === 'string' ? { failureKind: record.failureKind } : {}),
+          ...(BROWSER_RESEARCH_SEARCH_ENGINES.includes(record?.searchEngine as BrowserResearchSearchEngine) ? { searchEngine: record?.searchEngine as BrowserResearchSearchEngine } : {}),
+          ...(typeof record?.error === 'string' ? { error: record.error } : {}),
+        } satisfies BrowserResearchLedgerAttempt
+      })
+      : undefined
+    return {
+      ...(typeof parsed.url === 'string' ? { url: parsed.url } : {}),
+      ...(attempts ? { attempts } : {}),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function browserResearchAuditStatus(
+  ledger: BrowserResearchLedger | undefined,
+  isError: boolean,
+): BrowserResearchAuditStatus {
+  const attempts = ledger?.attempts ?? []
+  if (attempts.some(attempt => attempt.outcome === 'success')) return 'opened'
+  const failureKind = attempts.find(attempt => attempt.outcome === 'failed')?.failureKind
+  if (failureKind === 'access_limited') return 'access_limited'
+  if (failureKind === 'search_irrelevant') return 'search_irrelevant'
+  if (failureKind === 'target_unavailable') return 'target_unavailable'
+  return isError || attempts.length > 0 ? 'failed' : 'pending'
+}
+
+/** Returns an engine only when the BrowserResearch runtime recorded that it actually ran. */
+function observedBrowserResearchSearchEngine(
+  requested: { kind: 'url' | 'search' },
+  ledger: BrowserResearchLedger | undefined,
+): BrowserResearchSearchEngine | undefined {
+  if (requested.kind !== 'search') return undefined
+  return ledger?.attempts?.find(
+    attempt => BROWSER_RESEARCH_SEARCH_ENGINES.includes(attempt.searchEngine as BrowserResearchSearchEngine),
+  )?.searchEngine
+}
+
+/**
+ * Reads actual BrowserResearch tool_use blocks and their paired raw tool_result ledger.
+ * It deliberately ignores the subagent's natural-language prose, so an agent cannot
+ * claim that a URL was opened when the transcript says otherwise.
+ */
+export function buildBrowserResearchAudit(
+  messages: MessageType[],
+): BrowserResearchAuditEntry[] {
+  const toolResultsByUseId = new Map<string, { content: unknown; isError: boolean }>()
+  for (const message of messages) {
+    if (message.type !== 'user') continue
+    for (const block of message.message.content) {
+      if (block.type !== 'tool_result') continue
+      toolResultsByUseId.set(block.tool_use_id, {
+        content: block.content,
+        isError: Boolean(block.is_error),
+      })
+    }
+  }
+
+  const audit: BrowserResearchAuditEntry[] = []
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue
+    for (const block of message.message.content) {
+      if (block.type !== 'tool_use' || block.name !== 'BrowserResearch') continue
+      const requested = browserResearchAuditTarget(block.input)
+      if (!requested) continue
+      const result = toolResultsByUseId.get(block.id)
+      if (!result) {
+        audit.push({
+          ...requested,
+          status: 'pending',
+          detail: 'No paired BrowserResearch tool result was recorded.',
+        })
+        continue
+      }
+      const ledger = decodeBrowserResearchLedger(result.content)
+      const attempts = ledger?.attempts ?? []
+      const firstFailure = attempts.find(attempt => attempt.outcome === 'failed')
+      const successes = attempts.filter(attempt => attempt.outcome === 'success').length
+      const status = browserResearchAuditStatus(ledger, result.isError)
+      const observedSearchEngine = observedBrowserResearchSearchEngine(requested, ledger)
+      const detail = status === 'opened' && attempts.length > successes
+        ? `Opened after ${attempts.length - successes} unsuccessful attempt(s).`
+        : firstFailure?.error
+          ? truncateBrowserResearchAuditDetail(firstFailure.error)
+          : ledger
+            ? undefined
+            : 'BrowserResearch returned no machine-readable research ledger.'
+      audit.push({
+        ...requested,
+        ...(observedSearchEngine ? { searchEngine: observedSearchEngine } : {}),
+        status,
+        ...(typeof ledger?.url === 'string' && ledger.url ? { finalUrl: ledger.url } : {}),
+        ...(detail ? { detail } : {}),
+      })
+    }
+  }
+  return audit
+}
+
+export function requiresBrowserResearchAudit(agentType: string | undefined): boolean {
+  return Boolean(agentType && EXPERT_BROWSER_RESEARCH_AUDIT_AGENT_TYPES.has(agentType))
+}
+
+/** Formats bounded, transcript-derived browser outcomes for the parent agent. */
+export function formatBrowserResearchAudit(
+  audit: BrowserResearchAuditEntry[] | undefined,
+  maxEntries = 32,
+): string {
+  const entries = audit ?? []
+  if (entries.length === 0) {
+    return '<browser-research-audit>\nNo BrowserResearch tool result was recorded. Do not treat the subagent prose as public-web evidence.\n</browser-research-audit>'
+  }
+  const lines = entries.slice(0, maxEntries).map(entry => {
+    const target = entry.kind === 'search'
+      ? `query ${JSON.stringify(entry.target)}${entry.searchEngine ? ` [engine=${entry.searchEngine}]` : ''}`
+      : entry.target
+    const finalUrl = entry.finalUrl && entry.finalUrl !== entry.target
+      ? ` → ${entry.finalUrl}`
+      : ''
+    return `- ${entry.status}: ${target}${finalUrl}${entry.detail ? ` — ${entry.detail}` : ''}`
+  })
+  if (entries.length > maxEntries) {
+    lines.push(`- truncated: ${entries.length - maxEntries} additional BrowserResearch call(s) are retained in the transcript.`)
+  }
+  return `<browser-research-audit>\n${lines.join('\n')}\n</browser-research-audit>`
 }
 
 export function finalizeAgentTool(
@@ -318,6 +561,25 @@ export function finalizeAgentTool(
 
   const totalTokens = getTokenCountFromUsage(lastAssistantMessage.message.usage)
   const totalToolUseCount = countToolUses(agentMessages)
+  const browserResearchToolUseCount = countToolUsesByName(
+    agentMessages,
+    'BrowserResearch',
+  )
+  const browserResearchAudit = buildBrowserResearchAudit(agentMessages)
+
+  // This applies only to the built-in Expert Mode evidence researcher. It turns
+  // the browser-research Skill into a verifiable delivery condition without
+  // constraining normal agents, reviewers, or other Expert packs. A failed
+  // BrowserResearch call still counts: the subagent must return its real URL and
+  // error as an evidence gap rather than claiming it researched the web.
+  if (
+    agentType === 'expert-evidence-researcher'
+    && browserResearchToolUseCount === 0
+  ) {
+    throw new Error(
+      'EXPERT_BROWSER_RESEARCH_REQUIRED: This commercial-research subagent returned without a real BrowserResearch call. Retry the assigned section with BrowserResearch before using any public-web claim.',
+    )
+  }
 
   logEvent('tengu_agent_tool_completed', {
     agent_type:
@@ -328,6 +590,7 @@ export function finalizeAgentTool(
     response_char_count: content.length,
     assistant_message_count: agentMessages.length,
     total_tool_uses: totalToolUseCount,
+    browser_research_tool_uses: browserResearchToolUseCount,
     duration_ms: Date.now() - startTime,
     total_tokens: totalTokens,
     is_built_in_agent: isBuiltInAgent,
@@ -352,6 +615,8 @@ export function finalizeAgentTool(
     totalDurationMs: Date.now() - startTime,
     totalTokens,
     totalToolUseCount,
+    browserResearchToolUseCount,
+    browserResearchAudit,
     usage: lastAssistantMessage.message.usage,
   }
 }

@@ -52,7 +52,10 @@ import {
 } from '../../tools/ToolSearchTool/prompt.js'
 import { getAllBaseTools } from '../../tools.js'
 import { renderExpertTemplateFillForWrite } from './expertTemplateFillRuntime.js'
-import { isWorkflowPhaseToolDenied } from '../../server/services/workflowToolPolicy.js'
+import {
+  getWorkflowQuestionCardContractViolation,
+  isWorkflowPhaseToolDenied,
+} from '../../server/services/workflowToolPolicy.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
   AssistantMessage,
@@ -645,9 +648,10 @@ async function workflowSubmitFailureText(
   tool: Tool,
   context: ToolUseContext,
   message: string,
+  failedInput?: { status?: unknown },
 ): Promise<string> {
   if (tool.name !== 'submit_phase_completion') return message
-  const recovery = await handleSubmitPhaseCompletionFailure(context, message)
+  const recovery = await handleSubmitPhaseCompletionFailure(context, message, failedInput)
   return recovery.message
 }
 
@@ -720,6 +724,7 @@ async function checkPermissionsAndCallTool(
       tool,
       toolUseContext,
       `InputValidationError: ${errorContent}`,
+      { status: input.status },
     )
     return [
       {
@@ -759,6 +764,36 @@ async function checkPermissionsAndCallTool(
             },
           ],
           toolUseResult: `Error: ${workflowErrorContent}`,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      },
+    ]
+  }
+
+  const questionContractViolation = getWorkflowQuestionCardContractViolation(
+    tool.name,
+    parsedInput.data,
+    workflowState as any,
+  )
+  if (questionContractViolation) {
+    logForDebugging(questionContractViolation)
+    const workflowErrorContent = await workflowSubmitFailureText(
+      tool,
+      toolUseContext,
+      questionContractViolation,
+    )
+    return [
+      {
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: '<tool_use_error>' + workflowErrorContent + '</tool_use_error>',
+              is_error: true,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: 'Error: ' + workflowErrorContent,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },

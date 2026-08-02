@@ -32,7 +32,9 @@ export default defineConfig({
     host: host || false,
     hmr: host ? { protocol: 'ws', host, port: 1421 } : undefined,
     watch: {
-      ignored: ['**/src-tauri/**'],
+      // Bun creates short-lived, locked .bun-build files beside this config on Windows.
+      // Vite must ignore them or its file watcher exits with EBUSY and stops Tauri dev.
+      ignored: ['**/src-tauri/**', '**/.*.bun-build'],
     },
   },
 })

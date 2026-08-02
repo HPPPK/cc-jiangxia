@@ -226,9 +226,22 @@ async function fetchDesktopWorkflowState(
   throw new Error('Workflow state refresh returned an invalid response.')
 }
 
-function isRecoverableSubmissionInputFailure(message: string): boolean {
+function isUnavailableCompletionStatusInputFailure(
+  message: string,
+  input?: { status?: unknown },
+): boolean {
   const normalized = message.toLowerCase()
-  return [
+  return input?.status === 'unavailable'
+    && normalized.includes('status')
+    && (normalized.includes('invalid option') || normalized.includes('invalid_value'))
+}
+
+function isRecoverableSubmissionInputFailure(
+  message: string,
+  input?: { status?: unknown },
+): boolean {
+  const normalized = message.toLowerCase()
+  return isUnavailableCompletionStatusInputFailure(message, input) || [
     'handoff',
     'rationale',
     'evidence',
@@ -297,12 +310,13 @@ async function blockCompletionRecovery(
 export async function handleSubmitPhaseCompletionFailure(
   context: ToolUseContext,
   failureMessage: string,
+  failedInput?: { status?: unknown },
 ): Promise<{ retryAllowed: boolean; message: string }> {
   const appState = context.getAppState() as AppStateWithWorkflow
   const phaseId = appState.workflow?.activePhaseId ?? null
   const prior = appState.workflowSubmitFailureRecovery
   const attempts = prior?.phaseId === phaseId ? prior.attempts + 1 : 1
-  const recoverable = isRecoverableSubmissionInputFailure(failureMessage)
+  const recoverable = isRecoverableSubmissionInputFailure(failureMessage, failedInput)
 
   if (recoverable && attempts === 1) {
     context.setAppState((previous) => ({
@@ -311,7 +325,7 @@ export async function handleSubmitPhaseCompletionFailure(
     }) as ReturnType<ToolUseContext['getAppState']>)
     return {
       retryAllowed: true,
-      message: `WORKFLOW_SUBMIT_RETRY_ALLOWED: ${failureMessage} Correct the structured submit_phase_completion input and retry once. Do not advance or route the workflow before a successful submission.`,
+      message: `WORKFLOW_SUBMIT_RETRY_ALLOWED: ${failureMessage} ${isUnavailableCompletionStatusInputFailure(failureMessage, failedInput) ? 'Use the allowed completion status unable, not unavailable, then retry once.' : 'Correct the structured submit_phase_completion input and retry once.'} Do not advance or route the workflow before a successful submission.`,
     }
   }
 

@@ -178,6 +178,30 @@ describe('anthropicToOpenaiChat', () => {
     expect(result.messages[0].content).toBe('Sunny, 72°F')
   })
 
+  test('passes images returned by tools through a visual follow-up message', () => {
+    const req: AnthropicRequest = {
+      model: 'gpt-4o',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'read_1',
+          content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'pixel-data' } }],
+        }],
+      }],
+    }
+
+    const result = anthropicToOpenaiChat(req)
+    expect(result.messages).toEqual([
+      { role: 'tool', tool_call_id: 'read_1', content: '' },
+      {
+        role: 'user',
+        content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,pixel-data' } }],
+      },
+    ])
+  })
+
   test('image content conversion', () => {
     const req: AnthropicRequest = {
       model: 'gpt-4',
@@ -459,6 +483,28 @@ describe('anthropicToOpenaiResponses', () => {
       expect(fco.call_id).toBe('tc_1')
       expect(fco.output).toBe('found it')
     }
+  })
+
+  test('preserves images nested in a tool result as Responses input_image blocks', () => {
+    const req: AnthropicRequest = {
+      model: 'gpt-4o',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'read_1',
+          content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'pixel-data' } }],
+        }],
+      }],
+    }
+
+    const result = anthropicToOpenaiResponses(req)
+    expect(result.input).toContainEqual({
+      type: 'function_call_output',
+      call_id: 'read_1',
+      output: [{ type: 'input_image', image_url: 'data:image/png;base64,pixel-data' }],
+    })
   })
 
   test('thinking → reasoning', () => {

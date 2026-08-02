@@ -75,8 +75,9 @@ describe('Expert Runtime tool availability', () => {
     expect(instruction).toContain('- WebFetch')
     expect(instruction).not.toContain('WebSearch')
     expect(instruction).not.toContain('web discovery is unavailable')
-    expect(instruction).toContain('construct candidate URLs from trusted domains')
-    expect(instruction).toContain('Use BrowserResearch to open each candidate')
+    expect(instruction).toContain('use BrowserResearch with search_query')
+    expect(instruction).toContain('open the relevant returned links individually')
+    expect(instruction).toContain('never silently default a country or language')
     expect(instruction).toContain('A candidate URL is not evidence')
     expect(instruction).toContain('after reasonable attempts')
     expect(instruction).toContain('Question routing for this turn:')
@@ -86,6 +87,15 @@ describe('Expert Runtime tool availability', () => {
     expect(instruction).toContain('If a call is rejected because choices are missing')
   })
 
+  test('does not inject a Key-backed discovery CLI into Expert runtime instructions', () => {
+    const instruction = buildExpertRuntimeTurnInstruction(activeSession(binding()), {
+      enabledToolNames: ['AskUserQuestion', 'Read', 'BrowserResearch', 'Bash'],
+    })
+
+    expect(instruction).not.toContain('expert-google-grounded-discovery')
+    expect(instruction).not.toContain('Google official source discovery')
+    expect(instruction).toContain('use BrowserResearch with search_query')
+  })
   test('asks for user material only when BrowserResearch is unavailable for the turn', () => {
     const instruction = buildExpertRuntimeTurnInstruction(activeSession(binding()), {
       enabledToolNames: ['AskUserQuestion', 'Read', 'WebSearch', 'WebFetch'],
@@ -113,7 +123,9 @@ describe('Expert Runtime tool availability', () => {
 
     const available = buildExpertRuntimeTurnInstruction(activeSession(runtimeBinding), { enabledToolNames: ['AskUserQuestion', 'BrowserResearch'] })
     expect(available).toContain('- BrowserResearch')
-    expect(available).toContain('construct candidate URLs from trusted domains')
+    expect(available).toContain('use BrowserResearch with search_query')
+    expect(available).toContain('never silently default a country or language')
+    expect(available).toContain('search-result page is discovery only')
   })
 
   test('excludes the obsolete web-discovery tool for every selected model', () => {
@@ -162,4 +174,74 @@ describe('Expert Runtime tool availability', () => {
     expect(policy.allowedTools).toEqual(['Read', 'Write', 'Bash', 'Glob', 'Agent'])
     expect(policy.disallowedTools).toEqual(['WebSearch', 'Edit'])
   })
+
+  test('isolates strict visual workflow to the selected Expert ZIP', () => {
+    const standardBinding = binding()
+    const strictBinding: ExpertRuntimeBinding = {
+      ...binding(),
+      expertId: 'uiux-design-system-expert',
+      expertName: 'UIUX design system expert',
+      packId: 'uiux-design-system-expert',
+      runtimePolicy: {
+        mode: 'strict-visual-workflow',
+        allowedToolNames: ['AskUserQuestion', 'Read', 'Write', 'Bash', 'BrowserResearch', 'WebFetch'],
+        requiredSkillIds: ['screenshot-ui-redesign', 'ui-craft-critique', 'playwright-visual-qc', 'interface-copy-craft'],
+      },
+    }
+    const enabledToolNames = [
+      'AskUserQuestion', 'Read', 'Write', 'Bash', 'BrowserResearch', 'WebFetch',
+      'Skill', 'EnterPlanMode', 'ExitPlanMode', 'Agent', 'TaskOutput', 'Glob',
+    ]
+
+    expect(resolveExpertRuntimeToolAvailability(standardBinding, enabledToolNames).toolNames)
+      .toEqual(enabledToolNames)
+
+    const strictAvailability = resolveExpertRuntimeToolAvailability(strictBinding, enabledToolNames)
+    expect(strictAvailability.toolNames)
+      .toEqual(['AskUserQuestion', 'Read', 'Write', 'Bash', 'BrowserResearch', 'WebFetch'])
+
+    const strictPolicy = resolveExpertRuntimeToolPolicy(activeSession(strictBinding), { enabledToolNames })
+    expect(strictPolicy.disallowedTools).toEqual([
+      'Skill', 'EnterPlanMode', 'ExitPlanMode', 'Agent', 'TaskOutput', 'Glob',
+    ])
+
+    const instruction = buildExpertRuntimeTurnInstruction(activeSession(strictBinding), { enabledToolNames })
+    expect(instruction).toContain('Strict visual workflow is active for this Expert ZIP only.')
+    expect(instruction).toContain('本轮实际应用的 ZIP 专项 Skill')
+    expect(instruction).toContain('screenshot-ui-redesign, ui-craft-critique, playwright-visual-qc')
+    expect(instruction).toContain('immediately call AskUserQuestion')
+    expect(instruction).toContain('Direction selection is a mandatory AskUserQuestion gate:')
+    expect(instruction).toContain('do not Write, Bash, or begin production until the card result selects a direction')
+    expect(instruction).toContain('production is non-blocking by default')
+    expect(instruction).toContain('active session workDir is the authorized output location')
+    expect(instruction).toContain('Missing commercial details after direction are not automatically a blocker.')
+    expect(instruction).toContain('continue source-only')
+    expect(instruction).toContain('never replace it with prose bullet questions')
+    expect(instruction).toContain('Rendered screenshot files are the required final visual deliverable.')
+    expect(instruction).toContain('Interface-copy craft rule:')
+    expect(instruction).toContain('interface-copy-craft')
+    expect(instruction).toContain('Visual-reference lock rule:')
+    expect(instruction).toContain('exact returned screenshot directory')
+    expect(instruction).toContain('Do not launch a third reference while either locked source is still unresolved.')
+    expect(instruction).toContain('BrowserResearch with includeScreenshot:true')
+    expect(instruction).toContain('Anti-template visual gate rule:')
+    expect(instruction).toContain('anti-template-visual-gate')
+    expect(instruction).toContain('Skill evidence rule:')
+    expect(instruction).toContain('Do not retry the same normalized URL in the same task')
+    expect(instruction).toContain('HTML is only an intermediate artifact.')
+    expect(instruction).toContain('CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE')
+    expect(instruction).toContain("require.resolve('playwright')")
+    expect(instruction).toContain('Source-fidelity and anti-template gate:')
+    expect(instruction).toContain('never silently remove or invent observed plans, prices, tier names')
+    expect(instruction).toContain('Do not deliver the first generic render as a finished redesign.')
+    expect(instruction).toContain('Rendered-image rule:')
+    expect(instruction).toContain('type:image')
+    expect(instruction).toContain('do not claim the image cannot be read')
+    expect(instruction).toContain('Visual-review failure protocol:')
+    expect(instruction).toContain('a second render-review cycle still fails')
+    expect(instruction).not.toContain('- Skill')
+    expect(instruction).not.toContain('- EnterPlanMode')
+    expect(instruction).not.toContain('- Agent')
+  })
+
 })

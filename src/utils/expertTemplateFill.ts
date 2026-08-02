@@ -98,6 +98,16 @@ function safeHttpUrl(value: string): string | null {
   }
 }
 
+function normalizeTextFieldForTemplate(templateContent: string, fieldId: string, value: unknown): unknown {
+  if (fieldId !== 'REPORT_TITLE' || typeof value !== 'string') return value
+  const suffix = ' · 商业化调研报告'
+  const marker = '{{' + fieldId + '}}' + suffix
+  if (!templateContent.includes(marker)) return value
+  const title = value.trim()
+  if (!title.endsWith(suffix)) return value
+  const withoutSuffix = title.slice(0, -suffix.length).trimEnd()
+  return withoutSuffix || value
+}
 function renderText(value: unknown, fieldId: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`模板字段 ${fieldId} 必须填写为非空文本。`)
   return escapeHtml(value.trim()).replace(/\r?\n/g, '<br>')
@@ -143,7 +153,7 @@ export function renderExpertTemplateFill(templateContent: string, payload: Exper
   let rendered = templateContent
   for (const field of schema.fields) {
     if (!(field.id in payload.fields)) throw new Error(`缺少模板字段：${field.id}。`)
-    const value = payload.fields[field.id]
+    const value = normalizeTextFieldForTemplate(templateContent, field.id, payload.fields[field.id])
     const replacement = field.kind === 'text'
       ? renderText(value, field.id)
       : field.kind === 'paragraphs'

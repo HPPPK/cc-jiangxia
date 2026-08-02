@@ -81,6 +81,30 @@ export function anthropicToOpenaiResponses(body: AnthropicRequest): OpenAIRespon
   return result
 }
 
+function convertToolResultOutput(content: string | AnthropicContentBlock[]) {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+
+  const images = content.filter((block): block is Extract<AnthropicContentBlock, { type: 'image' }> => block.type === 'image')
+  if (images.length === 0) {
+    return content
+      .filter((block): block is Extract<AnthropicContentBlock, { type: 'text' }> => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
+  }
+
+  return content.flatMap((block) => {
+    if (block.type === 'text') return [{ type: 'input_text' as const, text: block.text }]
+    if (block.type === 'image') {
+      return [{
+        type: 'input_image' as const,
+        image_url: `data:${block.source.media_type};base64,${block.source.data}`,
+      }]
+    }
+    return []
+  })
+}
+
 function convertMessageToInputItems(msg: AnthropicMessage, output: OpenAIResponsesInputItem[]): void {
   const content = msg.content
 
@@ -125,12 +149,10 @@ function convertMessageToInputItems(msg: AnthropicMessage, output: OpenAIRespons
         arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input),
       })
     } else if (block.type === 'tool_result') {
-      // Lift to function_call_output item
-      const resultContent = typeof block.content === 'string'
-        ? block.content
-        : Array.isArray(block.content)
-          ? block.content.filter((b): b is Extract<AnthropicContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.text).join('\n')
-          : ''
+      // Keep images returned by a tool. File Read returns screenshots inside a
+      // tool_result, not as top-level user image blocks. Dropping those images
+      // made visual-QA models receive an empty tool output after rendering.
+      const resultContent = convertToolResultOutput(block.content)
       output.push({
         type: 'function_call_output',
         call_id: block.tool_use_id,

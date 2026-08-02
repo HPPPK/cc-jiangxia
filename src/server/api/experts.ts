@@ -1,10 +1,15 @@
 ﻿import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { ExpertPackRegistryService, ExpertPackValidationError, type ExpertPackCreateInput, type ExpertPackUpdateInput } from '../services/expertPackRegistryService.js'
+import {
+  ExpertPackAuthoringService,
+  type ExpertPackAuthoringOperationInput,
+} from '../services/expertPackAuthoringService.js'
 import { ExpertCategoryService } from '../services/expertCatalogService.js'
 import { ExpertProfileService } from '../services/expertProfileService.js'
 import { SkillDiscoveryConfigurationError, SkillDiscoveryService, type SkillDiscoverySource } from '../services/skillDiscoveryService.js'
 
 const expertPacks = new ExpertPackRegistryService()
+const expertPackAuthoring = new ExpertPackAuthoringService(expertPacks)
 const expertCategories = new ExpertCategoryService()
 const expertProfiles = new ExpertProfileService(expertPacks)
 const skillDiscovery = new SkillDiscoveryService()
@@ -52,6 +57,11 @@ async function handleDiscoveryRoute(req: Request, url: URL): Promise<Response> {
 async function handlePackRoute(req: Request, segments: string[]): Promise<Response> {
   const packId = segments[3]
   const action = segments[4]
+
+  if (packId === 'authoring' && !action) {
+    if (req.method !== 'POST') throw new ApiError(405, 'Method ' + req.method + ' not allowed', 'METHOD_NOT_ALLOWED')
+    return Response.json(await expertPackAuthoring.execute(await readJson(req) as ExpertPackAuthoringOperationInput))
+  }
 
   if (!packId) {
     if (req.method === 'POST') {

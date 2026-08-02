@@ -3134,7 +3134,7 @@ describe('Sessions API', () => {
           sourceMessageCount: 2,
           clientRequestId,
         })
-        expect(result.link.summaryArtifactId).toBeUndefined()
+        expect(result.link.summaryArtifactId).toBe('context-carryover')
         const sourceState = await readWorkflowSessionState(source.sessionId)
         expect(sourceState).toMatchObject({
           sessionId: source.sessionId,
@@ -3144,8 +3144,15 @@ describe('Sessions API', () => {
             targetSessionId: source.sessionId,
             contextStrategy: 'inherit',
           },
+          contextCarryover: {
+            artifactId: 'context-carryover',
+          },
         })
-        expect(sourceState.contextCarryover).toBeUndefined()
+        expect(sourceState.startupPrompt).toContain('Inherited workflow context anchor')
+        expect(sourceState.startupPrompt).toContain('Discuss linked workflow inherit')
+        expect(sourceState.phaseRuns[0]?.inputArtifactRefs).toEqual(expect.arrayContaining([
+          expect.objectContaining({ artifactId: 'context-carryover' }),
+        ]))
         const sourceAfter = await sessionService.getSession(source.sessionId)
         expect(sourceAfter?.messages).toEqual(source.beforeDetail?.messages)
       })

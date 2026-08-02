@@ -22,7 +22,15 @@ async function installExpert(configRoot: string) {
   resetExpertPackRegistryForTests()
   await new ExpertPackRegistryService().importExpertPackZip(await adapter.write({
     'manifest.json': JSON.stringify({ packId: 'session-pack', name: 'Session Pack', version: '1.0.0', schemaVersion: 1, type: 'expert-pack', entrypoints: { experts: ['experts/session/expert.json'], skills: ['session-skill'] } }),
-    'experts/session/expert.json': JSON.stringify({ id: 'session-expert', name: 'Session Expert', description: 'Session test expert', promptPaths: { system: 'experts/session/system.md' }, outputMode: 'template-fill', outputTemplatePath: 'experts/session/templates/report.html', skillIds: ['session-skill'] }),
+    'experts/session/expert.json': JSON.stringify({
+      id: 'session-expert',
+      name: 'Session Expert',
+      description: 'Session test expert',
+      promptPaths: { system: 'experts/session/system.md' },
+      outputMode: 'template-fill',
+      outputTemplatePath: 'experts/session/templates/report.html',
+      skillIds: ['session-skill'],
+    }),
     'experts/session/system.md': 'Session package prompt',
     'experts/session/templates/report.html': '<html data-template-id="session-v1"><body><h1>{{REPORT_TITLE}}</h1><table><thead><tr><th>编号</th><th>链接（URL）</th></tr></thead><tbody><!-- SLOT: SOURCE_ROWS --></tbody></table></body></html>',
     'skills/session-skill/SKILL.md': 'Session package skill',
@@ -117,5 +125,6 @@ describe('ExpertSessionService', () => {
       sessionService.getSession = originalGetSession
     }
   })
+
 
 })

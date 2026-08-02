@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { tmpdir } from "node:os";
+import { isBrowserResearchNodeBridgeAvailable, runBrowserResearchWithNodeBridge } from "./playwrightNodeBridge.js";
+import { isBrowserResearchAccessLimitedPage } from "./browserResearchAssessment.js";
+export { isBrowserResearchAccessLimitedPage } from "./browserResearchAssessment.js";
 import { z } from "zod/v4";
 import { buildTool } from "../../Tool.js";
 import {
@@ -9,10 +11,17 @@ import {
   getBrowserResearchPrompt,
 } from "./prompt.js";
 import {
+  BROWSER_RESEARCH_SEARCH_ENGINES,
+  DEFAULT_BROWSER_RESEARCH_SEARCH_ENGINE,
+  buildBrowserResearchSearchQueryUrl as buildSearchQueryUrl,
+  buildBrowserResearchSearchStartUrl as buildSearchStartUrl,
+  getBrowserResearchSearchEngineConfig,
+  type BrowserResearchSearchEngine,
+} from "./searchEngines.js";
+import {
   ensureBrowserResearchRuntimeDir,
-  getBrowserResearchExecutablePath,
-  seedBundledBrowserResearchRuntime,
   getBrowserResearchScreenshotDir,
+  resolveBrowserResearchExecutablePath,
   getUnsafeBrowserResearchUrlReason,
   isBrowserResearchRuntimeAvailable,
   isBrowserResearchRuntimeInstalled,
@@ -21,25 +30,27 @@ import {
 
 const MAX_LINKS = 80;
 const PAGE_TIMEOUT_MS = 35_000;
-const DEVTOOLS_ACTIVE_PORT_FILE = "DevToolsActivePort";
-
-type CdpMessage = {
-  id?: number;
-  method?: string;
-  params?: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  error?: { message?: string };
-};
-type CdpEventListener = (params: Record<string, unknown>) => void;
+const NETWORK_IDLE_TIMEOUT_MS = 2_500;
 
 type ResearchAttempt = {
   url: string;
-  outcome: 'success' | 'failed';
-  failureKind?: 'access_limited' | 'runtime_unavailable' | 'page_error';
+  outcome: "success" | "failed";
+  failureKind?: "access_limited" | "runtime_unavailable" | "search_irrelevant" | "target_unavailable" | "page_error";
+  searchEngine?: BrowserResearchSearchEngine;
   error?: string;
 };
 
-type Input = { url: string; task: string; includeScreenshot: boolean; retry_urls: string[] };
+type Input = {
+  url?: string;
+  search_query?: string;
+  search_engine?: BrowserResearchSearchEngine;
+  market?: string;
+  locale?: string;
+  task: string;
+  includeScreenshot: boolean;
+  retry_urls: string[];
+};
+
 type Output = {
   url: string;
   title: string;
@@ -52,22 +63,55 @@ type Output = {
   error?: string;
 };
 
+type BrowserResearchTarget =
+  | { kind: "url"; url: string }
+  | { kind: "search"; query: string; searchEngine: BrowserResearchSearchEngine; market?: string; locale?: string };
+
 const inputSchema = z.strictObject({
   url: z
     .string()
     .url()
-    .describe("A public http(s) URL the user supplied or confirmed."),
+    .optional()
+    .describe("A public http(s) URL to render. Supply exactly one of url or search_query."),
+  search_query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("An explicit public-web discovery query. Set search_engine when a specific public engine is required; otherwise BrowserResearch defaults to Bing. It reads the rendered result page and never bypasses CAPTCHA, login, or access controls."),
+  search_engine: z
+    .enum(BROWSER_RESEARCH_SEARCH_ENGINES)
+    .optional()
+    .describe("Optional public discovery engine: bing (default), google, baidu, or 360. This applies only with search_query; BrowserResearch opens that actual engine rather than silently substituting Bing."),
+  market: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2}$/, "market must be a two-letter country code, for example CN or US.")
+    .optional()
+    .describe("Optional target-country code for an explicit search query. Omit when the user has not specified a target market; BrowserResearch never defaults a country."),
+  locale: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2,3}-[A-Za-z]{2,4}$/, "locale must resemble zh-CN or en-US.")
+    .optional()
+    .describe("Optional browser/search language for an explicit search query. Omit when the user has not specified a language."),
   task: z
     .string()
     .min(1)
     .max(1_000)
-    .describe("The specific evidence to collect from this rendered page."),
+    .describe("The specific evidence to collect from the rendered page or search results."),
   includeScreenshot: z
     .boolean()
     .optional()
     .default(false)
     .describe("Save a local screenshot only when visual evidence is needed."),
-  retry_urls: z.array(z.string().url()).max(3).optional().default([]).describe("Up to three user-supplied or page-link alternative public URLs. Try these only after the primary page cannot be read; this tool does not discover URLs by itself."),
+  retry_urls: z
+    .array(z.string().url())
+    .max(3)
+    .optional()
+    .default([])
+    .describe("Up to three relevant public URLs to try only after the primary page or search result cannot be read."),
 });
 
 const outputSchema = z.object({
@@ -79,136 +123,74 @@ const outputSchema = z.object({
   truncated: z.boolean(),
   attempts: z.array(z.object({
     url: z.string(),
-    outcome: z.enum(['success', 'failed']),
-    failureKind: z.enum(['access_limited', 'runtime_unavailable', 'page_error']).optional(),
+    outcome: z.enum(["success", "failed"]),
+    failureKind: z.enum(["access_limited", "runtime_unavailable", "search_irrelevant", "target_unavailable", "page_error"]).optional(),
+    searchEngine: z.enum(BROWSER_RESEARCH_SEARCH_ENGINES).optional(),
     error: z.string().optional(),
   })),
   screenshotPath: z.string().optional(),
   error: z.string().optional(),
 });
 
-class CdpClient {
-  private nextId = 1;
-  private readonly pending = new Map<
-    number,
-    {
-      resolve: (result: Record<string, unknown>) => void;
-      reject: (error: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
-  private readonly listeners = new Map<string, Set<CdpEventListener>>();
-
-  private constructor(private readonly socket: WebSocket) {
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data)) as CdpMessage;
-      if (message.id !== undefined) {
-        const pending = this.pending.get(message.id);
-        if (!pending) return;
-        this.pending.delete(message.id);
-        clearTimeout(pending.timer);
-        if (message.error)
-          pending.reject(
-            new Error(
-              message.error.message ?? "Chrome DevTools command failed.",
-            ),
-          );
-        else pending.resolve(message.result ?? {});
-        return;
-      }
-      if (message.method)
-        this.listeners
-          .get(message.method)
-          ?.forEach((listener) => listener(message.params ?? {}));
-    });
-  }
-
-  static async connect(url: string): Promise<CdpClient> {
-    const socket = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(
-        () =>
-          reject(
-            new Error(
-              "Timed out connecting to the local Chromium CDP endpoint.",
-            ),
-          ),
-        PAGE_TIMEOUT_MS,
-      );
-      socket.addEventListener(
-        "open",
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "error",
-        () => {
-          clearTimeout(timer);
-          reject(
-            new Error("Could not connect to the local Chromium CDP endpoint."),
-          );
-        },
-        { once: true },
-      );
-    });
-    return new CdpClient(socket);
-  }
-
-  on(method: string, listener: CdpEventListener): void {
-    const listeners = this.listeners.get(method) ?? new Set<CdpEventListener>();
-    listeners.add(listener);
-    this.listeners.set(method, listeners);
-  }
-
-  waitFor(method: string): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () =>
-          reject(new Error(`Timed out waiting for Chromium event: ${method}`)),
-        PAGE_TIMEOUT_MS,
-      );
-      this.on(method, (params) => {
-        clearTimeout(timer);
-        resolve(params);
-      });
-    });
-  }
-
-  send(
-    method: string,
-    params: Record<string, unknown> = {},
-  ): Promise<Record<string, unknown>> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Timed out running Chromium command: ${method}`));
-      }, PAGE_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  close(): void {
-    this.socket.close();
-  }
-}
-
-function hostnameForPermission(url: string): string {
+function hostnameForPermission(url: string | undefined): string {
   try {
-    return new URL(url).hostname;
+    return new URL(url ?? "").hostname;
   } catch {
-    return "this URL";
+    return "this page";
   }
 }
 
-function browserFailureKind(detail: string): ResearchAttempt['failureKind'] {
-  if (/access denied|forbidden|captcha|verify you are human|login|required|robots|rate limit|too many requests|\b403\b|\b429\b|region|地区|登录|验证码|访问受限/i.test(detail)) return 'access_limited'
-  if (/managed Chromium|runtime is unavailable|CDP endpoint|Chromium executable/i.test(detail)) return 'runtime_unavailable'
-  return 'page_error'
+function inputTargetError(input: Pick<Input, "url" | "search_query" | "search_engine">): string | null {
+  const hasUrl = Boolean(input.url?.trim());
+  const hasQuery = Boolean(input.search_query?.trim());
+  if (hasUrl === hasQuery) return "Supply exactly one of url or search_query.";
+  if (input.search_engine && !hasQuery) return "search_engine can only be used with search_query.";
+  return null;
+}
+
+export function buildBrowserResearchSearchStartUrl(options: Pick<Input, "search_engine" | "market" | "locale"> = {}): string {
+  return buildSearchStartUrl({
+    ...(options.search_engine ? { searchEngine: options.search_engine } : {}),
+    ...(options.market?.trim() ? { market: options.market.trim() } : {}),
+    ...(options.locale?.trim() ? { locale: options.locale.trim() } : {}),
+  });
+}
+
+function searchEngineLabel(request: Pick<Input, "search_engine">): string {
+  return getBrowserResearchSearchEngineConfig(request.search_engine ?? DEFAULT_BROWSER_RESEARCH_SEARCH_ENGINE).label;
+}
+
+function primaryTarget(input: Input): BrowserResearchTarget {
+  if (input.search_query?.trim()) {
+    return {
+      kind: "search",
+      query: input.search_query.trim(),
+      searchEngine: input.search_engine ?? DEFAULT_BROWSER_RESEARCH_SEARCH_ENGINE,
+      ...(input.market?.trim() ? { market: input.market.trim() } : {}),
+      ...(input.locale?.trim() ? { locale: input.locale.trim() } : {}),
+    };
+  }
+  return { kind: "url", url: input.url!.trim() };
+}
+
+function targetAttemptUrl(target: BrowserResearchTarget): string {
+  return target.kind === "url"
+    ? target.url
+    : buildSearchQueryUrl({
+      searchEngine: target.searchEngine,
+      query: target.query,
+      ...(target.market ? { market: target.market } : {}),
+      ...(target.locale ? { locale: target.locale } : {}),
+    });
+}
+
+function browserFailureKind(detail: string): ResearchAttempt["failureKind"] {
+  if (/SEARCH_DISCOVERY_IRRELEVANT/i.test(detail)) return "search_irrelevant"
+  if (/TARGET_PAGE_UNAVAILABLE/i.test(detail)) return "target_unavailable"
+  if (/search discovery unavailable|ACCESS_LIMITED_PAGE/i.test(detail)) return "access_limited"
+  if (isBrowserResearchAccessLimitedPage("", detail)) return "access_limited"
+  if (/managed Chromium|runtime is unavailable|Chromium executable|browserType\.launch|playwright/i.test(detail)) return "runtime_unavailable"
+  return "page_error"
 }
 
 function browserUnavailableOutput(
@@ -226,88 +208,27 @@ function browserUnavailableOutput(
     durationMs: Date.now() - startedAt,
     truncated: false,
     attempts,
-    error: `The built-in BrowserResearch runtime is unavailable. Ensure its managed Chromium is installed locally, then retry. (${detail})`,
+    error: `The built-in BrowserResearch runtime is unavailable. Ensure its managed Playwright Chromium is installed locally, then retry. (${detail})`,
   };
 }
 
-async function waitForCdpEndpoint(profileDir: string): Promise<string> {
-  const deadline = Date.now() + PAGE_TIMEOUT_MS;
-  const portFile = join(profileDir, DEVTOOLS_ACTIVE_PORT_FILE);
-  while (Date.now() < deadline) {
-    try {
-      const [port] = (await readFile(portFile, "utf8")).trim().split(/\r?\n/);
-      if (port && /^\d+$/.test(port)) return `http://127.0.0.1:${port}`;
-    } catch {}
-    await Bun.sleep(100);
-  }
-  throw new Error("Timed out waiting for the isolated Chromium CDP endpoint.");
-}
-
-async function createPageDebuggerEndpoint(endpoint: string): Promise<string> {
-  const response = await fetch(`${endpoint}/json/new?about%3Ablank`, {
-    method: "PUT",
-  });
-  if (!response.ok)
-    throw new Error(
-      `Could not create an isolated Chromium page (HTTP ${response.status()}).`,
-    );
-  const target = (await response.json()) as { webSocketDebuggerUrl?: string };
-  if (!target.webSocketDebuggerUrl)
-    throw new Error("Chromium did not provide a page debugger endpoint.");
-  return target.webSocketDebuggerUrl;
-}
-
-async function launchIsolatedBrowser(): Promise<{
-  client: CdpClient;
-  process: { kill: () => void };
-  profileDir: string;
-}> {
-  const executablePath = getBrowserResearchExecutablePath();
-  if (!executablePath)
-    throw new Error("The managed Chromium executable was not found.");
-  const profileDir = await mkdtemp(
-    join(tmpdir(), "cc-jiangxia-browser-research-"),
-  );
-  const process = Bun.spawn(
-    [
-      executablePath,
-      "--headless=new",
-      "--disable-gpu",
-      "--no-sandbox",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--remote-debugging-address=127.0.0.1",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profileDir}`,
-    ],
-    { stdout: "ignore", stderr: "ignore" },
-  );
-  try {
-    const endpoint = await waitForCdpEndpoint(profileDir);
-    return {
-      client: await CdpClient.connect(
-        await createPageDebuggerEndpoint(endpoint),
-      ),
-      process,
-      profileDir,
-    };
-  } catch (error) {
-    process.kill();
-    await rm(profileDir, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
-    throw error;
-  }
+async function createScreenshotPath(url: string): Promise<string> {
+  const screenshotDir = getBrowserResearchScreenshotDir();
+  await mkdir(screenshotDir, { recursive: true });
+  const host = basename(new URL(url).hostname).replace(/[^a-z0-9.-]/gi, "_") || "page";
+  return join(screenshotDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${host}.png`);
 }
 
 export const BrowserResearchTool = buildTool({
   name: BROWSER_RESEARCH_TOOL_NAME,
-  searchHint:
-    "render public web pages in isolated headless Chromium and extract evidence",
+  searchHint: "use isolated Playwright Chromium to search public Bing, Google, Baidu, or 360 results or render public evidence pages",
   maxResultSizeChars: 32_000,
   alwaysLoad: true,
   async description(input) {
-    return `Claude wants to research the rendered page at ${hostnameForPermission((input as Input).url)}`;
+    const request = input as Input;
+    return request.search_query
+      ? `Claude wants to search public ${searchEngineLabel(request)} results for ${JSON.stringify(request.search_query)}`
+      : `Claude wants to research the rendered page at ${hostnameForPermission(request.url)}`;
   },
   userFacingName() {
     return "Browser research";
@@ -319,7 +240,7 @@ export const BrowserResearchTool = buildTool({
     return outputSchema;
   },
   isEnabled() {
-    return isBrowserResearchRuntimeAvailable();
+    return isBrowserResearchRuntimeAvailable() && isBrowserResearchNodeBridgeAvailable();
   },
   isConcurrencySafe() {
     return false;
@@ -327,23 +248,28 @@ export const BrowserResearchTool = buildTool({
   isReadOnly() {
     return true;
   },
-  isSearchOrReadCommand() {
-    return { isSearch: false, isRead: true };
+  isSearchOrReadCommand(input) {
+    return { isSearch: Boolean((input as Input).search_query), isRead: !Boolean((input as Input).search_query) };
   },
   toAutoClassifierInput(input) {
-    return (input as Input).url;
+    const request = input as Input;
+    return request.search_query ?? request.url ?? "";
   },
   async checkPermissions(input) {
+    const request = input as Input;
     return {
       behavior: "ask" as const,
-      message: `Claude requested permission to use the isolated browser to read ${hostnameForPermission((input as Input).url)}.`,
+      message: request.search_query
+        ? `Claude requested permission to use the isolated Playwright browser to search public ${searchEngineLabel(request)} results for ${JSON.stringify(request.search_query)}.`
+        : `Claude requested permission to use the isolated Playwright browser to read ${hostnameForPermission(request.url)}.`,
     };
   },
   async prompt() {
     return getBrowserResearchPrompt();
   },
   renderToolUseMessage(input) {
-    return input.url ? `Browser research: ${input.url}` : "Browser research";
+    const request = input as Input;
+    return request.search_query ? `Browser search (${searchEngineLabel(request)}): ${request.search_query}` : request.url ? `Browser research: ${request.url}` : "Browser research";
   },
   renderToolResultMessage(output) {
     return output.error
@@ -356,19 +282,18 @@ export const BrowserResearchTool = buildTool({
       `URL: ${output.url}`,
       output.title ? `Title: ${output.title}` : undefined,
       `Duration: ${output.durationMs}ms`,
-      output.truncated
-        ? "Visible text was truncated to the tool result limit."
-        : undefined,
+      output.truncated ? "Visible text was truncated to the tool result limit." : undefined,
       output.error ? `Error: ${output.error}` : undefined,
-      (output.attempts ?? []).length > 0 ? `Attempts:\n${(output.attempts ?? []).map((attempt, index) => `${index + 1}. ${attempt.outcome}: ${attempt.url}${attempt.failureKind ? ` [${attempt.failureKind}]` : ''}${attempt.error ? ` — ${attempt.error}` : ''}`).join("\n")}` : undefined,
+      // Keep this provenance line ahead of long visible-text/link sections. The
+      // model transport can truncate a verbose tool result, and strict visual
+      // workflows must still be able to Read the exact BrowserResearch image.
+      output.screenshotPath ? `Local screenshot path: ${output.screenshotPath}` : undefined,
+      (output.attempts ?? []).length > 0 ? `Attempts:\n${(output.attempts ?? []).map((attempt, index) => `${index + 1}. ${attempt.outcome}: ${attempt.url}${attempt.searchEngine ? ` [engine=${attempt.searchEngine}]` : ""}${attempt.failureKind ? ` [${attempt.failureKind}]` : ""}${attempt.error ? ` — ${attempt.error}` : ""}`).join("\n")}` : undefined,
       output.text ? `Rendered visible text:\n${output.text}` : undefined,
       output.links.length > 0
         ? `Rendered links:\n${output.links.map((link, index) => `${index + 1}. ${link.text}: ${link.url}`).join("\n")}`
         : "Rendered links: none",
-      output.screenshotPath
-        ? `Local screenshot path: ${output.screenshotPath}`
-        : undefined,
-      `<browser-research-ledger encoding="base64">${Buffer.from(JSON.stringify({ url: output.url, attempts: output.attempts ?? [] }), "utf8").toString("base64")}</browser-research-ledger>`, 
+      `<browser-research-ledger encoding="base64">${Buffer.from(JSON.stringify({ url: output.url, attempts: output.attempts ?? [] }), "utf8").toString("base64")}</browser-research-ledger>`,
     ].filter((section): section is string => Boolean(section));
 
     return {
@@ -381,115 +306,103 @@ export const BrowserResearchTool = buildTool({
     return output.error ?? "";
   },
   async validateInput(input) {
-    const issue = getUnsafeBrowserResearchUrlReason(input.url);
-    if (issue)
+    const request = input as Input;
+    const targetError = inputTargetError(request);
+    if (targetError) return { result: false as const, message: targetError, errorCode: 1 };
+    if (request.url) {
+      const issue = getUnsafeBrowserResearchUrlReason(request.url);
+      if (issue) return { result: false as const, message: `BrowserResearch refused this URL: ${issue}`, errorCode: 1 };
+    }
+    for (const retryUrl of request.retry_urls ?? []) {
+      const issue = getUnsafeBrowserResearchUrlReason(retryUrl);
+      if (issue) return { result: false as const, message: `BrowserResearch refused this retry URL: ${issue}`, errorCode: 1 };
+    }
+    if (!isBrowserResearchRuntimeAvailable()) {
       return {
         result: false as const,
-        message: `BrowserResearch refused this URL: ${issue}`,
-        errorCode: 1,
-      };
-    await seedBundledBrowserResearchRuntime()
-    if (!isBrowserResearchRuntimeInstalled())
-      return {
-        result: false as const,
-        message:
-          "BrowserResearch is not currently available because its managed Chromium runtime is not installed.",
+        message: "BrowserResearch is not currently available because its managed Playwright Chromium runtime is not installed.",
         errorCode: 2,
       };
+    }
+    if (!isBrowserResearchNodeBridgeAvailable()) {
+      return {
+        result: false as const,
+        message: "BrowserResearch is not currently available because its managed Node Playwright bridge is missing. Rebuild the desktop sidecars so the bundled Node runtime and browser runner are present.",
+        errorCode: 2,
+      };
+    }
     return { result: true as const };
   },
   async call(input) {
+    const request = input as Input;
     const startedAt = Date.now();
     const attempts: ResearchAttempt[] = [];
-    const candidates = [...new Set([input.url, ...input.retry_urls])];
+    const targetError = inputTargetError(request);
+    if (targetError) {
+      return { data: { url: request.url ?? buildBrowserResearchSearchStartUrl(request), title: "", text: "", links: [], durationMs: 0, truncated: false, attempts, error: targetError } };
+    }
+    const primary = primaryTarget(request);
     await ensureBrowserResearchRuntimeDir();
-    let client: CdpClient | undefined;
-    let browserProcess: { kill: () => void } | undefined;
-    let profileDir: string | undefined;
-    try {
-      const isolated = await launchIsolatedBrowser();
-      client = isolated.client;
-      browserProcess = isolated.process;
-      profileDir = isolated.profileDir;
-      await client.send("Page.enable");
-      await client.send("Fetch.enable", {
-        patterns: [{ urlPattern: "*", requestStage: "Request" }],
-      });
-      client.on("Fetch.requestPaused", (params) => {
-        const request = params.request as { url?: string } | undefined;
-        const requestId = params.requestId as string;
-        const issue = request?.url
-          ? getUnsafeBrowserResearchUrlReason(request.url)
-          : "The page request was missing a URL.";
-        void client
-          ?.send(
-            issue ? "Fetch.failRequest" : "Fetch.continueRequest",
-            issue
-              ? { requestId, errorReason: "BlockedByClient" }
-              : { requestId },
-          )
-          .catch(() => undefined);
-      });
+    const executablePath = resolveBrowserResearchExecutablePath();
+    if (!executablePath) {
+      return { data: browserUnavailableOutput(targetAttemptUrl(primary), startedAt, new Error("The managed Playwright Chromium executable was not found."), attempts) };
+    }
 
+    const candidates: BrowserResearchTarget[] = [
+      primary,
+      ...[...new Set(request.retry_urls ?? [])].filter((url) => url !== (primary.kind === "url" ? primary.url : undefined)).map((url) => ({ kind: "url" as const, url })),
+    ];
+    try {
       for (const candidate of candidates) {
+        const attemptUrl = targetAttemptUrl(candidate);
         try {
-          const load = client.waitFor("Page.loadEventFired");
-          await client.send("Page.navigate", { url: candidate });
-          await load;
-          const evaluated = await client.send("Runtime.evaluate", {
-            expression: `(() => ({ title: document.title, url: location.href, text: document.body?.innerText ?? '', links: Array.from(document.querySelectorAll('a[href]')).slice(0, ${MAX_LINKS}).map((anchor) => ({ text: (anchor.textContent ?? '').replace(/\s+/g, ' ').trim(), url: anchor.href })) }))()`,
-            returnByValue: true,
-            awaitPromise: true,
+          const screenshotPath = request.includeScreenshot ? await createScreenshotPath(attemptUrl) : undefined;
+          const rendered = await runBrowserResearchWithNodeBridge({
+            executablePath,
+            target: candidate,
+            ...(request.locale?.trim() ? { locale: request.locale.trim() } : {}),
+            ...(screenshotPath ? { screenshotPath } : {}),
+            pageTimeoutMs: PAGE_TIMEOUT_MS,
+            networkIdleTimeoutMs: NETWORK_IDLE_TIMEOUT_MS,
+            maxLinks: MAX_LINKS,
           });
-          const value = (
-            evaluated.result as {
-              value?: {
-                title?: string;
-                url?: string;
-                text?: string;
-                links?: Array<{ text?: string; url?: string }>;
-              };
-            }
-          ).value;
-          if (!value?.url) throw new Error("Chromium returned no rendered page result.");
-          const unsafeFinalUrlReason = getUnsafeBrowserResearchUrlReason(value.url);
-          if (unsafeFinalUrlReason) throw new Error(`The page redirected to a blocked address: ${unsafeFinalUrlReason}`);
-          const { text, truncated } = summarizeBrowserResearchText(value.text ?? "");
-          const links = (value.links ?? [])
-            .filter((link): link is { text: string; url: string } => Boolean(link.text && link.url && !getUnsafeBrowserResearchUrlReason(link.url)))
-            .slice(0, MAX_LINKS);
-          let screenshotPath: string | undefined;
-          if (input.includeScreenshot) {
-            const screenshotDir = getBrowserResearchScreenshotDir();
-            await mkdir(screenshotDir, { recursive: true });
-            const host = basename(new URL(value.url).hostname).replace(/[^a-z0-9.-]/gi, "_") || "page";
-            screenshotPath = join(screenshotDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${host}.png`);
-            const captured = await client.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-            await writeFile(screenshotPath, Buffer.from(String(captured.data), "base64"));
+          if (isBrowserResearchAccessLimitedPage(rendered.title, rendered.text)) {
+            throw new Error(`Access-limited page: ${rendered.title || rendered.text.slice(0, 300)}`);
           }
-          attempts.push({ url: candidate, outcome: 'success' });
+          const { text, truncated } = summarizeBrowserResearchText(rendered.text);
+          attempts.push({
+            url: attemptUrl,
+            outcome: "success",
+            ...(candidate.kind === "search" ? { searchEngine: candidate.searchEngine } : {}),
+          });
           return {
             data: {
-              url: value.url,
-              title: value.title ?? "",
+              url: rendered.url,
+              title: rendered.title,
               text,
-              links,
+              links: rendered.links,
               durationMs: Date.now() - startedAt,
               truncated,
               attempts,
-              ...(screenshotPath ? { screenshotPath } : {}),
+              ...(rendered.screenshotPath ? { screenshotPath: rendered.screenshotPath } : {}),
             },
           };
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          attempts.push({ url: candidate, outcome: 'failed', failureKind: browserFailureKind(detail), error: detail });
+          attempts.push({
+            url: attemptUrl,
+            outcome: "failed",
+            failureKind: browserFailureKind(detail),
+            ...(candidate.kind === "search" ? { searchEngine: candidate.searchEngine } : {}),
+            error: detail,
+          });
         }
       }
-      const accessLimited = attempts.some((attempt) => attempt.failureKind === 'access_limited');
-      const summary = attempts.map((attempt) => `${attempt.url}: ${attempt.error ?? attempt.failureKind ?? 'not readable'}`).join(' | ');
+      const accessLimited = attempts.some((attempt) => attempt.failureKind === "access_limited");
+      const summary = attempts.map((attempt) => `${attempt.url}: ${attempt.error ?? attempt.failureKind ?? "not readable"}`).join(" | ");
       return {
         data: {
-          url: input.url,
+          url: targetAttemptUrl(primary),
           title: "",
           text: "",
           links: [],
@@ -502,11 +415,7 @@ export const BrowserResearchTool = buildTool({
         },
       };
     } catch (error) {
-      return { data: browserUnavailableOutput(input.url, startedAt, error, attempts) };
-    } finally {
-      client?.close();
-      browserProcess?.kill();
-      if (profileDir) await rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
+      return { data: browserUnavailableOutput(targetAttemptUrl(primary), startedAt, error, attempts) };
     }
   },
 });

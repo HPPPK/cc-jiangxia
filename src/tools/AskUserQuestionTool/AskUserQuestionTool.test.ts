@@ -38,6 +38,19 @@ describe('AskUserQuestionTool workflow contract', () => {
     }).success).toBe(true)
   })
 
+  test('accepts the optional context required by necessary workflow questions', async () => {
+    const tool = await loadTool()
+    expect(tool.inputSchema.safeParse({
+      questions: [{
+        prompt: 'Which existing integration should the fix preserve?',
+        blocksCompletion: true,
+        blockingReason: 'The request and repository do not identify which external integration is in production.',
+        answerImpact: 'The answer determines the compatibility branch and regression scenario for the fix.',
+        choices: [{ label: 'Integration A' }, { label: 'Integration B' }],
+      }],
+    }).success).toBe(true)
+  })
+
   test('rejects workflow commands in question options so Ask can only return an answer to the current phase', async () => {
     const tool = await loadTool()
     const base = {

@@ -25,6 +25,7 @@ import {
   resolveClaudeCliLauncher,
 } from '../../utils/desktopBundledCli.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { isProviderManagedEnvVar } from '../../utils/managedEnvConstants.js'
 import {
   getBrowserResearchExecutablePath,
   getBrowserResearchExecutablePathFromRuntimeDir,
@@ -96,6 +97,11 @@ type SessionStartOptions = {
   expertSystemPrompt?: string
   appendSystemPromptFile?: string
   expertSessionId?: string
+  /**
+   * Host-only marker preserved when expertSystemPrompt is moved into a hidden
+   * prompt file before spawning the CLI. It is never sent as a CLI argument.
+   */
+  expertRuntimeActive?: boolean
 }
 
 type RuntimeEnvironmentVariables = Record<string, string | null>
@@ -276,12 +282,18 @@ export class ConversationService {
         )
       }
     }
+    // The full Expert prompt is deliberately moved to a hidden file so it is
+    // not duplicated on the CLI command line. Keep an explicit host-only
+    // runtime marker: buildChildEnv still has to provision the local visual-QA
+    // renderer for the same Expert process after expertSystemPrompt is cleared.
+    const expertRuntimeActive = Boolean(options?.expertSystemPrompt || options?.expertSessionId)
     const launchOptions = runtimePromptFilePath
       ? {
           ...options,
           workflowSystemPrompt: undefined,
           expertSystemPrompt: undefined,
           appendSystemPromptFile: runtimePromptFilePath,
+          ...(expertRuntimeActive ? { expertRuntimeActive: true } : {}),
         }
       : options
     const args = this.buildSessionCliArgs(
@@ -483,6 +495,7 @@ export class ConversationService {
     allowed: boolean,
     rule?: string,
     updatedInput?: Record<string, unknown>,
+    denialMessage = 'User denied via UI',
   ): boolean {
     const session = this.sessions.get(sessionId)
     const pendingRequest = session?.pendingPermissionRequests.get(requestId)
@@ -510,7 +523,7 @@ export class ConversationService {
                   }
                 : {}),
             }
-          : { behavior: 'deny', message: 'User denied via UI' },
+          : { behavior: 'deny', message: denialMessage },
       },
     })
   }
@@ -1093,9 +1106,20 @@ export class ConversationService {
     delete cleanEnv.CC_HAHA_EXPERT_OUTPUT_TEMPLATE_GUARD
     delete cleanEnv.CC_JIANGXIA_EXPERT_SESSION_ID
     delete cleanEnv.CC_HAHA_EXPERT_SESSION_ID
+    // Workflow sessions persist their final handoff in <workspace>/.workflow.
+    // Never inherit or inject the global auto-memory override here: it prompts
+    // the CLI to write ~/.claude/projects/.../memory/MEMORY.md, which is
+    // intentionally outside a workflow phase's artifact-only write boundary.
+    delete cleanEnv.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
     if (this.shouldStripInheritedProviderEnv(options?.providerId)) {
-      for (const key of PROVIDER_ENV_KEYS) {
-        delete cleanEnv[key]
+      // Explicit Desktop provider routing must also defeat the CLI's alternate
+      // cloud-provider selectors. A stale Azure/Foundry/Bedrock/Vertex setting
+      // would otherwise bypass ANTHROPIC_BASE_URL and make the child connect to
+      // an unrelated endpoint before it reaches the local Provider proxy.
+      for (const key of Object.keys(cleanEnv)) {
+        if (isProviderManagedEnvVar(key) || PROVIDER_ENV_KEYS.includes(key.toUpperCase())) {
+          delete cleanEnv[key]
+        }
       }
     }
 
@@ -1116,6 +1140,17 @@ export class ConversationService {
     if (explicitProviderEnv && options?.model?.trim()) {
       explicitProviderEnv.ANTHROPIC_MODEL = options.model.trim()
     }
+    // Keep all alternate CLI provider transports explicitly off. These keys
+    // must be present (rather than merely absent) so settings loaded later by
+    // the child CLI cannot re-enable an unrelated cloud-provider transport.
+    const managedProviderRouteGuards = explicitProviderEnv
+      ? {
+          CLAUDE_CODE_USE_BEDROCK: '0',
+          CLAUDE_CODE_USE_VERTEX: '0',
+          CLAUDE_CODE_USE_FOUNDRY: '0',
+          CLAUDE_CODE_USE_AZURE_OPENAI: '0',
+        }
+      : {}
     const shouldUseOfficialManagedOAuth = this.shouldMarkManagedOAuth(options?.providerId)
     const officialOAuthEnv = shouldUseOfficialManagedOAuth
       ? await this.buildOfficialOAuthEnv()
@@ -1133,14 +1168,21 @@ export class ConversationService {
       CLAUDE_CODE_ENABLE_TASKS: '1',
       CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: '1',
       CLAUDE_CODE_DIAGNOSTICS_FILE: cliDiagnosticsPath,
-      CLAUDE_COWORK_MEMORY_PATH_OVERRIDE: this.resolveDesktopAutoMemoryPath(workDir),
+      // Ordinary and Expert sessions keep their project-scoped auto-memory.
+      // A Workflow's durable handoff must stay in its .workflow artifacts.
+      ...(options?.workflowSessionId
+        ? {}
+        : { CLAUDE_COWORK_MEMORY_PATH_OVERRIDE: this.resolveDesktopAutoMemoryPath(workDir) }),
       CALLER_DIR: workDir,
       PWD: workDir,
       // Tell the CLI entrypoint to skip project .env loading. Provider env
       // should come from Desktop-managed config or inherited launch env, not
       // be reintroduced from the repo's .env file.
       ...(explicitProviderEnv
-        ? { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' }
+        ? {
+            CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+            ...managedProviderRouteGuards,
+          }
         : {}),
       // "官方" 模式 (cc-jiangxia/settings.json 没 provider env) 下,把 CLI 标记为
       // managed-OAuth,让它忽略外部 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
@@ -1170,7 +1212,7 @@ export class ConversationService {
       // but terminal-shell environment collection intentionally does not inherit
       // all sidecar-only variables. Prefer an installed user runtime, then fall
       // back to that bundled runtime explicitly before passing it to the CLI.
-      if (options?.expertSystemPrompt || options?.expertSessionId) {
+      if (options?.expertRuntimeActive || options?.expertSystemPrompt || options?.expertSessionId) {
         const bundledBrowserRuntimeDir = process.env.CLAUDE_BROWSER_RUNTIME_DIR
         const visualQaBrowserExecutable = getBrowserResearchExecutablePath()
           ?? (bundledBrowserRuntimeDir

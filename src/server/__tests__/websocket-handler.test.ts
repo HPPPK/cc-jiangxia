@@ -11,6 +11,15 @@ import {
   refreshWorkflowRuntimeBinding,
   sendToSession,
   workflowNotificationForDesktop,
+  assistantTextRequestsStrictVisualBoundedDecision,
+  hasStrictVisualReviewReceipt,
+  containsStrictVisualUnsafeAbsolutePlanBadge,
+  containsStrictVisualGeneratedSemanticPseudoText,
+  containsStrictVisualMisleadingPaymentCode,
+  containsStrictVisualProcessDisclaimer,
+  userRequestsStrictVisualFinalDelivery,
+  strictVisualPublicReferenceUrls,
+  userRequestsStrictVisualPublicResearch,
   type WebSocketData,
 } from '../ws/handler.js'
 import { conversationService } from '../services/conversationService.js'
@@ -21,6 +30,95 @@ import { WorkflowSessionStateService } from '../services/workflowSessionStateSer
 import type { WorkflowSessionState, WorkflowTemplate } from '../services/workflowTypes.js'
 import { setWorkflowRuntimeTemplateLoaderForTests } from '../services/workflowRuntimeTemplateService.js'
 import { recalculateWorkflowCompletionEligibility } from '../services/workflowCompletionGate.js'
+
+describe('strict visual plan badge detection', () => {
+  it('rejects an absolutely positioned plan ribbon that can cover tier copy', () => {
+    expect(containsStrictVisualUnsafeAbsolutePlanBadge('.plan-badge { position: absolute; top: 0; right: 0 }')).toBe(true)
+  })
+
+  it('allows a plan ribbon in normal layout flow', () => {
+    expect(containsStrictVisualUnsafeAbsolutePlanBadge('.plan-badge { position: static; margin-inline-start: auto }')).toBe(false)
+  })
+})
+
+describe('strict visual semantic-label guard', () => {
+  it('rejects CSS-generated words in a tab or other semantic control', () => {
+    expect(containsStrictVisualGeneratedSemanticPseudoText('.tab.on:after { content: "企业" }')).toBe(true)
+    expect(containsStrictVisualGeneratedSemanticPseudoText('.login::before { content: "登录" }')).toBe(true)
+  })
+
+  it('allows decorative punctuation and empty pseudo-elements', () => {
+    expect(containsStrictVisualGeneratedSemanticPseudoText('.brand-mark:after { content: "" }')).toBe(false)
+    expect(containsStrictVisualGeneratedSemanticPseudoText('.tab:after { content: "→" }')).toBe(false)
+  })
+})
+describe('strict visual payment honesty guard', () => {
+  it('rejects a stripe-based fake payment code but allows an ordinary payment CTA', () => {
+    expect(containsStrictVisualMisleadingPaymentCode('.payment-code { background: repeating-linear-gradient(90deg, #000 0 4px, #fff 4px 8px); }')).toBe(true)
+    expect(containsStrictVisualMisleadingPaymentCode('.pay-action { background: linear-gradient(90deg, #ff8c4d, #ff654e); }')).toBe(false)
+  })
+
+  it('keeps prototype-process disclaimers out of customer-facing HTML', () => {
+    expect(containsStrictVisualProcessDisclaimer('<p>这是交互/视觉假设，不是已完成的用户验证。</p>')).toBe(true)
+    expect(containsStrictVisualProcessDisclaimer('<button>登录后扫码支付</button>')).toBe(false)
+  })
+})
+describe('strict visual final-delivery request detection', () => {
+  it('recognizes a screenshot-driven redesign request that expects a rendered artifact', () => {
+    expect(userRequestsStrictVisualFinalDelivery('请把这张截图重构成最终 PNG 视觉稿。', [{ mimeType: 'image/png', path: 'C:/tmp/source.png' }])).toBe(true)
+    expect(userRequestsStrictVisualFinalDelivery('Build an HTML prototype and render it to PNG.')).toBe(true)
+  })
+
+  it('does not mistake a read-only screenshot diagnosis for a final visual delivery request', () => {
+    expect(userRequestsStrictVisualFinalDelivery('先看这张截图，告诉我有什么 UX 问题。', [{ mimeType: 'image/png', path: 'C:/tmp/source.png' }])).toBe(false)
+  })
+})
+describe('strict visual locked-reference parsing', () => {
+  it('normalizes a user-supplied closed URL pair without retaining duplicate tracking variants', () => {
+    expect(strictVisualPublicReferenceUrls('Use https://www.bandicam.com/buy/#plans、and https://www.raycast.com/pricing?utm_source=test，not a third site.')).toEqual([
+      'https://www.bandicam.com/buy/',
+      'https://www.raycast.com/pricing?utm_source=test',
+    ])
+    expect(strictVisualPublicReferenceUrls('https://www.bandicam.com/buy/ https://www.bandicam.com/buy/')).toEqual([
+      'https://www.bandicam.com/buy/',
+    ])
+  })
+})
+describe('strict visual public-reference request detection', () => {
+  it('recognizes a user-supplied public URL or explicit reference-site research request', () => {
+    expect(userRequestsStrictVisualPublicResearch('Please inspect https://www.zcool.com.cn/ for visual references.')).toBe(true)
+    expect(userRequestsStrictVisualPublicResearch('请找两个灵感参考网站再开始。')).toBe(true)
+  })
+
+  it('does not treat ordinary screenshot intake as an already-approved research decision', () => {
+    expect(userRequestsStrictVisualPublicResearch('我上传了支付页截图，先看图后给我诊断。')).toBe(false)
+  })
+})
+describe('strict visual review receipt', () => {
+  const evidence = 'taste-redesign; impeccable-visual-refinement; ui-craft-critique; ui-craft-finalize; source-fidelity-final-pass. visual-register: practical recorder purchase window, using the source orange rail and dense transaction rhythm. removed: generic dark summary card. source-fidelity: tabs, plan labels, prices, and payment relationship match the source ledger; duplicate scan: none. collision: no badge covers a tier label or price at 390 mobile. 1440 desktop, 1024 tablet, 390 mobile reviewed.'
+
+  it('rejects a receipt that omits the Impeccable refinement evidence', () => {
+    expect(hasStrictVisualReviewReceipt(evidence.replace('impeccable-visual-refinement; ', ''))).toBe(false)
+  })
+
+  it('accepts the full source-specific receipt', () => {
+    expect(hasStrictVisualReviewReceipt(evidence)).toBe(true)
+  })
+})
+
+describe('strict visual choice detection', () => {
+  it('does not mistake a completed direction for a new choice request', () => {
+    expect(assistantTextRequestsStrictVisualBoundedDecision(
+      '设计方向已选方向 A「决策路径型」。默认选项仍需由真实产品逻辑确认。',
+    )).toBe(false)
+  })
+
+  it('continues to detect a direct bounded choice request', () => {
+    expect(assistantTextRequestsStrictVisualBoundedDecision(
+      '请选方向 A、B 或 C。',
+    )).toBe(true)
+  })
+})
 
 beforeEach(() => {
   setWorkflowRuntimeTemplateLoaderForTests(async (state): Promise<WorkflowTemplate | null> => {
@@ -988,7 +1086,168 @@ describe('WebSocket handler session isolation', () => {
     }
   })
 
+  it('allows the first strict UIUX capability introduction to end without AskUserQuestion', async () => {
+    const sessionId = `strict-uiux-welcome-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion'],
+      requiredSkillIds: [],
+    }
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue(null)
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      handleWebSocket.message(ws, JSON.stringify({
+        type: 'user_message',
+        content: '\u4ecb\u7ecd\u4e00\u4e0b\u300cUIUX\u8bbe\u8ba1\u7cfb\u7edf\u4e13\u5bb6\u300d\uff0c\u4f60\u53ef\u4ee5\u5e2e\u6211\u505a\u4ec0\u4e48\uff1f',
+      }))
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('UIUX'),
+      ))
+
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'assistant',
+        message: { content: [{
+          type: 'text',
+          text: '\u6211\u53ef\u4ee5\u5e2e\u4f60\u505a\u622a\u56fe\u91cd\u6784\u3001\u8bbe\u8ba1\u7cfb\u7edf\u3001UX \u8bca\u65ad\u4e0e\u89c6\u89c9 QA\u3002\u4f60\u60f3\u4ece\u54ea\u4e2a\u5f00\u59cb\uff1f',
+        }] },
+      })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => parseSentMessages(ws).some((message) => message.type === 'message_complete'))
+
+      expect(sendMessage.mock.calls.some(([, content]) =>
+        typeof content === 'string' && content.includes('<strict-visual-ask-user-question-recovery>'),
+      )).toBe(false)
+
+      handleWebSocket.message(ws, JSON.stringify({
+        type: 'user_message',
+        content: '\u8bf7\u91cd\u6784\u8fd9\u4e2a\u652f\u4ed8\u9875\u9762\u3002',
+      }))
+      await waitForCondition(() => sendMessage.mock.calls.filter(([calledSessionId]) => calledSessionId === sessionId).length >= 2)
+
+      const secondTurnCallback = session.outputCallbacks[0]!
+      secondTurnCallback({
+        type: 'assistant',
+        message: { content: [{
+          type: 'text',
+          text: '\u4f60\u662f\u5426\u5e0c\u671b\u6211\u4f7f\u7528\u5916\u90e8\u53c2\u8003\u7f51\u7ad9\uff1f',
+        }] },
+      })
+      secondTurnCallback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([, content]) =>
+        typeof content === 'string' && content.includes('<strict-visual-ask-user-question-recovery>'),
+      ))
+
+      expect(sendMessage.mock.calls.some(([, content]) =>
+        typeof content === 'string' && content.includes('<strict-visual-ask-user-question-recovery>'),
+      )).toBe(true)
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({
+        type: 'error',
+        code: 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
   it('does not force AskUserQuestion for strict UIUX screenshot and reference intake', async () => {
+    const sessionId = `strict-uiux-basic-open-intake-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion'],
+      requiredSkillIds: [],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'text',
+            text: '\u8bf7\u4e0a\u4f20\u622a\u56fe\uff0c\u8bf4\u660e\u60f3\u6539\u5584\u7684\u76ee\u6807\uff1b\u5982\u679c\u6709\u53c2\u8003\u7f51\u7ad9\uff0c\u4e5f\u53ef\u4ee5\u76f4\u63a5\u7c98\u8d34\u94fe\u63a5\u3002',
+          }],
+        },
+      })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => parseSentMessages(ws).some((message) => message.type === 'message_complete'))
+
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({
+        type: 'error',
+        code: 'STRICT_VISUAL_ASK_USER_QUESTION_REQUIRED',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('does not force AskUserQuestion for strict UIUX narrative wording about external references', async () => {
     const sessionId = `strict-uiux-open-intake-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
     const session = {
@@ -1032,7 +1291,7 @@ describe('WebSocket handler session isolation', () => {
         message: {
           content: [{
             type: 'text',
-            text: '请上传截图，说明想改善的目标；如果有参考网站，也可以直接粘贴链接。',
+            text: '\u8bf7\u76f4\u63a5\u4e0a\u4f20\u9875\u9762\u622a\u56fe\uff0c\u5e76\u8865\u5145\u4f60\u5e0c\u671b\u6539\u5584\u7684\u76ee\u6807\u3002\u6536\u5230\u540e\u6211\u4f1a\u5148\u5217\u51fa\u53ef\u89c2\u5bdf\u4e8b\u5b9e\u3001\u672a\u77e5\u9879\u4e0e\u8bbe\u8ba1\u5047\u8bbe\uff0c\u518d\u786e\u8ba4\u662f\u5426\u9700\u8981\u53c2\u8003\u5916\u90e8\u7f51\u7ad9\u3002',
           }],
         },
       })
@@ -1051,6 +1310,597 @@ describe('WebSocket handler session isolation', () => {
     }
   })
 
+  it('requires a strict UIUX HTML turn to run local visual QA before completion', async () => {
+    const sessionId = `strict-uiux-render-qa-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion', 'Write', 'Bash'],
+      requiredSkillIds: ['playwright-visual-qc'],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'assistant',
+        message: { content: [{
+          type: 'tool_use',
+          id: 'write-html',
+          name: 'Write',
+          input: { file_path: 'C:/tmp/payment-redesign.html', content: '<main>prototype</main>' },
+        }] },
+      })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('<strict-visual-render-qa-recovery>')
+      ))
+
+      expect(sendMessage).toHaveBeenCalledWith(
+        sessionId,
+        expect.stringContaining('CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE'),
+      )
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+        type: 'status',
+        state: 'thinking',
+        verb: 'Running required local visual QA',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('requires BrowserResearch when a strict UIUX user directly supplies a public reference URL', async () => {
+    const sessionId = `strict-uiux-direct-public-reference-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['BrowserResearch', 'Read'],
+      requiredSkillIds: ['visual-reference-lock'],
+    }
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue(null)
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      handleWebSocket.message(ws, JSON.stringify({
+        type: 'user_message',
+        content: 'Use https://www.zcool.com.cn/ and https://www.raycast.com/pricing as the only public visual references. Do not use a third site; then redesign my payment page.',
+      }))
+      await waitForCondition(() => session.outputCallbacks.length === 1)
+
+      const callback = session.outputCallbacks[0]!
+      callback({ type: 'assistant', message: { content: [{ type: 'text', text: 'I have finished the redesign.' }] } })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('<strict-visual-reference-research-recovery>')
+      ))
+      expect(sendMessage).toHaveBeenCalledWith(
+        sessionId,
+        expect.stringContaining('do not WebSearch or substitute another URL'),
+      )
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+  it('requires two BrowserResearch screenshots to be read after public visual research is selected', async () => {
+    const sessionId = `strict-uiux-visual-reference-research-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion', 'Read', 'BrowserResearch'],
+      requiredSkillIds: ['visual-reference-lock'],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({ type: 'assistant', message: { content: [{
+        type: 'tool_use',
+        id: 'inspiration-choice',
+        name: 'AskUserQuestion',
+        input: { questions: [{ id: 'inspiration_sources', prompt: '参考来源？', options: [] }] },
+      }] } })
+      callback({ type: 'user', message: { content: [{
+        type: 'tool_result',
+        tool_use_id: 'inspiration-choice',
+        is_error: false,
+        content: `User has answered your questions: "inspiration_sources"="允许扩展公开网页研究". You can now continue with the user's answers in mind.`,
+      }] } })
+      callback({ type: 'assistant', message: { content: [{
+        type: 'tool_use',
+        id: 'text-only-reference',
+        name: 'BrowserResearch',
+        input: { url: 'https://example.com/pricing', task: 'study layout', includeScreenshot: false, retry_urls: [] },
+      }] } })
+      callback({ type: 'user', message: { content: [{
+        type: 'tool_result',
+        tool_use_id: 'text-only-reference',
+        is_error: false,
+        content: 'Attempts:\n1. success: https://example.com/pricing\nLocal screenshot path: C:/tmp/not-counted.png',
+      }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'text', text: '已查看公开参考。' }] } })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('<strict-visual-reference-research-recovery>')
+      ))
+      expect(sendMessage).toHaveBeenCalledWith(
+        sessionId,
+        expect.stringContaining('includeScreenshot: true'),
+      )
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+        type: 'status',
+        state: 'thinking',
+        verb: 'Reading locked visual reference websites',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('accepts two successful safely resized website screenshots without requiring a prose receipt', async () => {
+    const sessionId = `strict-uiux-visual-reference-success-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion', 'Read', 'BrowserResearch'],
+      requiredSkillIds: ['visual-reference-lock'],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({ type: 'assistant', message: { content: [{
+        type: 'tool_use',
+        id: 'inspiration-choice-success',
+        name: 'AskUserQuestion',
+        input: { questions: [{ id: 'inspiration_sources', prompt: '参考来源？', options: [] }] },
+      }] } })
+      callback({ type: 'user', message: { content: [{
+        type: 'tool_result',
+        tool_use_id: 'inspiration-choice-success',
+        is_error: false,
+        content: `User has answered your questions: "inspiration_sources"="使用内置公开参考来源". You can now continue with the user's answers in mind.`,
+      }] } })
+      for (const [index, source] of ['https://example.com/pricing', 'https://example.org/editorial'].entries()) {
+        const screenshotPath = `C:/tmp/reference-${index}.png`
+        callback({ type: 'assistant', message: { content: [{
+          type: 'tool_use',
+          id: `research-${index}`,
+          name: 'BrowserResearch',
+          input: { url: source, task: 'study visual hierarchy', includeScreenshot: true, retry_urls: [] },
+        }] } })
+        callback({ type: 'user', message: { content: [{
+          type: 'tool_result',
+          tool_use_id: `research-${index}`,
+          is_error: false,
+          content: `Attempts:\n1. success: ${source}\nLocal screenshot path: ${screenshotPath}`,
+        }] } })
+        callback({ type: 'assistant', message: { content: [{
+          type: 'tool_use',
+          id: `read-reference-${index}`,
+          name: 'Read',
+          input: { file_path: screenshotPath.replace('.png', '-scaled.jpg') },
+        }] } })
+        callback({ type: 'user', message: { content: [{
+          type: 'tool_result',
+          tool_use_id: `read-reference-${index}`,
+          is_error: false,
+          content: [{ type: 'image', source: { type: 'base64', data: 'AA==' } }],
+        }] } })
+      }
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => parseSentMessages(ws).some((message) => message.type === 'message_complete'))
+      expect(sendMessage).not.toHaveBeenCalled()
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('rejects an unsupported lifestyle price analogy after completed render and image review', async () => {
+    const sessionId = `strict-uiux-price-analogy-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['Read', 'Write', 'Bash'],
+      requiredSkillIds: ['taste-redesign', 'ui-craft-critique', 'ui-craft-finalize', 'playwright-visual-qc'],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      for (const revision of ['first', 'revised']) {
+        callback({ type: 'assistant', message: { content: [{
+          type: 'tool_use',
+          id: `write-${revision}`,
+          name: 'Write',
+          input: { file_path: 'C:/tmp/payment-redesign.html', content: `<main>一年 ¥78 ≈ 1份水煮鱼 ${revision}</main>` },
+        }] } })
+        callback({ type: 'assistant', message: { content: [{
+          type: 'tool_use',
+          id: `render-${revision}`,
+          name: 'Bash',
+          input: { command: `& $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE --headless --screenshot=C:/tmp/${revision}.png file:///C:/tmp/payment-redesign.html` },
+        }] } })
+        callback({ type: 'user', message: { content: [{
+          type: 'tool_result',
+          tool_use_id: `render-${revision}`,
+          is_error: false,
+          content: `Screenshot written: C:/tmp/${revision}.png`,
+        }] } })
+        callback({ type: 'assistant', message: { content: [{
+          type: 'tool_use',
+          id: `read-${revision}`,
+          name: 'Read',
+          input: { file_path: `C:/tmp/${revision}.png` },
+        }] } })
+        callback({ type: 'user', message: { content: [{
+          type: 'tool_result',
+          tool_use_id: `read-${revision}`,
+          is_error: false,
+          content: [{ type: 'image', source: { type: 'base64', data: 'AA==' } }],
+        }] } })
+      }
+      callback({ type: 'assistant', message: { content: [{
+        type: 'text',
+        text: '<visual-review-receipt>taste-redesign; ui-craft-critique; ui-craft-finalize. 1440 desktop, 1024 tablet, 390 mobile reviewed.</visual-review-receipt>',
+      }] } })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([, content]) =>
+        typeof content === 'string' && content.includes('<strict-visual-review-recovery>'),
+      ))
+      const recovery = sendMessage.mock.calls.find(([, content]) =>
+        typeof content === 'string' && content.includes('<strict-visual-review-recovery>'),
+      )?.[1] as string
+      expect(recovery).toContain('unsupported lifestyle price analogy')
+      expect(recovery).toContain('use Write to replace the complete HTML source')
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('recovers a final PNG delivery claim even when streamed HTML-write evidence was lost', async () => {
+    const sessionId = `strict-uiux-final-delivery-receipt-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion', 'Read', 'Write', 'Bash'],
+      requiredSkillIds: ['taste-redesign', 'ui-craft-critique', 'ui-craft-finalize', 'playwright-visual-qc'],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      handleWebSocket.message(ws, JSON.stringify({
+        type: 'user_message',
+        content: 'Build an HTML prototype and render it to final PNG images.',
+      }))
+      await waitForCondition(() => session.outputCallbacks.length === 1)
+
+      const callback = session.outputCallbacks[0]!
+      // Reproduce the observed provider edge case: the model claims final
+      // delivery but this streamed turn contains no detectable Write event.
+      callback({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Final visual delivered.' }] },
+      })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) =>
+        calledSessionId === sessionId
+        && typeof content === 'string'
+        && content.includes('<strict-visual-review-recovery>')
+      ))
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+        type: 'status',
+        state: 'thinking',
+        verb: 'Critiquing and finalizing rendered UI',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('requires rendered-image critique and a revised render before accepting a strict UIUX HTML turn', async () => {
+    const sessionId = `strict-uiux-render-review-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = {
+      mode: 'strict-visual-workflow',
+      allowedToolNames: ['AskUserQuestion', 'Read', 'Write', 'Bash'],
+      requiredSkillIds: ['taste-redesign', 'ui-craft-critique', 'ui-craft-finalize', 'playwright-visual-qc'],
+    }
+    spyOn(sessionService, 'getSession').mockResolvedValue({
+      id: sessionId,
+      workDir: process.cwd(),
+      expert: strictVisualExpert,
+    } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'assistant',
+        message: { content: [
+          { type: 'tool_use', id: 'write-first', name: 'Write', input: { file_path: 'C:/tmp/payment-redesign.html', content: '<main>first</main>' } },
+          { type: 'tool_use', id: 'render-first', name: 'Bash', input: { command: '& $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE --headless --screenshot=C:/tmp/desktop-first.png file:///C:/tmp/payment-redesign.html' } },
+        ] },
+      })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'render-first', is_error: false, content: 'Screenshot written: C:/tmp/desktop-first.png' }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'read-first', name: 'Read', input: { file_path: 'C:/tmp/desktop-first.png' } }] } })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read-first', is_error: false, content: [{ type: 'image', source: { type: 'base64', data: 'AA==' } }] }] } })
+      callback({
+        type: 'assistant',
+        message: { content: [
+          { type: 'tool_use', id: 'rewrite-revised', name: 'Bash', input: { command: "python -c \"p='C:/tmp/payment-redesign.html'; s=open(p, encoding='utf-8').read(); open(p, 'w', encoding='utf-8').write(s.replace('first', 'revised'))\"" } },
+          { type: 'tool_use', id: 'render-revised', name: 'Bash', input: { command: '& $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE --headless --screenshot=C:/tmp/desktop-revised.png file:///C:/tmp/payment-redesign.html' } },
+        ] },
+      })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'render-revised', is_error: false, content: 'Screenshot written: C:/tmp/desktop-revised.png' }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'read-revised', name: 'Read', input: { file_path: 'C:/tmp/desktop-revised.png' } }] } })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read-revised', is_error: false, content: [{ type: 'image', source: { type: 'base64', data: 'AA==' } }] }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'text', text: '<visual-review-receipt>taste-redesign: reduced generic gradient. impeccable-visual-refinement: visual-register: product-internal recorder purchase window, anchored in the source orange rail and compact transaction rhythm; removed: generic dark summary card. collision: 390 mobile badges reflow without covering tier labels or prices. ui-craft-critique: desktop 1440 CTA hierarchy fixed; tablet 1024 comparison spacing fixed; mobile 390 button remains visible. ui-craft-finalize: verified revised responsive hierarchy. source-fidelity-final-pass: source-fidelity tab/plan/price diff passed; duplicate scan: none.</visual-review-receipt>' }] } })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => parseSentMessages(ws).some((message) => message.type === 'message_complete'))
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
+
+  it('recovers a strict UIUX turn that renders PNGs but skips image-based critique and finalization', async () => {
+    const sessionId = `strict-uiux-render-review-recovery-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockReturnValue(true)
+    const strictVisualExpert: any = makeExpertRuntimeMetadata('active')
+    strictVisualExpert.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.expertId = 'uiux-design-system-expert'
+    strictVisualExpert.runtimeBinding.runtimePolicy = { mode: 'strict-visual-workflow', allowedToolNames: ['Read', 'Write', 'Bash'], requiredSkillIds: [] }
+    spyOn(sessionService, 'getSession').mockResolvedValue({ id: sessionId, workDir: process.cwd(), expert: strictVisualExpert } as Awaited<ReturnType<typeof sessionService.getSession>>)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'write-html', name: 'Write', input: { file_path: 'C:/tmp/payment-redesign.html', content: '<main>prototype</main>' } },
+        { type: 'tool_use', id: 'render', name: 'Bash', input: { command: '& $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE --headless --screenshot=C:/tmp/desktop.png file:///C:/tmp/payment-redesign.html' } },
+      ] } })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'render', is_error: false, content: 'Screenshot written: C:/tmp/desktop.png' }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'read', name: 'Read', input: { file_path: 'C:/tmp/desktop.png' } }] } })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read', is_error: false, content: [{ type: 'image', source: { type: 'base64', data: 'AA==' } }] }] } })
+      // A second screenshot alone is not an HTML revision. This guards against
+      // accepting a render-only Bash command as proof of critique/revision.
+      callback({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'render-again', name: 'Bash', input: { command: '& $env:CC_JIANGXIA_VISUAL_QA_BROWSER_EXECUTABLE --headless --screenshot=C:/tmp/desktop-again.png file:///C:/tmp/payment-redesign.html' } }] } })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'render-again', is_error: false, content: 'Screenshot written: C:/tmp/desktop-again.png' }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'read-again', name: 'Read', input: { file_path: 'C:/tmp/desktop-again.png' } }] } })
+      callback({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read-again', is_error: false, content: [{ type: 'image', source: { type: 'base64', data: 'AA==' } }] }] } })
+      callback({ type: 'assistant', message: { content: [{ type: 'text', text: '<visual-review-receipt>taste-redesign: checked. ui-craft-critique: desktop 1440, tablet 1024, mobile 390 checked. ui-craft-finalize: claimed.</visual-review-receipt>' }] } })
+      callback({ type: 'result', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+
+      await waitForCondition(() => sendMessage.mock.calls.some(([calledSessionId, content]) => calledSessionId === sessionId && typeof content === 'string' && content.includes('<strict-visual-review-recovery>')))
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({ type: 'message_complete' }))
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({ type: 'status', state: 'thinking', verb: 'Critiquing and finalizing rendered UI' }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
   it('recovers an English streamed prose decision with structured AskUserQuestion guidance', async () => {
     const sessionId = `workflow-streamed-english-question-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
@@ -1449,6 +2299,108 @@ describe('WebSocket handler session isolation', () => {
     }
   })
 
+
+  it('rejects an invalid skills-development decision card from persisted workflow state before desktop delivery', async () => {
+    const sessionId = `workflow-invalid-question-card-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const stateService = new WorkflowSessionStateService()
+    const session = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [] as Array<(msg: any) => void>,
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'sdk-token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(conversationService as any).sessions.set(sessionId, session)
+    const respondToPermission = spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
+    const state = makeWorkflowState(sessionId)
+    state.activePhaseId = 'scope-plan'
+    state.templateIdentity = { id: 'skills-development', source: 'user', version: '15' }
+    state.templateSnapshot = {
+      schemaVersion: 1,
+      id: 'skills-development',
+      source: 'user',
+      version: '15',
+      displayName: 'Skills development',
+      description: 'Persisted decision-card enforcement fixture',
+      phases: [{
+        id: 'scope-plan',
+        label: 'Scope plan',
+        instructions: 'Ask one compliant decision card.',
+        requestedModel: null,
+        skillDeclarations: [],
+        requiredArtifacts: [],
+        completionCriteria: [],
+        transitionAuthority: 'user-confirmation',
+        runtimeContract: {
+          questionPolicy: {
+            exactQuestionCount: 1,
+            minChoices: 2,
+            maxChoices: 3,
+            firstChoiceLabelIncludes: '(Recommended)',
+            requireChoiceDescriptions: true,
+            disallowComputerUse: true,
+          },
+        },
+      }],
+    }
+    await stateService.writeState(sessionId, state)
+
+    try {
+      handleWebSocket.open(ws)
+      const callback = session.outputCallbacks[0]!
+      callback({
+        type: 'control_request',
+        request_id: 'invalid-skills-question',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'AskUserQuestion',
+          tool_use_id: 'invalid-skills-tool',
+          input: {
+            questions: [{
+              prompt: 'Which scope should we build?',
+              choices: [
+                { label: 'A', description: 'First.' },
+                { label: 'B', description: 'Second.' },
+                { label: 'C', description: 'Third.' },
+                { label: 'D', description: 'Fourth.' },
+              ],
+            }],
+          },
+        },
+      })
+
+      await waitForCondition(() => respondToPermission.mock.calls.length === 1)
+      expect(respondToPermission).toHaveBeenCalledWith(
+        sessionId,
+        'invalid-skills-question',
+        false,
+        undefined,
+        undefined,
+        expect.stringContaining('WORKFLOW_QUESTION_CONTRACT_VIOLATION'),
+      )
+      expect(parseSentMessages(ws)).not.toContainEqual(expect.objectContaining({
+        type: 'permission_request',
+        requestId: 'invalid-skills-question',
+      }))
+      expect(parseSentMessages(ws)).toContainEqual(expect.objectContaining({
+        type: 'error',
+        code: 'WORKFLOW_QUESTION_CONTRACT_VIOLATION',
+      }))
+    } finally {
+      conversationService.stopSession(sessionId)
+    }
+  })
 
   it('reconciles a legacy header-keyed workflow question from its persisted AskUserQuestion result', async () => {
     const sessionId = `workflow-legacy-ask-answer-${crypto.randomUUID()}`
@@ -3031,6 +3983,12 @@ describe('WebSocket handler workflow runtime gating', () => {
         allowedTools: ['Bash', 'submit_phase_completion'],
       },
     }
+    workflowState.startupPrompt = [
+      '<workflow-context-carryover>',
+      'strategy: inherit',
+      'Latest user decision: preserve the selected workspace.',
+      '</workflow-context-carryover>',
+    ].join('\n')
     await new WorkflowSessionStateService().writeState(sessionId, workflowState)
 
     handleWebSocket.open(ws)
@@ -3054,6 +4012,12 @@ describe('WebSocket handler workflow runtime gating', () => {
     )
     expect(startSession.mock.calls[0]?.[3]?.workflowSystemPrompt).toContain(
       'Never call it merely to enter the immediate linear next phase already represented by the pending completion',
+    )
+    expect(startSession.mock.calls[0]?.[3]?.workflowSystemPrompt).toContain(
+      'Latest user decision: preserve the selected workspace.',
+    )
+    expect(startSession.mock.calls[0]?.[3]?.workflowSystemPrompt).toContain(
+      'current user request and resumed conversation take precedence over stale or conflicting .workflow notes',
     )
     const sessionSettings = startSession.mock.calls[0]?.[3]
     expect(sessionSettings?.expertSystemPrompt).toBeUndefined()

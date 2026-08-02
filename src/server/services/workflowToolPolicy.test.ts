@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { WorkflowSessionState } from './workflowTypes.js'
+import type { WorkflowPhaseIssue, WorkflowSessionState } from './workflowTypes.js'
 import * as workflowToolPolicy from './workflowToolPolicy.js'
 import {
   WORKFLOW_TEMPLATE_AUTHORING_MUTATING_OPERATIONS,
@@ -886,8 +886,11 @@ describe('workflowToolPolicy', () => {
 
 
 describe('skills-development scope-plan question-card contract', () => {
-  function stateWithScopePlanQuestionPolicy(templateId = 'skills-development'): WorkflowSessionState {
-    const state = stateFor('scope-plan')
+  function stateWithScopePlanQuestionPolicy(
+    templateId = 'skills-development',
+    phaseId = 'scope-plan',
+  ): WorkflowSessionState {
+    const state = stateFor(phaseId)
     state.templateIdentity = {
       id: templateId,
       source: 'user',
@@ -901,8 +904,8 @@ describe('skills-development scope-plan question-card contract', () => {
       displayName: 'Skills development',
       description: 'Question card contract fixture',
       phases: [{
-        id: 'scope-plan',
-        label: 'Scope plan',
+        id: phaseId,
+        label: phaseId,
         instructions: 'Ask structured decision cards.',
         requestedModel: null,
         skillDeclarations: [],
@@ -973,6 +976,15 @@ describe('skills-development scope-plan question-card contract', () => {
     }, state)).toContain('every choice needs a non-empty')
   })
 
+  test('applies the same hard contract during v15 route-context intake', () => {
+    const state = stateWithScopePlanQuestionPolicy('skills-development', 'route-context')
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{ prompt: 'What evidence should guide this request?' }],
+    }, state)).toContain('skills-development/route-context')
+    expect(isWorkflowComputerUseDenied(state)).toBe(true)
+  })
+
   test('allows a compliant card and leaves other templates untouched', () => {
     expect(getWorkflowQuestionCardContractViolation(
       'AskUserQuestion',
@@ -991,5 +1003,172 @@ describe('skills-development scope-plan question-card contract', () => {
     expect(isWorkflowComputerUseDenied(
       stateWithScopePlanQuestionPolicy('efficient-constrained-dev-debug-workflow-v5'),
     )).toBe(false)
+  })
+})
+
+describe('Feature and Debug necessary-question contract', () => {
+  function stateWithNecessaryQuestionPolicy(
+    templateId = 'feature-extension-workflow-v8',
+    phaseId = 'feature-implement',
+    issues: WorkflowPhaseIssue[] = [],
+    requireAnswerProcessingBeforeNextQuestion = true,
+  ): WorkflowSessionState {
+    const state = stateFor(phaseId)
+    state.templateIdentity = {
+      id: templateId,
+      source: 'user',
+      version: '8',
+    }
+    state.templateSnapshot = {
+      schemaVersion: 1,
+      id: templateId,
+      source: 'user',
+      version: '8',
+      displayName: templateId,
+      description: 'Necessary question policy fixture',
+      phases: [{
+        id: phaseId,
+        label: phaseId,
+        instructions: 'Ask only when the answer is necessary for current-phase work.',
+        requestedModel: null,
+        skillDeclarations: [],
+        requiredArtifacts: [],
+        completionCriteria: [],
+        transitionAuthority: 'user-confirmation',
+        runtimeContract: {
+          questionPolicy: {
+            requireNecessaryQuestion: true,
+            requireAnswerProcessingBeforeNextQuestion,
+          },
+        },
+      }],
+    }
+    state.runtimeContract = {
+      schemaVersion: 1,
+      migrationStatus: 'current',
+      phaseStates: {
+        [phaseId]: {
+          phaseId,
+          workStatus: 'not-started',
+          eligibility: 'not-ready',
+          blockerReasons: [],
+          issues,
+          artifactRequirements: [],
+          checks: [],
+          taskSnapshots: [],
+          evaluatedAt: '2026-07-31T00:00:00.000Z',
+        },
+      },
+      audit: [],
+    }
+    return state
+  }
+
+  const necessaryQuestionCard = {
+    questions: [{
+      prompt: 'Which production integration must the fix preserve?',
+      blocksCompletion: true,
+      blockingReason: 'Neither the request, workspace, logs, nor current artifacts identify the integration in production.',
+      answerImpact: 'The answer selects the compatibility branch and regression scenario for the current fix.',
+      choices: [
+        { label: 'Integration A', description: 'Keep the currently deployed A contract compatible.' },
+        { label: 'Integration B', description: 'Keep the currently deployed B contract compatible.' },
+      ],
+    }],
+  }
+
+  test('requires an explicit reason and impact for Feature and Debug questions', () => {
+    const state = stateWithNecessaryQuestionPolicy()
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{ ...necessaryQuestionCard.questions[0], blockingReason: '' }],
+    }, state)).toContain('blockingReason')
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{ ...necessaryQuestionCard.questions[0], answerImpact: '' }],
+    }, state)).toContain('answerImpact')
+
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{ ...necessaryQuestionCard.questions[0], blocksCompletion: false }],
+    }, state)).toContain('blocksCompletion')
+
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      necessaryQuestionCard,
+      stateWithNecessaryQuestionPolicy('debug-repair-workflow-v8', 'debug-investigate'),
+    )).toBeNull()
+  })
+
+  test('requires the current answer to be processed before the next question card for a workflow that retains the hard-stop policy', () => {
+    const state = stateWithNecessaryQuestionPolicy('strict-custom-workflow', 'feature-implement', [{
+      id: 'previous-question',
+      phaseId: 'feature-implement',
+      sessionId: 'session-1',
+      createdAt: '2026-07-31T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:01:00.000Z',
+      source: 'ask-user-question',
+      status: 'answered-pending-processing',
+      blocksCompletion: true,
+      blockingReason: 'Previous necessary question.',
+      answer: { selected: 'Integration A' },
+      answerReceivedAt: '2026-07-31T00:01:00.000Z',
+      createdStateVersion: 1,
+    }])
+
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      necessaryQuestionCard,
+      state,
+    )).toContain('answered question pending processing')
+  })
+
+  test('keeps necessary-question validation while allowing Feature and Debug follow-up questions before answer evidence is finalized', () => {
+    const pendingIssue: WorkflowPhaseIssue = {
+      id: 'previous-question',
+      phaseId: 'feature-memory-plan',
+      sessionId: 'session-1',
+      createdAt: '2026-08-02T00:00:00.000Z',
+      updatedAt: '2026-08-02T00:01:00.000Z',
+      source: 'ask-user-question',
+      status: 'answered-pending-processing',
+      blocksCompletion: true,
+      blockingReason: 'Previous necessary question.',
+      answer: { selected: 'Integration A' },
+      answerReceivedAt: '2026-08-02T00:01:00.000Z',
+      createdStateVersion: 1,
+    }
+    const state = stateWithNecessaryQuestionPolicy(
+      'feature-extension-workflow-v8',
+      'feature-memory-plan',
+      [pendingIssue],
+      true,
+    )
+
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      necessaryQuestionCard,
+      state,
+    )).toBeNull()
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      necessaryQuestionCard,
+      stateWithNecessaryQuestionPolicy(
+        'debug-repair-workflow-v8',
+        'debug-investigate',
+        [{ ...pendingIssue, phaseId: 'debug-investigate' }],
+        true,
+      ),
+    )).toBeNull()
+    expect(getWorkflowQuestionCardContractViolation('AskUserQuestion', {
+      questions: [{ ...necessaryQuestionCard.questions[0], answerImpact: '' }],
+    }, state)).toContain('answerImpact')
+  })
+
+  test('leaves workflows without the necessary-question policy unchanged', () => {
+    expect(getWorkflowQuestionCardContractViolation(
+      'AskUserQuestion',
+      { questions: [{ prompt: 'Ordinary workflow question?' }] },
+      stateFor('implementation'),
+    )).toBeNull()
   })
 })

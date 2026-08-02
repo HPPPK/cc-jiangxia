@@ -104,7 +104,7 @@ describe('buildBundledExpertPacks', () => {
     )
   })
 
-  it('bundles the commercialization pack external-demand skill and its runtime priority', async () => {
+  it('bundles the commercialization pack browser retrieval and evidence skills with their runtime guidance', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'commercialization-expert-pack-'))
     roots.push(root)
     const sourceDir = path.resolve(import.meta.dir, '..', 'experts')
@@ -117,32 +117,65 @@ describe('buildBundledExpertPacks', () => {
     const zip = await adapter.read(new Uint8Array(await readFile(output!)))
     const manifest = JSON.parse(await zip.readText('manifest.json'))
     const expert = JSON.parse(await zip.readText('experts/commercialization-research-report/expert.json'))
+    const browserSkillPath = 'skills/browser-information-retrieval/SKILL.md'
     const skillPath = 'skills/external-demand-evidence/SKILL.md'
     const channelSkillPath = 'skills/channel-acquisition-evidence/SKILL.md'
     const systemPrompt = await zip.readText('experts/commercialization-research-report/prompts/system.md')
     const outputProtocol = await zip.readText('experts/commercialization-research-report/outputs/material-protocol.json')
 
-    expect(manifest.version).toBe('0.11.0-local')
-    expect(manifest.entrypoints.skills.slice(0, 3)).toEqual([
+    expect(manifest.version).toBe('0.11.2-local')
+    expect(manifest.entrypoints.skills.slice(0, 4)).toEqual([
       'commercialization-research-method',
       'source-graph-research',
+      'browser-information-retrieval',
       'external-demand-evidence',
     ])
-    expect(expert.skillIds.slice(0, 3)).toEqual(manifest.entrypoints.skills.slice(0, 3))
+    expect(expert.skillIds.slice(0, 4)).toEqual(manifest.entrypoints.skills.slice(0, 4))
     expect(expert.skillIds.every((skillId: string) => manifest.entrypoints.skills.includes(skillId))).toBe(true)
     for (const skillId of manifest.entrypoints.skills) {
       expect(zip.has(`skills/${skillId}/SKILL.md`)).toBe(true)
     }
     expect(zip.has('skills/commercialization-research-method/SKILL.md')).toBe(true)
+    expect(zip.has(browserSkillPath)).toBe(true)
     expect(zip.has(skillPath)).toBe(true)
     expect(zip.has(channelSkillPath)).toBe(true)
+    expect(zip.has('skills/google-grounded-source-discovery/SKILL.md')).toBe(false)
+    expect(expert).not.toHaveProperty('researchDiscovery')
+    expect(await zip.readText(browserSkillPath)).toContain('无需 API Key 的公共候选入口')
+    expect(await zip.readText(browserSkillPath)).toContain('Hacker News Algolia')
+    expect(await zip.readText(browserSkillPath)).toContain('Stack Exchange')
+    expect(await zip.readText(browserSkillPath)).toContain('GitHub 公开仓库')
+    expect(await zip.readText(browserSkillPath)).toContain('Bing')
+    expect(await zip.readText(browserSkillPath)).toContain('Google')
+    expect(await zip.readText(browserSkillPath)).toContain('Baidu')
+    expect(await zip.readText(browserSkillPath)).toContain('360 搜索')
+    expect(await zip.readText(browserSkillPath)).toContain('search_engine: "google"')
+    expect(await zip.readText(browserSkillPath)).toContain('search_engine: "baidu"')
+    expect(await zip.readText(browserSkillPath)).toContain('search_engine: "360"')
+    expect(await zip.readText(browserSkillPath)).toContain('工具回执中的实际 engine')
+    expect(await zip.readText(browserSkillPath)).toContain('最终报告来源闭环')
+    expect(await zip.readText(browserSkillPath)).toContain('直接竞品补证路径')
+    expect(await zip.readText(browserSkillPath)).toContain('搜索页、搜索摘要、排序、热榜和 AI 摘要只用于发现候选链接')
+    expect(await zip.readText(browserSkillPath)).toContain('运行时浏览台账与跨子代理对账')
+    expect(await zip.readText(browserSkillPath)).toContain('target_unavailable')
     expect(await zip.readText(skillPath)).toContain('BrowserResearch')
     expect(await zip.readText(channelSkillPath)).toContain('渠道证据包')
+    expect(systemPrompt).toContain('browser-information-retrieval')
+    expect(systemPrompt).toContain('search_engine: "google"')
+    expect(systemPrompt).toContain('search_engine: "baidu"')
+    expect(systemPrompt).toContain('search_engine: "360"')
+    expect(systemPrompt).toContain('<tool-audit>')
+    expect(systemPrompt).toContain('<browser-research-audit>')
+    expect(systemPrompt).toContain('子代理真实浏览台账与冲突处理')
+    expect(systemPrompt).toContain('最终来源闭环')
+    expect(systemPrompt).toContain('官网 → 官方价格/购买页')
+    expect(systemPrompt).toContain('EXPERT_BROWSER_RESEARCH_REQUIRED')
     expect(systemPrompt).toContain('external-demand-evidence')
     expect(systemPrompt).toContain('channel-acquisition-evidence')
     expect(systemPrompt).toContain('expert-template-fill --data')
     expect(outputProtocol).toContain('templateFieldGuide')
     expect(outputProtocol).toContain('AI 视频翻译')
+    expect(outputProtocol).toContain('关键词快照')
     expect(systemPrompt).toContain('来源集中')
     expect(systemPrompt).toContain('品牌不同不等于外部用户/内容证据')
     expect(systemPrompt).toContain('不是证据缺口标签')
