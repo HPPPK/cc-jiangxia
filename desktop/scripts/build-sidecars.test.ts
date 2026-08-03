@@ -67,12 +67,16 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(source).toContain("'playwright', 'install', 'chromium-headless-shell'")
   })
 
-  it('builds a Node-executed Playwright runner next to the managed Chromium runtime', () => {
+  it('ships Playwright JavaScript packages beside a portable Node-executed runner', () => {
     const source = readBuildScript()
 
     expect(source).toContain('buildBundledBrowserResearchRunner')
     expect(source).toContain("browser-research-playwright-runner.cjs")
     expect(source).toContain("browser-research-playwright-runner.ts")
+    expect(source).toContain("const PLAYWRIGHT_RUNTIME_PACKAGES = ['playwright', 'playwright-core'] as const")
+    expect(source).toContain("path.join(runtimeDir, 'node_modules')")
+    expect(source).toContain("path.join(repoRoot, 'node_modules', packageName)")
+    expect(source).toContain("'playwright-core/*'")
     expect(source).toContain('identifiers: false')
   })
 

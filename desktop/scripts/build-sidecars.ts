@@ -25,7 +25,12 @@ const MANAGED_NODE_ARCHIVE = `${MANAGED_NODE_DIRECTORY}.zip`
 const MANAGED_NODE_URL = `https://nodejs.org/dist/v${MANAGED_NODE_VERSION}/${MANAGED_NODE_ARCHIVE}`
 const MANAGED_NODE_SHA256 = '7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29'
 const BROWSER_RESEARCH_PLAYWRIGHT_RUNNER_FILE = 'browser-research-playwright-runner.cjs'
+const PLAYWRIGHT_RUNTIME_PACKAGES = ['playwright', 'playwright-core'] as const
 const PLAYWRIGHT_NODE_RUNNER_EXTERNALS = [
+  'playwright',
+  'playwright/*',
+  'playwright-core',
+  'playwright-core/*',
   'chromium-bidi',
   'chromium-bidi/*',
   'chromium-bidi/lib/cjs/bidiMapper/BidiMapper',
@@ -112,6 +117,24 @@ async function buildBundledBrowserResearchRunner() {
   const runtimeDir = path.join(binariesDir, 'browser-runtime', 'playwright')
   const entrypoint = path.join(repoRoot, 'src', 'tools', 'BrowserResearchTool', 'browser-research-playwright-runner.ts')
   const runnerPath = path.join(runtimeDir, BROWSER_RESEARCH_PLAYWRIGHT_RUNNER_FILE)
+  const runtimeNodeModulesDir = path.join(runtimeDir, 'node_modules')
+
+  // Do not bundle Playwright itself. Bun inlines its internal __dirname and
+  // require.resolve() calls as the build machine path (for example D:\a\...),
+  // which makes a released runner try to load the CI checkout at user runtime.
+  // Keep the runner portable: its bare require('playwright') resolves these
+  // package copies beside the runner in the installed resource directory.
+  await rm(runtimeNodeModulesDir, { recursive: true, force: true })
+  await mkdir(runtimeNodeModulesDir, { recursive: true })
+  for (const packageName of PLAYWRIGHT_RUNTIME_PACKAGES) {
+    const sourcePackageDir = path.join(repoRoot, 'node_modules', packageName)
+    const targetPackageDir = path.join(runtimeNodeModulesDir, packageName)
+    if (!existsSync(path.join(sourcePackageDir, 'package.json'))) {
+      throw new Error(`[build-sidecars] Missing required Playwright runtime package: ${sourcePackageDir}`)
+    }
+    await cp(sourcePackageDir, targetPackageDir, { recursive: true })
+  }
+
   const result = await Bun.build({
     entrypoints: [entrypoint],
     outdir: runtimeDir,
@@ -125,11 +148,14 @@ async function buildBundledBrowserResearchRunner() {
     minify: { whitespace: true, identifiers: false, syntax: true },
     external: PLAYWRIGHT_NODE_RUNNER_EXTERNALS,
   })
-  if (!result.success || !existsSync(runnerPath)) {
+  const missingRuntimePackages = PLAYWRIGHT_RUNTIME_PACKAGES.filter(packageName =>
+    !existsSync(path.join(runtimeNodeModulesDir, packageName, 'package.json')),
+  )
+  if (!result.success || !existsSync(runnerPath) || missingRuntimePackages.length > 0) {
     const logs = result.logs.map((log) => log.message).join('\n')
-    throw new Error(`[build-sidecars] Failed to bundle the Node Playwright runner: ${logs || runnerPath}`)
+    throw new Error(`[build-sidecars] Failed to prepare the portable Node Playwright runner: ${logs || [runnerPath, ...missingRuntimePackages].join(', ')}`)
   }
-  console.log(`[build-sidecars] Bundled Node Playwright runner -> ${runnerPath}`)
+  console.log(`[build-sidecars] Bundled portable Node Playwright runner -> ${runnerPath}`)
 }
 
 function getPlaywrightHostPlatform(triple: string): string {
